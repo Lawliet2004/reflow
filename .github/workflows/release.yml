@@ -19,18 +19,22 @@ jobs:
           - name: Linux
             platform: ubuntu-22.04
             bundles: deb,appimage
+            rust_target: ""
             args: ""
           - name: Windows
             platform: windows-latest
             bundles: nsis,msi
+            rust_target: ""
             args: ""
           - name: macOS Intel
-            platform: macos-13
+            platform: macos-15-intel
             bundles: dmg
+            rust_target: x86_64-apple-darwin
             args: "--target x86_64-apple-darwin"
           - name: macOS Apple Silicon
             platform: macos-latest
             bundles: dmg
+            rust_target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"
 
     steps:
@@ -46,7 +50,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+          targets: ${{ matrix.rust_target }}
 
       - name: Install Linux bundle dependencies
         if: matrix.platform == 'ubuntu-22.04'

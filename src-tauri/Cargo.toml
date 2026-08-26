@@ -1,6 +1,6 @@
 [package]
 name = "reflow"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local Wispr Flow-Style Desktop Dictation Application"
 authors = ["Reflow Team"]
 edition = "2021"
