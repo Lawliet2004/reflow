@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Reflow
+Comment=Local-first desktop dictation
+Exec=reflow
+Icon=reflow
+Terminal=false
+Categories=Utility;AudioVideo;
+StartupNotify=false
+Keywords=dictation;speech;asr;voice;

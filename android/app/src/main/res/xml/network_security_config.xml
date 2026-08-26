@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Cleartext is required for LAN HTTP. The app rejects non-RFC1918 hosts in code. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

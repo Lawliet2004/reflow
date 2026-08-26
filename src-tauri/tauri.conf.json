@@ -1,0 +1,84 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Reflow",
+  "version": "0.1.0",
+  "identifier": "com.reflow.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Reflow",
+        "width": 880,
+        "height": 640,
+        "minWidth": 640,
+        "minHeight": 480,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "shadow": true
+      },
+      {
+        "label": "overlay",
+        "title": "Reflow Overlay",
+        "url": "index.html?window=overlay",
+        "width": 420,
+        "height": 72,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "focusable": false,
+        "visible": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "../model-runtime/qwen3_asr_runtime.py"
+    ],
+    "category": "Utility",
+    "shortDescription": "Local dictation for Windows and Linux",
+    "longDescription": "Reflow is a local-first desktop dictation app. Speech stays on your computer and is transcribed with Qwen3-ASR.",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0 | libwebkit2gtk-4.1-0t64",
+          "libgtk-3-0 | libgtk-3-0t64",
+          "libayatana-appindicator3-1",
+          "librsvg2-2",
+          "libasound2 | libasound2t64",
+          "libxdo3"
+        ],
+        "desktopTemplate": "../linux/reflow.desktop",
+        "files": {
+          "/usr/share/metainfo/com.reflow.app.metainfo.xml": "../linux/com.reflow.app.metainfo.xml"
+        }
+      }
+    }
+  }
+}

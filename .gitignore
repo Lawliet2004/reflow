@@ -1,0 +1,29 @@
+# Frontend dependencies and build output
+node_modules/
+dist/
+
+# Rust build output
+src-tauri/target/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python bytecode and local virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local test/runtime artifacts
+scripts/test_speech.wav
+src-tauri/test_*.txt
+test_masked.png
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

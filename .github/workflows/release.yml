@@ -1,0 +1,86 @@
+name: Release installers
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    name: Build ${{ matrix.name }} installer
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            platform: ubuntu-22.04
+            bundles: deb,appimage
+            args: ""
+          - name: Windows
+            platform: windows-latest
+            bundles: nsis,msi
+            args: ""
+          - name: macOS Intel
+            platform: macos-13
+            bundles: dmg
+            args: "--target x86_64-apple-darwin"
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            bundles: dmg
+            args: "--target aarch64-apple-darwin"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Install Linux bundle dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            pkg-config
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish installers
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Reflow ${{ github.ref_name }}
+          releaseBody: |
+            Download the installer for your operating system below.
+
+            - Linux: `.deb` or `.AppImage`
+            - Windows: `.msi` or NSIS `.exe`
+            - macOS: `.dmg` for Intel or Apple Silicon
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
+          releaseAssetNamePattern: Reflow-[platform]-[arch][ext]
+          args: --bundles ${{ matrix.bundles }} ${{ matrix.args }}

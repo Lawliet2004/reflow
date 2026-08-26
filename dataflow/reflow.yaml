@@ -1,0 +1,24 @@
+# Dory / DORA-style dataflow for Reflow desktop (Windows + Linux).
+# This graph is executed in-process by the Rust Dory bus; it is also a
+# readable spec if you later run the same stages as dora-rs nodes.
+nodes:
+  - id: capture
+    outputs: [pcm]
+  - id: resample
+    inputs: { pcm: capture/pcm }
+    outputs: [pcm16k]
+  - id: vad
+    inputs: { pcm16k: resample/pcm16k }
+    outputs: [speech]
+  - id: asr
+    inputs: { speech: vad/speech }
+    outputs: [partial, final]
+  - id: format
+    inputs: { final: asr/final }
+    outputs: [text]
+  - id: inject
+    inputs: { text: format/text }
+  - id: history
+    inputs: { text: format/text }
+  - id: api
+    inputs: { partial: asr/partial, text: format/text }

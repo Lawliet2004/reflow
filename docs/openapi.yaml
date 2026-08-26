@@ -1,0 +1,68 @@
+openapi: 3.0.3
+info:
+  title: Reflow LAN API
+  version: 0.1.0
+  description: Local HTTP API for the Android companion. ASR stays on the desktop.
+servers:
+  - url: http://127.0.0.1:7840
+paths:
+  /v1/health:
+    get:
+      summary: Liveness
+      responses:
+        "200":
+          description: OK
+  /v1/pair:
+    post:
+      summary: Exchange pairing code for a device token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+                device_name: { type: string }
+      responses:
+        "200":
+          description: Token
+  /v1/status:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: App state }
+  /v1/history:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: History rows }
+    delete:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Cleared }
+  /v1/inject:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+      responses:
+        "200": { description: Injected or copied }
+  /v1/stream:
+    get:
+      summary: Streaming PCM dictation
+      security: [{ bearerAuth: [] }]
+      responses:
+        "101": { description: WebSocket }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

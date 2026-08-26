@@ -1,0 +1,11 @@
+[Unit]
+Description=Reflow LAN API for Android dictation
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/reflow --api --bind 0.0.0.0:7840
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
