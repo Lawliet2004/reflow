@@ -12,10 +12,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - run: npm ci
       - run: npm run build
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      # Tauri's Windows test executable loads WebView2Loader.dll before the
+      # test harness starts. Keep the Windows compile gate here; runtime tests
+      # run on Linux below, where the shared library logic is exercised.
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --no-run
 
   test-linux:
     runs-on: ubuntu-latest
@@ -37,7 +40,7 @@ jobs:
             pkg-config
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - run: npm ci
       - run: npm run build
       - run: cargo test --manifest-path src-tauri/Cargo.toml

@@ -286,7 +286,9 @@ mod tests {
             polish_or_fallback(&client, smart, &sample_req("medium", "normal", smart));
         assert_eq!(outcome.final_text, smart);
         assert!(!outcome.used);
-        assert!(outcome.error.is_none());
+        // A missing rewriter is an attempted rewrite that failed; callers
+        // surface the error while keeping the original transcript.
+        assert!(outcome.error.is_some());
     }
 
     #[test]

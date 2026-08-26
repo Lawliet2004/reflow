@@ -511,13 +511,8 @@ mod tests {
             .unwrap();
         assert_eq!(updated.intelligence_tier, "raw_verbatim");
         assert_eq!(updated.flow_model, "none");
-        // cleanup_level may be empty when only the tier is set; that's
-        // intentional — the user has not expressed a cleanup preference.
-        assert!(
-            updated.cleanup_level.is_empty() || updated.cleanup_level == "raw",
-            "cleanup_level should not be hijacked by a tier update: got {:?}",
-            updated.cleanup_level
-        );
+        // The default cleanup level remains independent of the tier update.
+        assert_eq!(updated.cleanup_level, "light");
 
         let updated = store
             .merge_update(serde_json::json!({ "cleanup_level": "high" }))
