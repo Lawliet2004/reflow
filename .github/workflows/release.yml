@@ -70,6 +70,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
       - name: Build and publish installers
         uses: tauri-apps/tauri-action@v0.6.2
         env:
@@ -83,7 +88,7 @@ jobs:
             - Linux: `.deb` or `.AppImage`
             - Windows: `.msi` or NSIS `.exe`
             - macOS: `.dmg` for Intel or Apple Silicon
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
           releaseAssetNamePattern: Reflow-[platform]-[arch][ext]

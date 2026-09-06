@@ -21,18 +21,18 @@ reflow --api --bind 0.0.0.0:7840
 
 ## HTTP
 
-| Method | Path | Auth |
-|---|---|---|
-| GET | `/v1/health` | no |
-| GET | `/v1/status` | yes |
-| POST | `/v1/pair` | pairing code |
-| GET | `/v1/history` | yes |
-| GET | `/v1/history/search?q=` | yes |
-| DELETE | `/v1/history/:id` | yes |
-| DELETE | `/v1/history` | yes |
-| POST | `/v1/inject` `{ "text" }` | yes |
-| POST | `/v1/transcribe` multipart `file` | yes |
-| GET | `/v1/stream` WebSocket | yes |
+| Method | Path                              | Auth         |
+| ------ | --------------------------------- | ------------ |
+| GET    | `/v1/health`                      | no           |
+| GET    | `/v1/status`                      | yes          |
+| POST   | `/v1/pair`                        | pairing code |
+| GET    | `/v1/history`                     | yes          |
+| GET    | `/v1/history/search?q=`           | yes          |
+| DELETE | `/v1/history/:id`                 | yes          |
+| DELETE | `/v1/history`                     | yes          |
+| POST   | `/v1/inject` `{ "text" }`         | yes          |
+| POST   | `/v1/transcribe` multipart `file` | yes          |
+| GET    | `/v1/stream` WebSocket            | yes          |
 
 ## WebSocket `/v1/stream`
 

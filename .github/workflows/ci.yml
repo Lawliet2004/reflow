@@ -5,6 +5,68 @@ on:
   pull_request:
 
 jobs:
+  # Frontend gate. Runs on Linux because none of it is platform-specific and
+  # it is the fastest signal on a pull request.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Lint (eslint, jsx-a11y, react-hooks)
+        run: npm run lint
+      - name: Formatting (prettier)
+        run: npm run format:check
+      - name: Types
+        run: npx tsc --noEmit
+      - name: Unit tests (vitest)
+        run: npm run test
+
+  # The ASR sidecar's pure logic: audio preprocessing, the load-attempt ladder,
+  # the VRAM spill predicate, shape bucketing and the decode-token cap. None of
+  # it needs torch or a GPU, so it runs on every push.
+  python-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install numpy
+      - name: Sidecar selftest
+        run: python model-runtime/qwen3_asr_runtime.py --selftest
+
+  rust-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
   test-windows:
     runs-on: windows-latest
     steps:
@@ -13,12 +75,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
       - run: npm ci
       - run: npm run build
-      # Tauri's Windows test executable loads WebView2Loader.dll before the
-      # test harness starts. Keep the Windows compile gate here; runtime tests
-      # run on Linux below, where the shared library logic is exercised.
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --no-run
+      # The Windows test binaries used to fail to load before the harness
+      # started, because `session::stop` took a `tauri::AppHandle` and so linked
+      # the whole GUI/COM runtime into every test target. That coupling is gone,
+      # so Windows now runs the full suite — which matters, since Windows is the
+      # primary target and WDDM memory behaviour only reproduces here.
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
 
   test-linux:
     runs-on: ubuntu-latest
@@ -41,6 +106,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
       - run: npm ci
       - run: npm run build
       - run: cargo test --manifest-path src-tauri/Cargo.toml

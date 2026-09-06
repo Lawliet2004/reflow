@@ -1,9 +1,8 @@
-# Reflow 🎙️
+# Reflow
 
-> **Production-quality, 100% local Wispr Flow-style dictation for Windows, Linux, and Android.**  
-> Desktop is **Rust** (Tauri 2 + in-process **Dory** realtime dataflow). Android is a **Kotlin** companion that streams audio to the desktop. ASR is **Qwen3-ASR-0.6B** on the computer — never in the cloud.
+Local-first desktop dictation with a focused workspace for your words.
 
----
+**Version 0.2.0** redesigns the desktop interface and strengthens recording ownership, settings persistence, phone pairing, and clipboard safety. Read the [release notes](docs/release-0.2.0.md) and [verification record](docs/release-verification-0.2.0.md).
 
 ## ✨ Features & Architecture
 
@@ -30,7 +29,7 @@
 - **💾 Local SQLite History & Search**:
   - Searchable full-text transcription history.
   - Configurable data retention policies (1 day, 7 days, 30 days, 90 days, Forever).
-  - Single item copy, re-inject, deletion, and batch clear with confirmation.
+  - Single item copy, original/cleaned comparison, deletion, and batch clear with confirmation.
 - **🖥️ Minimalist HUD & System Tray Utility**:
   - Borderless, semi-transparent floating overlay with live waveform visualizer and transcript stabilization (committed prefix + mutable suffix).
   - Native system tray with status, language toggle, history, and settings shortcuts.
@@ -71,7 +70,7 @@ reflow/
 │   ├── services/
 │   │   └── tauriApi.ts               # Strongly typed Tauri IPC bridge
 │   ├── styles/
-│   │   └── globals.css               # Tailwind 4 & glassmorphism styling
+│   │   └── globals.css               # Tailwind 4 & shared workspace styles
 │   ├── types/
 │   │   └── index.ts                  # Shared TypeScript interfaces
 │   ├── historyDisplay.ts             # History entry text/undo helpers
@@ -218,6 +217,7 @@ cargo test
 ```
 
 Tests cover:
+
 - Audio resampling (48kHz/44.1kHz → 16kHz mono)
 - Voice Activity Detection (RMS energy, pre/post roll buffers, silence auto-stop)
 - Transcript stabilization (prefix commitment & mutable suffix)

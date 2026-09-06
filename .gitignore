@@ -27,3 +27,7 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Local review output (never included in a release).
+.codex-*
+graphify-out/
+semantic-review/
