@@ -25,18 +25,35 @@ fn overlay_geom() -> &'static Mutex<OverlayGeom> {
     })
 }
 
-/// Overlay window size per phase group.
-///
-/// Deliberately only two sizes, and the active one covers listening,
-/// transcribing, polishing and inserting alike. The HUD used to be resized on
-/// every stage transition, so the window visibly jumped several times per
-/// dictation; holding one size for the whole active pipeline removes that
-/// entirely. The taller `preview` size exists only for the settled result, where
-/// the transcript line is worth more room.
-fn overlay_dims(kind: &str) -> (f64, f64) {
-    match kind {
-        "preview" => (600.0, 92.0),
-        _ => (600.0, 76.0),
+/// A 200 × 40 capsule with four logical pixels around it for the shadow.
+/// The settled result uses the same size, so completion never moves the HUD.
+fn overlay_dims(_kind: &str) -> (f64, f64) {
+    (208.0, 48.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overlay_dims;
+
+    #[test]
+    fn capsule_geometry_is_stable_and_matches_the_initial_window() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let window = config["app"]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|window| window["label"] == "overlay")
+            .unwrap();
+        let initial = (
+            window["width"].as_f64().unwrap(),
+            window["height"].as_f64().unwrap(),
+        );
+        for phase in ["listening", "processing", "polishing", "preview"] {
+            assert_eq!(overlay_dims(phase), initial);
+        }
+        assert!(initial.0 <= 208.0 && initial.1 <= 48.0);
+        assert_eq!(window["focusable"], false);
     }
 }
 

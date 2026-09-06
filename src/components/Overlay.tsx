@@ -2,9 +2,7 @@ import React from "react";
 import { AlertCircle, Check } from "lucide-react";
 import { AppState, StreamingTranscriptPayload } from "../types";
 import { Waveform } from "./Waveform";
-import { ModeBadge } from "./hud/ModeBadge";
-import { StageRail } from "./hud/StageRail";
-import { derivePhase, isNeutralOutcome, phaseLabel, BackendStage } from "./hud/stages";
+import { derivePhase, phaseLabel, BackendStage } from "./hud/stages";
 
 interface OverlayProps {
   appState: AppState;
@@ -14,46 +12,10 @@ interface OverlayProps {
   hudTheme?: "dark" | "light" | "auto";
   waveformStyle?: "bars" | "pulse" | "minimal";
   hudScale?: "compact" | "standard" | "large";
-  /** Whether Stage 2 polishing will run for this dictation. */
-  polishEnabled?: boolean;
-  /**
-   * Latest backend pipeline stage (`pipeline:stage` event). Authoritative when
-   * set; the transcript string-match stays as the fallback.
-   */
   backendStage?: BackendStage | null;
-  /** Label of the polish model, for the mode badge tooltip. */
-  polishModelLabel?: string;
-  /** Show per-stage elapsed time. Driven by the developer_mode setting. */
-  showTimings?: boolean;
 }
 
-/** Elapsed milliseconds in the current phase, for the developer readout. */
-function useElapsed(key: string, running: boolean): number {
-  const [elapsed, setElapsed] = React.useState(0);
-  const startedAt = React.useRef<number>(0);
-
-  React.useEffect(() => {
-    startedAt.current = Date.now();
-    setElapsed(0);
-    if (!running) return;
-    const id = window.setInterval(() => setElapsed(Date.now() - startedAt.current), 100);
-    return () => window.clearInterval(id);
-  }, [key, running]);
-
-  return elapsed;
-}
-
-/**
- * The recording HUD.
- *
- * One capsule that changes contents, deliberately not four separate pills. The
- * previous version rendered listening, transcribing, polishing and inserting as
- * near-identical 56px pills differing only by a single word, which made the
- * pipeline invisible: there was no way to see how far along a dictation was, and
- * "Transcribing" and "Polishing" looked the same. Keeping one container with a
- * fixed height across every active phase also removes the layout jump that used
- * to happen on each transition.
- */
+/** A compact, non-interactive status capsule. Details stay in the main app. */
 export const Overlay: React.FC<OverlayProps> = ({
   appState,
   transcript,
@@ -62,17 +24,19 @@ export const Overlay: React.FC<OverlayProps> = ({
   hudTheme = "dark",
   waveformStyle = "bars",
   hudScale = "standard",
-  polishEnabled = true,
   backendStage = null,
-  polishModelLabel,
-  showTimings = false,
 }) => {
   const phase = derivePhase(appState, transcript, extraMessage, backendStage);
   const previewText = transcript.full_text.trim();
-  const label = phaseLabel(phase, extraMessage ?? "", previewText);
-  const elapsed = useElapsed(phase, phase !== "done" && phase !== "hidden" && phase !== "error");
+  const message = phaseLabel(phase, extraMessage ?? "", previewText);
+  const label =
+    phase === "error"
+      ? "Couldn't finish · open Reflow"
+      : phase === "done" && (!extraMessage || /^(inserted|done)[.!]?$/i.test(extraMessage.trim()))
+        ? "Done"
+        : message;
 
-  if (!standalone && phase === "hidden") {
+  if (phase === "hidden") {
     return null;
   }
 
@@ -84,14 +48,6 @@ export const Overlay: React.FC<OverlayProps> = ({
 
   const scaleClass =
     hudScale === "compact" ? "hud-scale-compact" : hudScale === "large" ? "hud-scale-large" : "";
-
-  // The live line: partials while working, the result once done.
-  const liveText =
-    phase === "done" || phase === "error"
-      ? previewText
-      : transcript.committed_prefix + transcript.mutable_suffix || previewText;
-
-  const neutral = isNeutralOutcome(label);
 
   return (
     <div
@@ -121,7 +77,7 @@ export const Overlay: React.FC<OverlayProps> = ({
           )}
         </span>
 
-        <span className="hud-label" data-neutral={neutral || undefined}>
+        <span className="hud-label" title={message}>
           {label}
         </span>
 
@@ -130,29 +86,13 @@ export const Overlay: React.FC<OverlayProps> = ({
             <Waveform
               level={transcript.audio_level}
               active
-              barCount={18}
-              height={20}
+              barCount={5}
+              height={16}
               tone={isLightHud ? "light" : "dark"}
             />
           </span>
         )}
-
-        <span className="hud-spacer" />
-
-        {showTimings && phase !== "hidden" && phase !== "done" && (
-          <span className="hud-timing" title="Time in this stage">
-            {elapsed} ms
-          </span>
-        )}
-
-        {phase !== "error" && <StageRail phase={phase} polishEnabled={polishEnabled} />}
-
-        <ModeBadge polishEnabled={polishEnabled} modelLabel={polishModelLabel} />
       </div>
-
-      <p className="hud-text" title={liveText} data-empty={!liveText || undefined}>
-        {liveText || (phase === "listen" ? "Listening for speech…" : "\u00a0")}
-      </p>
     </div>
   );
 };

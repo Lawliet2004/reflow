@@ -3,10 +3,8 @@ import {
   AppSettings,
   AppState,
   InjectionFeedback,
-  INTELLIGENCE_TIERS,
   StreamingTranscriptPayload,
   normalizeSettings,
-  polishEnabledFor,
 } from "../types";
 import { api } from "../services/tauriApi";
 import { createEventScope } from "../services/eventScope";
@@ -101,11 +99,6 @@ export const OverlayApp: React.FC = () => {
       hudTheme={settings?.overlay_theme ?? "dark"}
       waveformStyle={settings?.waveform_style ?? "bars"}
       hudScale={settings?.hud_scale ?? "standard"}
-      polishEnabled={settings ? polishEnabledFor(settings) : true}
-      polishModelLabel={
-        settings ? INTELLIGENCE_TIERS[settings.intelligence_tier]?.modelFile : undefined
-      }
-      showTimings={settings?.developer_mode ?? false}
     />
   );
 };

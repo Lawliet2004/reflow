@@ -30,48 +30,40 @@ describe("Overlay", () => {
     expect(polishing.querySelector(".hud")?.getAttribute("data-phase")).toBe("polish");
   });
 
-  it("marks the active rail step for the current phase", () => {
+  it("shows only the current status without pipeline details or transcript text", () => {
     const { container } = render(
-      <Overlay appState="PROCESSING" transcript={payload({ stage: "polishing" })} standalone />,
-    );
-
-    const active = container.querySelector('.hud-rail-step[data-status="active"]');
-    expect(active?.getAttribute("data-stage")).toBe("polish");
-    // Earlier steps are complete.
-    expect(
-      container.querySelector('.hud-rail-step[data-stage="listen"]')?.getAttribute("data-status"),
-    ).toBe("done");
-  });
-
-  /// The rail length is how the user sees which mode is active without reading.
-  it("drops the polish step from the rail when polishing is off", () => {
-    const { container } = render(
-      <Overlay appState="RECORDING" transcript={payload()} standalone polishEnabled={false} />,
-    );
-
-    expect(container.querySelectorAll(".hud-rail-step")).toHaveLength(3);
-    expect(container.querySelector('.hud-rail-step[data-stage="polish"]')).toBeNull();
-  });
-
-  it("always shows which mode the dictation is running in", () => {
-    render(<Overlay appState="RECORDING" transcript={payload()} standalone polishEnabled />);
-    expect(screen.getByText("Polished")).toBeInTheDocument();
-
-    render(
-      <Overlay appState="RECORDING" transcript={payload()} standalone polishEnabled={false} />,
-    );
-    expect(screen.getByText("Fast")).toBeInTheDocument();
-  });
-
-  it("shows live partial text while transcribing", () => {
-    render(
       <Overlay
         appState="PROCESSING"
-        transcript={payload({ committed_prefix: "hello ", mutable_suffix: "world" })}
+        transcript={payload({ full_text: "Private transcript", stage: "polishing" })}
         standalone
       />,
     );
-    expect(screen.getByText("hello world")).toBeInTheDocument();
+    expect(screen.getByText("Polishing")).toBeInTheDocument();
+    expect(screen.queryByText("Private transcript")).not.toBeInTheDocument();
+    expect(container.querySelector(".hud-rail, .hud-mode, .hud-timing, .hud-text")).toBeNull();
+  });
+
+  it("shows a brief completion label instead of repeating the transcript", () => {
+    render(
+      <Overlay
+        appState="READY"
+        transcript={payload({ full_text: "Hello." })}
+        standalone
+        extraMessage="Inserted"
+      />,
+    );
+    expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(screen.queryByText("Hello.")).not.toBeInTheDocument();
+  });
+
+  it("gives a concise recovery instruction on failure", () => {
+    render(<Overlay appState="ERROR" transcript={payload()} standalone />);
+    expect(screen.getByText("Couldn't finish · open Reflow")).toBeInTheDocument();
+  });
+
+  it("does not show an empty capsule in the standalone window", () => {
+    const { container } = render(<Overlay appState="READY" transcript={payload()} standalone />);
+    expect(container.firstChild).toBeNull();
   });
 
   /// The clipboard fallback is the message the user must actually act on, so it
@@ -100,17 +92,5 @@ describe("Overlay", () => {
     const hud = container.querySelector(".hud");
     expect(hud?.getAttribute("role")).toBe("status");
     expect(hud?.getAttribute("aria-live")).toBe("polite");
-  });
-
-  it("hides per-stage timings unless developer mode is on", () => {
-    const { container: off } = render(
-      <Overlay appState="PROCESSING" transcript={payload()} standalone />,
-    );
-    expect(off.querySelector(".hud-timing")).toBeNull();
-
-    const { container: on } = render(
-      <Overlay appState="PROCESSING" transcript={payload()} standalone showTimings />,
-    );
-    expect(on.querySelector(".hud-timing")).not.toBeNull();
   });
 });
