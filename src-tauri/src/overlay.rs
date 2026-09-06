@@ -25,10 +25,18 @@ fn overlay_geom() -> &'static Mutex<OverlayGeom> {
     })
 }
 
+/// Overlay window size per phase group.
+///
+/// Deliberately only two sizes, and the active one covers listening,
+/// transcribing, polishing and inserting alike. The HUD used to be resized on
+/// every stage transition, so the window visibly jumped several times per
+/// dictation; holding one size for the whole active pipeline removes that
+/// entirely. The taller `preview` size exists only for the settled result, where
+/// the transcript line is worth more room.
 fn overlay_dims(kind: &str) -> (f64, f64) {
     match kind {
-        "preview" => (520.0, 120.0),
-        _ => (520.0, 56.0),
+        "preview" => (600.0, 92.0),
+        _ => (600.0, 76.0),
     }
 }
 

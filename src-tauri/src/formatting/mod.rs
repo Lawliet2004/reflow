@@ -66,6 +66,55 @@ pub struct FormatRequest<'a> {
     pub focused_process: Option<&'a str>,
 }
 
+pub struct PartialFormatRequest<'a> {
+    pub dictation_mode: &'a str,
+    pub spoken_punctuation_enabled: bool,
+    pub custom_replacements: &'a CustomReplacements,
+}
+
+/// Formats in-flight streaming partial transcripts so they match the final
+/// casing, spacing, number normalization, and custom replacement rules
+/// without performing irreversible destructive transforms (like filler deletion
+/// or premature terminal punctuation).
+pub fn format_partial_text(raw: &str, req: PartialFormatRequest<'_>) -> String {
+    if raw.trim().is_empty() {
+        return raw.to_string();
+    }
+
+    let mut text = if req.spoken_punctuation_enabled {
+        PunctuationInferer::replace_spoken_punctuation(raw)
+    } else {
+        raw.to_string()
+    };
+
+    text = req.custom_replacements.apply(&text);
+    text = apply_normalizers(&text, req.dictation_mode);
+    text = PunctuationInferer::capitalize_sentences(&text);
+
+    let d_mode = DictationMode::from_str(req.dictation_mode);
+    if matches!(d_mode, DictationMode::Coding) {
+        text = ContextFormatter::format(&text, d_mode);
+    }
+
+    text
+}
+
+pub fn format_partial(
+    raw: &str,
+    dictation_mode: &str,
+    spoken_punctuation_enabled: bool,
+    custom_replacements: &CustomReplacements,
+) -> String {
+    format_partial_text(
+        raw,
+        PartialFormatRequest {
+            dictation_mode,
+            spoken_punctuation_enabled,
+            custom_replacements,
+        },
+    )
+}
+
 /// Keep the existing signature. `"raw"` trims only; `"smart"`/`"flow"` run the Light
 /// base pipeline (`CleanupLevel::parse` maps `"smart"` → Light and `"flow"` → Medium,
 /// and Medium shares the Light steps without hedge).
@@ -232,6 +281,61 @@ mod tests {
         );
     }
 
+    /// The end-to-end counterpart to the cleaner's unit tests: these are the
+    /// exact strings Reflow used to insert into the user's text box, comma
+    /// damage and all. Capitalization is restored here because
+    /// `capitalize_sentences` runs after filler removal.
+    #[test]
+    fn filler_removal_through_the_pipeline_keeps_punctuation_clean() {
+        let cases = [
+            ("Uh, I need to work for like.", "I need to work for like."),
+            (
+                "Please give me the key. I need the key, uh, for opening the door.",
+                "Please give me the key. I need the key, for opening the door.",
+            ),
+            ("Ah, can you bring me tea?", "Can you bring me tea?"),
+            (
+                "I like to ah do some bizarre things. Ah, today I am gonna go swim.",
+                "I like to do some bizarre things. Today I am gonna go swim.",
+            ),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                fmt(raw, CleanupLevel::Light, "normal", VoiceStyle::Faithful),
+                expected,
+                "pipeline mangled punctuation for {raw:?}"
+            );
+        }
+    }
+
+    /// Self-repair must resolve with no LLM in the pipeline at all.
+    ///
+    /// This is the guarantee that matters most: in Fast mode there is no Stage 2,
+    /// so if spoken corrections were left to the polish model they would simply
+    /// never be resolved. Handling them in Stage 1 means the behaviour is
+    /// identical in both modes — and exact, rather than whatever a 0.8B model
+    /// happens to produce. Asked to do this one, that model answered
+    /// "ship this on Friday, meaning Thursday", keeping both values.
+    #[test]
+    fn spoken_self_correction_resolves_without_the_llm() {
+        let cases = [
+            (
+                "i think we should ship this on friday i mean thursday",
+                "I think we should ship this on Thursday.",
+            ),
+            ("lets meet at 5 actually 6", "Lets meet at 6."),
+            ("the deadline is june i mean july", "The deadline is July."),
+            ("see you tomorrow no wait today", "See you today."),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                fmt(raw, CleanupLevel::Light, "normal", VoiceStyle::Faithful),
+                expected,
+                "Stage 1 did not resolve the correction in {raw:?}"
+            );
+        }
+    }
+
     #[test]
     fn smart_maps_to_light() {
         assert_eq!(CleanupLevel::parse("smart"), CleanupLevel::Light);
@@ -243,14 +347,24 @@ mod tests {
 
     #[test]
     fn raw_is_trim_only() {
-        let out = fmt("  um I want to drink tea  ", CleanupLevel::Raw, "normal", VoiceStyle::Decisive);
+        let out = fmt(
+            "  um I want to drink tea  ",
+            CleanupLevel::Raw,
+            "normal",
+            VoiceStyle::Decisive,
+        );
         assert_eq!(out, "um I want to drink tea");
         assert!(out.contains("um"), "{out}");
     }
 
     #[test]
     fn light_keeps_want_and_drops_fillers() {
-        let out = fmt("um I want to drink tea", CleanupLevel::Light, "normal", VoiceStyle::Decisive);
+        let out = fmt(
+            "um I want to drink tea",
+            CleanupLevel::Light,
+            "normal",
+            VoiceStyle::Decisive,
+        );
         assert_eq!(out, "I want to drink tea.");
         assert!(out.contains("want"), "{out}");
         assert!(!out.to_lowercase().contains("will"), "{out}");
@@ -260,13 +374,23 @@ mod tests {
 
     #[test]
     fn high_decisive_rewrites_i_want_to() {
-        let out = fmt("I want to drink tea", CleanupLevel::High, "normal", VoiceStyle::Decisive);
+        let out = fmt(
+            "I want to drink tea",
+            CleanupLevel::High,
+            "normal",
+            VoiceStyle::Decisive,
+        );
         assert_eq!(out, "I will drink tea.");
     }
 
     #[test]
     fn high_decisive_does_not_flip_negation() {
-        let out = fmt("I don't want this", CleanupLevel::High, "normal", VoiceStyle::Decisive);
+        let out = fmt(
+            "I don't want this",
+            CleanupLevel::High,
+            "normal",
+            VoiceStyle::Decisive,
+        );
         let lower = out.to_lowercase();
         assert!(
             lower.contains("don't want") || lower.contains("do not want"),
@@ -326,14 +450,24 @@ mod tests {
 
     #[test]
     fn medium_does_not_apply_hedge() {
-        let out = fmt("I want to drink tea", CleanupLevel::Medium, "normal", VoiceStyle::Decisive);
+        let out = fmt(
+            "I want to drink tea",
+            CleanupLevel::Medium,
+            "normal",
+            VoiceStyle::Decisive,
+        );
         assert!(out.to_lowercase().contains("want to"), "{out}");
         assert!(!out.to_lowercase().contains("will drink"), "{out}");
     }
 
     #[test]
     fn chat_style_strips_trailing_period_on_short_text() {
-        let out = fmt("hello there", CleanupLevel::Light, "normal", VoiceStyle::Chat);
+        let out = fmt(
+            "hello there",
+            CleanupLevel::Light,
+            "normal",
+            VoiceStyle::Chat,
+        );
         assert!(!out.ends_with('.'), "{out}");
         assert!(out.to_lowercase().contains("hello there"), "{out}");
     }
@@ -360,5 +494,21 @@ mod tests {
         let afters = vec!["qwen".into(), "GitHub".into()];
         let vocab = assemble_asr_vocabulary(&terms, &afters, 1);
         assert_eq!(vocab, vec!["Qwen"]);
+    }
+
+    #[test]
+    fn format_partial_normalizes_casing_and_punctuation_without_dropping_fillers() {
+        let rules = CustomReplacements::new(vec![]);
+        let out = format_partial(
+            "hello comma world um this is five dollars",
+            "normal",
+            true,
+            &rules,
+        );
+        // Capitalized, spoken punctuation replaced, numbers normalized, but filler "um" preserved and no premature period
+        assert!(out.starts_with("Hello,"));
+        assert!(out.contains("um"));
+        assert!(out.contains("$5") || out.contains("five dollars"));
+        assert!(!out.ends_with('.'));
     }
 }

@@ -36,6 +36,13 @@ pub enum DoryEvent {
     Partial(StreamingTranscriptPayload),
     AudioLevel(f32),
     Final(StreamingTranscriptPayload),
+    SessionFinished {
+        session_id: u64,
+        raw: String,
+        text: String,
+        language: String,
+        metrics: crate::state::LatencyMetrics,
+    },
     Injection(InjectionFeedback),
     Error(String),
     AutoStop,
@@ -70,13 +77,7 @@ impl Default for DoryBus {
 
 /// YAML-equivalent graph used by the desktop dictation loop.
 pub const PIPELINE: &[&str] = &[
-    "capture",
-    "resample",
-    "vad",
-    "asr",
-    "format",
-    "inject",
-    "history",
+    "capture", "resample", "vad", "asr", "format", "inject", "history",
 ];
 
 #[cfg(test)]

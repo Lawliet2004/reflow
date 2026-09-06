@@ -13,7 +13,30 @@
 //! key-up right after a dictation, which is suppressed so the Start
 //! menu doesn't open when the combo is released.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// `true` while a hands-free (double-tap) session is running.
+///
+/// Lives here rather than in `AppContext` because the hook is the only thing that
+/// knows: hands-free is entered on the *second* tap, by which time recording has
+/// already started and its duration guard is already armed. The session layer
+/// consults this to decide whether that guard still applies.
+static HANDS_FREE: AtomicBool = AtomicBool::new(false);
+
+/// `true` when the current dictation was locked on with a double-tap.
+///
+/// A held key can get stuck — a missed key-up would otherwise record forever —
+/// so hold-to-talk keeps a duration cap. A hands-free session was deliberately
+/// started and is deliberately ended, so it has no such cap: the user asked for
+/// hours, and cutting them off at a timeout would lose the recording.
+pub fn hands_free_engaged() -> bool {
+    HANDS_FREE.load(Ordering::Acquire)
+}
+
+fn set_hands_free(engaged: bool) {
+    HANDS_FREE.store(engaged, Ordering::Release);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookMode {
@@ -23,7 +46,10 @@ pub enum HookMode {
     Holding { pressed_at: Instant },
     /// First tap was released within double_tap_max_hold.
     /// Recording continues running; waiting for a 2nd press within double_tap_window.
-    PendingDoubleTap { released_at: Instant, generation: u64 },
+    PendingDoubleTap {
+        released_at: Instant,
+        generation: u64,
+    },
     /// Double-tap confirmed! Recording is locked in Auto Mode (hands-free).
     AutoLocked,
 }
@@ -137,6 +163,7 @@ impl HotkeyStateMachine {
     pub fn reset(&mut self) {
         self.mode = HookMode::Idle;
         self.generation = self.generation.wrapping_add(1);
+        set_hands_free(false);
     }
 }
 
@@ -150,8 +177,8 @@ pub mod platform {
     use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT,
-        MSG, WH_KEYBOARD_LL,
+        CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG,
+        WH_KEYBOARD_LL,
     };
 
     const WM_KEYDOWN: u32 = 0x0100;
@@ -165,7 +192,9 @@ pub mod platform {
     fn allow_injected() -> bool {
         static FLAG: OnceLock<bool> = OnceLock::new();
         *FLAG.get_or_init(|| {
-            std::env::var("REFLOW_TEST_INJECTED").map(|v| v == "1").unwrap_or(false)
+            std::env::var("REFLOW_TEST_INJECTED")
+                .map(|v| v == "1")
+                .unwrap_or(false)
         })
     }
 
@@ -174,7 +203,11 @@ pub mod platform {
     const MOD_ALT: u8 = 4;
     const MOD_WIN: u8 = 8;
 
-    type ComboFn = Arc<dyn Fn() + Send + Sync + 'static>;
+    /// The `Instant` argument is the moment the key event was observed
+    /// *inside the hook callback*, before any locking, thread spawn,
+    /// `SendInput` or tokio scheduling. Passing it through is what makes
+    /// `hotkey_to_recording_ms` an honest measurement instead of zero.
+    pub type ComboFn = Arc<dyn Fn(Instant) + Send + Sync + 'static>;
 
     struct HookState {
         required: u8,
@@ -266,24 +299,33 @@ pub mod platform {
         }
     }
 
-    fn execute_action(action: StateMachineAction, on_combo: &ComboFn, on_release: &ComboFn) {
+    fn execute_action(
+        action: StateMachineAction,
+        event_at: Instant,
+        on_combo: &ComboFn,
+        on_release: &ComboFn,
+    ) {
         match action {
             StateMachineAction::StartRecording => {
                 let cb = on_combo.clone();
                 std::thread::spawn(move || {
                     log::info!("Hotkey combo engaged -> Start recording");
                     inject_dummy_key();
-                    cb();
+                    cb(event_at);
                 });
             }
             StateMachineAction::StopRecording => {
                 let cb = on_release.clone();
+                super::set_hands_free(false);
                 std::thread::spawn(move || {
                     log::info!("Hotkey combo released/stopped -> Stop recording");
-                    cb();
+                    cb(event_at);
                 });
             }
-            StateMachineAction::ScheduleDoubleTapTimer { generation, delay_ms } => {
+            StateMachineAction::ScheduleDoubleTapTimer {
+                generation,
+                delay_ms,
+            } => {
                 let cb = on_release.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(delay_ms));
@@ -293,12 +335,18 @@ pub mod platform {
                         if act == StateMachineAction::StopRecording {
                             drop(guard);
                             log::info!("Single-tap double-tap window expired -> Stop recording");
-                            cb();
+                            // The user stopped speaking when they released the
+                            // key, not when the double-tap window closed.
+                            cb(event_at);
                         }
                     }
                 });
             }
             StateMachineAction::CancelTimer => {
+                // The double-tap promotion. Recording is already running; this is
+                // the point at which it becomes open-ended, so the duration guard
+                // must stop applying to it.
+                super::set_hands_free(true);
                 log::info!("Hotkey double-tap confirmed -> Auto Mode engaged (hands-free)");
             }
             StateMachineAction::None => {}
@@ -307,6 +355,10 @@ pub mod platform {
 
     unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if code >= 0 {
+            // Timestamp first: everything after this point (lock acquisition,
+            // state machine, thread spawn, SendInput, IPC) is latency the
+            // user pays for and must therefore be inside the measurement.
+            let event_at = Instant::now();
             let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
             let msg = wparam.0 as u32;
             let vk = kb.vkCode as i32;
@@ -339,35 +391,33 @@ pub mod platform {
                     if !st.active && combo_matched {
                         st.active = true;
                         st.swallowed.insert(vk);
-                        let action = st.sm.on_combo_down(Instant::now());
+                        let action = st.sm.on_combo_down(event_at);
                         let on_combo = st.on_combo.clone();
                         let on_release = st.on_release.clone();
                         drop(guard);
-                        execute_action(action, &on_combo, &on_release);
+                        execute_action(action, event_at, &on_combo, &on_release);
                         return LRESULT(1);
                     }
                     if st.active && !combo_matched {
                         st.active = false;
                         let swallow_this_up = st.swallowed.remove(&vk);
                         st.swallowed.clear();
-                        let action = st.sm.on_combo_up(Instant::now());
+                        let action = st.sm.on_combo_up(event_at);
                         let on_combo = st.on_combo.clone();
                         let on_release = st.on_release.clone();
                         drop(guard);
-                        execute_action(action, &on_combo, &on_release);
+                        execute_action(action, event_at, &on_combo, &on_release);
                         if swallow_this_up {
                             return LRESULT(1);
                         }
                         return CallNextHookEx(None, code, wparam, lparam);
                     }
-                    if st.active && is_required_modifier(st, vk) {
-                        if is_down {
-                            st.swallowed.insert(vk);
-                            return LRESULT(1);
-                        }
-                        // Let key-up events pass through so GetAsyncKeyState
-                        // reflects the true physical state for live_held().
+                    if st.active && is_required_modifier(st, vk) && is_down {
+                        st.swallowed.insert(vk);
+                        return LRESULT(1);
                     }
+                    // Let key-up events pass through so GetAsyncKeyState
+                    // reflects the true physical state for live_held().
                 }
             }
         }
@@ -385,12 +435,11 @@ pub mod platform {
 
             // Global hooks require the module handle of the module that
             // contains the hook procedure — NULL is not guaranteed to work.
-            let hmodule = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
-                .unwrap_or_default();
+            let hmodule =
+                windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
             let hmod = HINSTANCE(hmodule.0);
 
-            let install =
-                || SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hmod, 0);
+            let install = || SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hmod, 0);
 
             let current = match install() {
                 Err(err) => {
@@ -437,7 +486,7 @@ pub mod platform {
                 .name("mod-hotkey-hook".into())
                 .spawn(pump_thread)
                 .is_ok()
-            } else {
+        } else {
             true
         }
     }
@@ -457,10 +506,7 @@ pub mod platform {
     }
 
     pub const fn flags(shift: bool, ctrl: bool, alt: bool, win: bool) -> u8 {
-        (shift as u8)
-            | ((ctrl as u8) << 1)
-            | ((alt as u8) << 2)
-            | ((win as u8) << 3)
+        (shift as u8) | ((ctrl as u8) << 1) | ((alt as u8) << 2) | ((win as u8) << 3)
     }
 }
 
@@ -469,7 +515,7 @@ pub use platform::{clear_combo, flags, reset_mode, set_combo};
 
 #[cfg(not(windows))]
 pub mod platform {
-    pub type ComboFn = std::sync::Arc<dyn Fn() + Send + Sync + 'static>;
+    pub type ComboFn = std::sync::Arc<dyn Fn(std::time::Instant) + Send + Sync + 'static>;
     pub fn set_combo(_required: u8, _a: ComboFn, _b: ComboFn) -> bool {
         false
     }
@@ -514,8 +560,17 @@ mod tests {
 
         // Tap 1 Up at 100ms (< 350ms) -> Schedule timer, mode is PendingDoubleTap
         let a2 = sm.on_combo_up(t0 + Duration::from_millis(100));
-        assert!(matches!(a2, StateMachineAction::ScheduleDoubleTapTimer { generation: 1, delay_ms: 350 }));
-        assert!(matches!(sm.mode, HookMode::PendingDoubleTap { generation: 1, .. }));
+        assert!(matches!(
+            a2,
+            StateMachineAction::ScheduleDoubleTapTimer {
+                generation: 1,
+                delay_ms: 350
+            }
+        ));
+        assert!(matches!(
+            sm.mode,
+            HookMode::PendingDoubleTap { generation: 1, .. }
+        ));
 
         // Tap 2 Down at 220ms -> Promotes to AutoLocked, cancels timer
         let a3 = sm.on_combo_down(t0 + Duration::from_millis(220));
@@ -553,7 +608,10 @@ mod tests {
         assert_eq!(a1, StateMachineAction::StartRecording);
 
         let a2 = sm.on_combo_up(t0 + Duration::from_millis(50));
-        assert!(matches!(a2, StateMachineAction::ScheduleDoubleTapTimer { generation: 1, .. }));
+        assert!(matches!(
+            a2,
+            StateMachineAction::ScheduleDoubleTapTimer { generation: 1, .. }
+        ));
 
         // No second tap -> timer fires
         let a3 = sm.on_timer_expired(1);
@@ -569,4 +627,3 @@ mod tests {
         assert_eq!(sm.mode, HookMode::Idle);
     }
 }
-

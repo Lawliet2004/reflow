@@ -194,7 +194,10 @@ impl PlatformAdapter for LinuxAdapter {
 }
 
 fn command_json(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program).args(args).output().ok()?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -213,11 +216,7 @@ fn sway_active_window() -> Option<(String, String)> {
 
 fn kwin_active_window() -> Option<(String, String)> {
     let output = std::process::Command::new("qdbus")
-        .args([
-            "org.kde.KWin",
-            "/KWin",
-            "org.kde.KWin.queryWindowInfo",
-        ])
+        .args(["org.kde.KWin", "/KWin", "org.kde.KWin.queryWindowInfo"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -240,7 +239,9 @@ fn kwin_active_window() -> Option<(String, String)> {
 fn wtype_paste(shift: bool) -> Result<(), String> {
     let mut cmd = std::process::Command::new("wtype");
     if shift {
-        cmd.args(["-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"]);
+        cmd.args([
+            "-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl",
+        ]);
     } else {
         cmd.args(["-M", "ctrl", "v", "-m", "ctrl"]);
     }

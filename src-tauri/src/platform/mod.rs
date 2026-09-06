@@ -1,12 +1,12 @@
-pub mod sys;
 mod adapter;
+pub mod sys;
 
-#[cfg(windows)]
-mod windows;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 
 pub use adapter::{
     linux_terminal_process, parse_hyprctl_active_window, parse_sway_focused, paste_chord_label,
@@ -14,12 +14,12 @@ pub use adapter::{
 };
 pub use sys::PlatformSys;
 
-#[cfg(windows)]
-pub use windows::WindowsAdapter as CurrentAdapter;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxAdapter as CurrentAdapter;
 #[cfg(target_os = "macos")]
 pub use macos::MacOsAdapter as CurrentAdapter;
+#[cfg(windows)]
+pub use windows::WindowsAdapter as CurrentAdapter;
 
 /// Fallback adapter when compiling for an unexpected OS.
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -58,6 +58,34 @@ pub fn foreground_hwnd() -> isize {
 
 pub fn focus_hwnd(hwnd: isize) -> bool {
     CurrentAdapter::focus_hwnd(hwnd)
+}
+
+/// Request focus for `hwnd` and wait until the OS actually reports it as the
+/// foreground window, up to `timeout`.
+///
+/// `SetForegroundWindow` is asynchronous: it returns before the foreground has
+/// changed. Synthesizing Ctrl+V straight afterwards is a race, and losing it
+/// sends the keystroke to whichever window is still focused — so the paste
+/// silently lands somewhere else (or nowhere) while the code believes it
+/// succeeded. Polling for the transition converts that race into a bounded
+/// wait, and lets the caller fall back to "left on the clipboard" honestly when
+/// focus genuinely cannot be taken.
+pub fn focus_hwnd_and_confirm(hwnd: isize, timeout: std::time::Duration) -> bool {
+    if hwnd == 0 {
+        return false;
+    }
+    if foreground_hwnd() == hwnd {
+        return true;
+    }
+    focus_hwnd(hwnd);
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if foreground_hwnd() == hwnd {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    foreground_hwnd() == hwnd
 }
 
 pub fn open_path(path: &std::path::Path) -> Result<(), String> {
@@ -102,10 +130,7 @@ mod tests {
             paste_chord_label("kitty", DisplaySession::X11),
             "Ctrl+Shift+V"
         );
-        assert_eq!(
-            paste_chord_label("firefox", DisplaySession::X11),
-            "Ctrl+V"
-        );
+        assert_eq!(paste_chord_label("firefox", DisplaySession::X11), "Ctrl+V");
         assert_eq!(
             paste_chord_label("kitty", DisplaySession::Windows),
             "Ctrl+V"
@@ -114,7 +139,10 @@ mod tests {
 
     #[test]
     fn session_parse_from_env_values() {
-        assert_eq!(DisplaySession::from_env_value("wayland"), DisplaySession::Wayland);
+        assert_eq!(
+            DisplaySession::from_env_value("wayland"),
+            DisplaySession::Wayland
+        );
         assert_eq!(DisplaySession::from_env_value("x11"), DisplaySession::X11);
         assert_eq!(DisplaySession::from_env_value("X11"), DisplaySession::X11);
         assert_eq!(DisplaySession::from_env_value(""), DisplaySession::Unknown);

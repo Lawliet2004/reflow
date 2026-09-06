@@ -1,5 +1,22 @@
 use regex::Regex;
 
+/// Words that mark a spoken self-correction, i.e. "what I said before this is
+/// wrong, what follows replaces it".
+const REPAIR_MARKERS: &str = r"(?:actually|no\s+wait|i\s+mean|sorry|scratch\s+that)";
+
+/// Closed classes of "value" words that a correction can swap.
+///
+/// Matching is restricted to *pairs drawn from the same class*, and that is the
+/// entire safety argument. A general "replace the word before the marker with the
+/// word after it" rule mangles ordinary speech — "I'm going to work, I mean it"
+/// would become "I'm going to it". Requiring both sides to be the same kind of
+/// value makes the rule apply exactly when a substitution is what the speaker
+/// meant, and never otherwise.
+const NUMERIC: &str = r"(?:\d{1,2}:\d{2}|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|noon|midnight)";
+const DAYS: &str = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|yesterday|tonight)";
+const MONTHS: &str =
+    r"(?:january|february|march|april|may|june|july|august|september|october|november|december)";
+
 /// Spoken self-corrections: last value wins; `scratch that` drops the prior clause.
 pub fn apply_backtrack(text: &str) -> String {
     if text.trim().is_empty() {
@@ -13,23 +30,31 @@ pub fn apply_backtrack(text: &str) -> String {
     squeeze_ws(&out)
 }
 
-/// `<token> actually|no wait <number/time>` → keep the replacement token.
+/// `<value> actually|i mean|no wait <value>` → keep the replacement value.
+///
+/// Deliberately deterministic rather than delegated to the polish LLM. Speech
+/// repair is signalled by explicit lexical markers, which makes it a pattern
+/// problem, not a language-modelling one: a 0.8B model asked to resolve
+/// "ship this on friday i mean thursday" answered "ship this on Friday, meaning
+/// Thursday" — it kept both values, which is the one outcome that is definitely
+/// wrong. Doing it here is exact, costs nothing, and — the part that matters
+/// most — also works in Fast mode, where there is no LLM in the pipeline at all.
 fn apply_value_corrections(text: &str) -> String {
     let mut out = text.to_string();
 
-    // Digits / times: "at 5 actually 6", "at 5 no wait 6", "at 3:00 actually 4:00"
-    let number_fix = Regex::new(
-        r"(?i)\b(?:\d{1,2}:\d{2}|\d+)\s+(?:actually|no\s+wait|scratch\s+that|i\s+mean)\s+(\d{1,2}:\d{2}|\d+)\b",
-    )
-    .expect("backtrack number regex");
-    out = number_fix.replace_all(&out, "$1").to_string();
-
-    // Number-words after a value preposition: "at five actually six"
-    let word_fix = Regex::new(
-        r"(?i)\b((?:at|on|for|by|to|around|from|until|till)\s+)(?:\d{1,2}:\d{2}|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|noon|midnight)\s+(?:actually|no\s+wait)\s+(\d{1,2}:\d{2}|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|noon|midnight)\b",
-    )
-    .expect("backtrack word-value regex");
-    out = word_fix.replace_all(&out, "$1$2").to_string();
+    for class in [NUMERIC, DAYS, MONTHS] {
+        // Both sides drawn from the same class; the second one wins.
+        let pattern = format!(r"(?i)\b{class}\s+{REPAIR_MARKERS}\s+({class})\b");
+        let re = Regex::new(&pattern).expect("backtrack value-correction regex");
+        // Repeat so a chain ("5 actually 6 no wait 7") collapses fully.
+        for _ in 0..4 {
+            let next = re.replace_all(&out, "$1").to_string();
+            if next == out {
+                break;
+            }
+            out = next;
+        }
+    }
 
     out
 }
@@ -122,5 +147,78 @@ mod tests {
         assert!(lower.starts_with("hello."), "{out}");
         assert!(lower.contains("send the slack message"), "{out}");
         assert!(!lower.contains("email"), "{out}");
+    }
+
+    /// The regression this generalisation exists for. Asked to resolve this, the
+    /// 0.8B polish model produced "ship this on Friday, meaning Thursday" — it
+    /// kept both values, which is worse than leaving the text alone. Handling it
+    /// deterministically is exact and also works with the LLM switched off.
+    #[test]
+    fn i_mean_replaces_the_previous_weekday() {
+        assert_eq!(
+            apply_backtrack("ship this on friday i mean thursday"),
+            "ship this on thursday"
+        );
+    }
+
+    #[test]
+    fn day_and_month_corrections_are_resolved() {
+        assert_eq!(
+            apply_backtrack("let's do it monday sorry tuesday"),
+            "let's do it tuesday"
+        );
+        assert_eq!(
+            apply_backtrack("the deadline is june i mean july"),
+            "the deadline is july"
+        );
+        assert_eq!(
+            apply_backtrack("see you tomorrow no wait today"),
+            "see you today"
+        );
+    }
+
+    /// A chain of corrections must collapse to the final value.
+    #[test]
+    fn chained_corrections_keep_only_the_last_value() {
+        assert_eq!(
+            apply_backtrack("meet at 5 actually 6 no wait 7"),
+            "meet at 7"
+        );
+    }
+
+    /// The same-class restriction is the safety mechanism. Without it, an
+    /// idiomatic "I mean" swallows the sentence: "going to work, I mean it"
+    /// would become "going to it".
+    #[test]
+    fn idiomatic_markers_are_left_alone() {
+        for text in [
+            "I'm going to work I mean it",
+            "I actually enjoyed the movie",
+            "sorry about the delay",
+            "I mean what I say",
+            "no wait for me",
+        ] {
+            let out = apply_backtrack(text);
+            assert!(
+                out.to_lowercase().contains(
+                    &text
+                        .to_lowercase()
+                        .split_whitespace()
+                        .last()
+                        .unwrap()
+                        .to_string()
+                ),
+                "{text:?} lost its final word: {out:?}"
+            );
+        }
+    }
+
+    /// Mixed classes must not cross-match: a day is not a replacement for a
+    /// number.
+    #[test]
+    fn corrections_do_not_cross_value_classes() {
+        let out = apply_backtrack("at five i mean friday");
+        assert!(out.to_lowercase().contains("five"), "{out}");
+        assert!(out.to_lowercase().contains("friday"), "{out}");
     }
 }

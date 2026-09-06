@@ -33,9 +33,12 @@ pub struct VoiceActivityDetector {
 
 impl VoiceActivityDetector {
     pub fn new(config: VadConfig, sample_rate: u32) -> Self {
-        let max_pre_roll_samples = ((config.pre_roll_ms as f32 / 1000.0) * sample_rate as f32) as usize;
-        let max_post_roll_samples = ((config.post_roll_ms as f32 / 1000.0) * sample_rate as f32) as usize;
-        let silence_timeout_samples = ((config.silence_timeout_ms as f32 / 1000.0) * sample_rate as f32) as usize;
+        let max_pre_roll_samples =
+            ((config.pre_roll_ms as f32 / 1000.0) * sample_rate as f32) as usize;
+        let max_post_roll_samples =
+            ((config.post_roll_ms as f32 / 1000.0) * sample_rate as f32) as usize;
+        let silence_timeout_samples =
+            ((config.silence_timeout_ms as f32 / 1000.0) * sample_rate as f32) as usize;
 
         Self {
             config,
@@ -91,9 +94,8 @@ impl VoiceActivityDetector {
             self.consecutive_silence_samples += chunk.len();
 
             if self.post_roll_samples_remaining > 0 {
-                self.post_roll_samples_remaining = self
-                    .post_roll_samples_remaining
-                    .saturating_sub(chunk.len());
+                self.post_roll_samples_remaining =
+                    self.post_roll_samples_remaining.saturating_sub(chunk.len());
             } else if self.is_speaking {
                 self.is_speaking = false;
             }

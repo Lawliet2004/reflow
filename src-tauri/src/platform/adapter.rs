@@ -231,9 +231,7 @@ pub fn simulate_paste_with_enigo(ctrl: bool, shift: bool, key: char) -> Result<(
 
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
     if ctrl {
-        enigo
-            .key(Key::Control, Press)
-            .map_err(|e| e.to_string())?;
+        enigo.key(Key::Control, Press).map_err(|e| e.to_string())?;
     }
     if shift {
         enigo.key(Key::Shift, Press).map_err(|e| e.to_string())?;
@@ -242,9 +240,7 @@ pub fn simulate_paste_with_enigo(ctrl: bool, shift: bool, key: char) -> Result<(
         .key(Key::Unicode(key), Click)
         .map_err(|e| e.to_string())?;
     if shift {
-        enigo
-            .key(Key::Shift, Release)
-            .map_err(|e| e.to_string())?;
+        enigo.key(Key::Shift, Release).map_err(|e| e.to_string())?;
     }
     if ctrl {
         enigo

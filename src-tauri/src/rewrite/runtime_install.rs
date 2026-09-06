@@ -21,6 +21,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 
+use crate::capability::capabilities;
 use crate::context::AppContext;
 use crate::platform::PlatformSys;
 
@@ -117,6 +118,74 @@ pub struct RuntimeDownloadEvent {
     pub kind_label: Option<String>,
 }
 
+/// Sidecar file recording which bundled runtime flavor currently occupies the
+/// shared `llama-server` path. Older installs have no marker and are treated as
+/// unknown so a GPU selection safely reconciles them once.
+pub const RUNTIME_KIND_FILENAME: &str = "llama-server.kind";
+
+pub fn runtime_kind_path() -> PathBuf {
+    PlatformSys::get_app_dir()
+        .join("bin")
+        .join(RUNTIME_KIND_FILENAME)
+}
+
+pub fn installed_runtime_kind() -> Option<String> {
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok() {
+        return Some("Custom".into());
+    }
+    std::fs::read_to_string(runtime_kind_path())
+        .ok()
+        .map(|kind| kind.trim().to_string())
+        .filter(|kind| !kind.is_empty())
+}
+
+pub fn runtime_matches(compute_backend: &str) -> bool {
+    if !llama_server_bin().is_file() {
+        return false;
+    }
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok() {
+        return true;
+    }
+    let Some(expected) = pick_runtime_spec(compute_backend) else {
+        return false;
+    };
+    installed_runtime_kind()
+        .is_some_and(|installed| installed.eq_ignore_ascii_case(&expected.kind_label))
+}
+
+/// `true` only when we positively know the installed runtime is the wrong
+/// flavor for `compute_backend`.
+///
+/// The distinction from [`runtime_matches`] matters: that function answers
+/// "do we know this is right?", and an unlabelled install answers `false` to it
+/// while being perfectly usable. Gating a launch on this predicate instead
+/// means a missing marker degrades to "try it and see" — which is what the
+/// GPU→CPU launch fallback already exists to handle — rather than to a hard,
+/// unrecoverable refusal.
+///
+/// Deliberately no "backfill the missing marker" counterpart. Only the
+/// installer knows which asset it unpacked; anything else would have to infer
+/// the flavor from live GPU detection, and detection that momentarily reports no
+/// adapter would stamp a Vulkan build as "CPU" — turning a recoverable unknown
+/// into a permanent, and wrong, conflict.
+pub fn runtime_flavor_conflicts(compute_backend: &str) -> bool {
+    if !llama_server_bin().is_file() {
+        // No binary at all is a different failure, reported by the caller's
+        // own `BinaryMissing` check.
+        return false;
+    }
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok() {
+        return false;
+    }
+    let (Some(expected), Some(installed)) =
+        (pick_runtime_spec(compute_backend), installed_runtime_kind())
+    else {
+        // Unknown either way: let the launch decide.
+        return false;
+    };
+    !installed.eq_ignore_ascii_case(&expected.kind_label)
+}
+
 /// Resolve a [`LlamaRuntimeSpec`] for the current platform + GPU
 /// presence + user preference.
 ///
@@ -129,9 +198,7 @@ pub struct RuntimeDownloadEvent {
 /// surface a friendly error.
 pub fn pick_runtime_spec(compute_backend: &str) -> Option<LlamaRuntimeSpec> {
     let requested = compute_backend.trim().to_ascii_lowercase();
-    let (gpu_name, _) = PlatformSys::detect_gpu();
-    let has_gpu = !gpu_name.is_empty() && gpu_name != "CPU";
-    let want_gpu = requested != "cpu" && has_gpu;
+    let want_gpu = requested != "cpu" && capabilities().primary_gpu().is_some();
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
@@ -338,6 +405,7 @@ pub fn auto_install_if_missing(
     ensure_err: &str,
 ) {
     let is_recoverable = ensure_err == "llama-server is not installed"
+        || ensure_err == "llama-server GPU runtime is not installed"
         || ensure_err.contains("llama-server exited before becoming ready")
         || ensure_err.contains("llama-server did not become ready")
         || ensure_err.contains("Failed to start llama-server");
@@ -369,7 +437,7 @@ fn run_install_worker(
             }
             emit_event(
                 app,
-                &spec,
+                spec,
                 RuntimePhase::Complete,
                 100,
                 0.0,
@@ -438,7 +506,12 @@ fn run_install_worker(
             .output();
     }
 
-    // Stage 6: tell the frontend we are done, and shut the runtime so
+    // Stage 6: record which flavor occupies the shared binary path. Write the
+    // marker only after extraction and permission fixes have succeeded.
+    std::fs::write(runtime_kind_path(), format!("{}\n", spec.kind_label))
+        .map_err(|err| format!("Could not record runtime kind: {err}"))?;
+
+    // Stage 7: tell the frontend we are done, and shut the runtime so
     // the next dictation picks up the new binary.
     emit_event(
         app,
@@ -458,6 +531,67 @@ fn run_install_worker(
     Ok(())
 }
 
+/// Render an error together with its full `source()` chain.
+///
+/// `reqwest`'s `Display` stops at the outermost layer, so a transport failure
+/// formats as the near-useless `error sending request for url (...)` while the
+/// actual reason — DNS failure, connection reset, TLS rejection — lives one or
+/// two levels down in the chain. Reporting only the top layer left users with
+/// an error that named the URL and nothing else.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = cause.source();
+    }
+    out
+}
+
+/// Number of attempts for the initial request. A 34 MB install failing
+/// permanently because one TCP connection was reset is not acceptable.
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+
+/// Issue the (possibly ranged) GET, retrying transport-level failures.
+///
+/// Only connect/send failures are retried. An HTTP response — even an error
+/// status — is returned to the caller, which knows how to interpret it.
+fn send_with_retry(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    resume_from: u64,
+) -> Result<reqwest::blocking::Response, String> {
+    let mut last_err = String::new();
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        let mut request = client.get(url);
+        if resume_from > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+        }
+        match request.send() {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                last_err = error_chain(&err);
+                log::warn!(
+                    "Runtime download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed for {url}: {last_err}"
+                );
+                if attempt < DOWNLOAD_ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_secs(2 * attempt as u64));
+                }
+            }
+        }
+    }
+    let msg = format!(
+        "Download request failed after {DOWNLOAD_ATTEMPTS} attempts ({url}): {last_err}. \
+         Check your internet connection, VPN, or proxy and try again."
+    );
+    log::error!("{msg}");
+    Err(msg)
+}
+
 fn download_with_resume(
     app: &AppHandle,
     spec: &LlamaRuntimeSpec,
@@ -469,17 +603,13 @@ fn download_with_resume(
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60 * 30))
+        // Without this, a black-holed connection sits in the handshake until
+        // the 30-minute body timeout instead of failing fast enough to retry.
+        .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("HTTP client init failed: {e}"))?;
 
-    let mut request = client.get(url);
-    if resume_from > 0 {
-        request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
-    }
-
-    let mut response = request
-        .send()
-        .map_err(|e| format!("Download request failed: {e}"))?;
+    let mut response = send_with_retry(&client, url, resume_from)?;
 
     let status = response.status();
     let already_have: u64 = if status == reqwest::StatusCode::PARTIAL_CONTENT {
@@ -756,6 +886,106 @@ mod tests {
     #[test]
     fn runtime_lock_key_is_stable() {
         assert_eq!(RUNTIME_LOCK_KEY, "llama-runtime");
+    }
+
+    /// A download failure has to name the *reason*, not just the URL. `reqwest`
+    /// hides the reason in the error's source chain, which is why the original
+    /// report was an unactionable "error sending request for url (...)".
+    #[test]
+    fn error_chain_surfaces_the_underlying_cause() {
+        #[derive(Debug)]
+        struct Inner;
+        impl std::fmt::Display for Inner {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "dns error: no record found")
+            }
+        }
+        impl std::error::Error for Inner {}
+
+        #[derive(Debug)]
+        struct Outer(Inner);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "error sending request for url (https://example.test/a.zip)"
+                )
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let rendered = error_chain(&Outer(Inner));
+        assert!(
+            rendered.contains("error sending request"),
+            "outer layer missing: {rendered}"
+        );
+        assert!(
+            rendered.contains("dns error: no record found"),
+            "root cause missing: {rendered}"
+        );
+    }
+
+    /// Duplicated text in a chain should not be repeated back at the user.
+    #[test]
+    fn error_chain_does_not_repeat_identical_layers() {
+        #[derive(Debug)]
+        struct Same;
+        impl std::fmt::Display for Same {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "connection reset")
+            }
+        }
+        impl std::error::Error for Same {}
+
+        #[derive(Debug)]
+        struct Wrap(Same);
+        impl std::fmt::Display for Wrap {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "connection reset")
+            }
+        }
+        impl std::error::Error for Wrap {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        assert_eq!(error_chain(&Wrap(Same)), "connection reset");
+    }
+
+    /// Exercises the real retry path against a port nothing listens on, so the
+    /// failure is a genuine transport error rather than an HTTP status. The
+    /// message must name the attempt count and carry the underlying cause.
+    #[test]
+    fn send_with_retry_reports_attempts_and_the_underlying_cause() {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(250))
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client");
+
+        // Port 1 on loopback: refused immediately, no network required.
+        let err = send_with_retry(&client, "http://127.0.0.1:1/nothing.zip", 0)
+            .expect_err("a refused connection must not succeed");
+
+        assert!(
+            err.contains(&DOWNLOAD_ATTEMPTS.to_string()),
+            "message should say how many attempts were made: {err}"
+        );
+        assert!(
+            err.contains("127.0.0.1:1"),
+            "message should name the URL: {err}"
+        );
+        // The whole point of `error_chain`: something more specific than
+        // reqwest's opaque outer layer has to reach the user.
+        assert!(
+            err.len() > "Download request failed".len() + 40,
+            "message should carry a cause, not just the outer layer: {err}"
+        );
     }
 
     #[test]

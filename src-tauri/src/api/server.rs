@@ -66,7 +66,9 @@ pub fn current_status(ctx: &AppContext) -> ApiStatus {
         qr_svg: qr,
         pair_uri: pair_uri_val,
         devices: ctx.pairing.list_public(),
-        warning: "LAN API is opt-in and uses HTTP on your local network. Pair only with devices you own.".into(),
+        warning:
+            "LAN API is opt-in and uses HTTP on your local network. Pair only with devices you own."
+                .into(),
     }
 }
 
@@ -140,7 +142,10 @@ pub fn router(ctx: AppContext) -> Router {
 fn bearer_token(headers: &HeaderMap, query_token: Option<&str>) -> Option<String> {
     if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
         if let Ok(text) = value.to_str() {
-            if let Some(token) = text.strip_prefix("Bearer ").or_else(|| text.strip_prefix("bearer ")) {
+            if let Some(token) = text
+                .strip_prefix("Bearer ")
+                .or_else(|| text.strip_prefix("bearer "))
+            {
                 return Some(token.trim().to_string());
             }
         }
@@ -148,7 +153,11 @@ fn bearer_token(headers: &HeaderMap, query_token: Option<&str>) -> Option<String
     query_token.map(|t| t.to_string())
 }
 
-fn require_auth(ctx: &AppContext, headers: &HeaderMap, query_token: Option<&str>) -> Result<(), (StatusCode, Json<Value>)> {
+fn require_auth(
+    ctx: &AppContext,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> Result<(), (StatusCode, Json<Value>)> {
     let Some(token) = bearer_token(headers, query_token) else {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -167,8 +176,8 @@ fn require_auth(ctx: &AppContext, headers: &HeaderMap, query_token: Option<&str>
 async fn health(State(ctx): State<AppContext>) -> Json<HealthResponse> {
     Json(HealthResponse {
         ok: true,
-        version: "0.1.0".into(),
-        model_ready: ctx.asr_engine.read().is_model_loaded(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        model_ready: ctx.asr_handle.is_model_loaded(),
         os: PlatformSys::get_system_metrics().os_name,
     })
 }
@@ -182,7 +191,7 @@ async fn status(
     Ok(Json(json!({
         "state": *ctx.state_enum.read(),
         "language": settings.language,
-        "model_ready": ctx.asr_engine.read().is_model_loaded(),
+        "model_ready": ctx.asr_handle.is_model_loaded(),
         "session": crate::platform::session().as_str(),
     })))
 }
@@ -191,7 +200,10 @@ async fn pair(
     State(ctx): State<AppContext>,
     Json(body): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, (StatusCode, Json<Value>)> {
-    match ctx.pairing.pair(&body.code, body.device_name.as_deref().unwrap_or("Android")) {
+    match ctx
+        .pairing
+        .pair(&body.code, body.device_name.as_deref().unwrap_or("Android"))
+    {
         Ok((token, _)) => {
             let settings = ctx.settings_store.get();
             Ok(Json(PairResponse {
@@ -222,7 +234,12 @@ async fn history(
     let entries = ctx
         .history_store
         .get_entries(q.limit.unwrap_or(50), q.offset.unwrap_or(0))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": e}))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": e})),
+            )
+        })?;
     Ok(Json(json!(entries)))
 }
 
@@ -237,10 +254,12 @@ async fn search_history(
     Query(q): Query<SearchQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     require_auth(&ctx, &headers, None)?;
-    let entries = ctx
-        .history_store
-        .search_entries(&q.q)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": e}))))?;
+    let entries = ctx.history_store.search_entries(&q.q).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"message": e})),
+        )
+    })?;
     Ok(Json(json!(entries)))
 }
 
@@ -250,10 +269,12 @@ async fn delete_history(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     require_auth(&ctx, &headers, None)?;
-    let ok = ctx
-        .history_store
-        .delete_entry(&id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": e}))))?;
+    let ok = ctx.history_store.delete_entry(&id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"message": e})),
+        )
+    })?;
     Ok(Json(json!({ "deleted": ok })))
 }
 
@@ -262,10 +283,12 @@ async fn clear_history(
     headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     require_auth(&ctx, &headers, None)?;
-    let n = ctx
-        .history_store
-        .clear_all()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": e}))))?;
+    let n = ctx.history_store.clear_all().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"message": e})),
+        )
+    })?;
     Ok(Json(json!({ "cleared": n })))
 }
 
@@ -279,8 +302,13 @@ async fn inject(
     // LAN API path: no captured hwnd. The Android user's desktop app is
     // expected to be foreground by the time the inject runs; skip the
     // foreground-match verification.
-    let outcome = TextInjector::inject(&body.text, settings.clipboard_restore_enabled, 0)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": e}))))?;
+    let outcome =
+        TextInjector::inject(&body.text, settings.clipboard_restore_enabled, 0).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": e})),
+            )
+        })?;
     Ok(Json(json!({
         "pasted": outcome.pasted,
         "fallback_copy": outcome.fallback_copy,
@@ -294,10 +322,12 @@ async fn revoke_device(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     require_auth(&ctx, &headers, None)?;
-    let ok = ctx
-        .pairing
-        .revoke(&id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": e}))))?;
+    let ok = ctx.pairing.revoke(&id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"message": e})),
+        )
+    })?;
     Ok(Json(json!({ "revoked": ok })))
 }
 
@@ -336,18 +366,19 @@ async fn transcribe(
         ));
     };
 
-    let samples = wav_or_pcm_to_f32(&bytes).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"message": e})),
-        )
-    })?;
+    let samples = wav_or_pcm_to_f32(&bytes)
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"message": e}))))?;
 
-    session::start_external(&ctx, Some(language))
+    let session_id = session::start_external_owned(&ctx, Some(language))
         .await
         .map_err(session_err)?;
-    let _ = session::push_f32(&ctx, &samples);
-    let outcome = session::stop(&ctx, inject, None).await.map_err(session_err)?;
+    if let Err(err) = session::push_f32_owned(&ctx, session_id, &samples) {
+        let _ = session::cancel_owned(&ctx, Some(session_id));
+        return Err(session_err(err));
+    }
+    let outcome = session::stop_owned(&ctx, inject, session_id)
+        .await
+        .map_err(session_err)?;
     Ok(Json(json!({
         "raw": outcome.raw,
         "text": outcome.final_text,
@@ -368,7 +399,10 @@ async fn stream_ws(
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     require_auth(&ctx, &headers, q.token.as_deref())?;
-    Ok(ws.on_upgrade(move |socket| handle_socket(ctx, socket)))
+    Ok(ws
+        .max_message_size(1024 * 1024)
+        .max_frame_size(1024 * 1024)
+        .on_upgrade(move |socket| handle_socket(ctx, socket)))
 }
 
 async fn handle_socket(ctx: AppContext, socket: WebSocket) {
@@ -376,7 +410,8 @@ async fn handle_socket(ctx: AppContext, socket: WebSocket) {
     let mut events = ctx.bus.subscribe();
     let mut sample_rate = 16000u32;
     let mut inject = ctx.settings_store.get().api_inject_default;
-    let mut started = false;
+    let mut started: Option<u64> = None;
+    let mut resampler = crate::audio::AudioResampler::new(sample_rate, 1);
 
     let send = |msg: ServerMsg| serde_json::to_string(&msg).unwrap_or_else(|_| "{}".into());
 
@@ -387,15 +422,19 @@ async fn handle_socket(ctx: AppContext, socket: WebSocket) {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<ClientMsg>(&text) {
                             Ok(ClientMsg::Start { language, sample_rate: sr, inject: inj, .. }) => {
-                                if let Some(sr) = sr {
-                                    sample_rate = sr;
+                                let sr = sr.unwrap_or(16000);
+                                if let Err(err) = session::validate_sample_rate(sr) {
+                                    let _ = sink.send(Message::Text(send(ServerMsg::Error { code: "bad_sample_rate".into(), message: err.message }))).await;
+                                    continue;
                                 }
+                                sample_rate = sr;
                                 if let Some(inj) = inj {
                                     inject = inj;
                                 }
-                                match session::start_external(&ctx, language).await {
-                                    Ok(()) => {
-                                        started = true;
+                                match session::start_external_owned(&ctx, language).await {
+                                    Ok(session_id) => {
+                                        started = Some(session_id);
+                                        resampler = crate::audio::AudioResampler::new(sample_rate, 1);
                                         if sink.send(Message::Text(send(ServerMsg::Ready))).await.is_err() {
                                             break;
                                         }
@@ -409,10 +448,10 @@ async fn handle_socket(ctx: AppContext, socket: WebSocket) {
                                 }
                             }
                             Ok(ClientMsg::Stop) => {
-                                if started {
-                                    match session::stop(&ctx, inject, None).await {
+                                if let Some(session_id) = started {
+                                    match session::stop_owned(&ctx, inject, session_id).await {
                                         Ok(outcome) => {
-                                            started = false;
+                                            started = None;
                                             let msg = ServerMsg::Final {
                                                 raw: outcome.raw,
                                                 text: outcome.final_text,
@@ -431,8 +470,9 @@ async fn handle_socket(ctx: AppContext, socket: WebSocket) {
                                 }
                             }
                             Ok(ClientMsg::Cancel) => {
-                                let _ = session::cancel(&ctx);
-                                started = false;
+                                if let Some(session_id) = started.take() {
+                                    let _ = session::cancel_owned(&ctx, Some(session_id));
+                                }
                             }
                             Err(err) => {
                                 let _ = sink.send(Message::Text(send(ServerMsg::Error {
@@ -443,13 +483,26 @@ async fn handle_socket(ctx: AppContext, socket: WebSocket) {
                         }
                     }
                     Some(Ok(Message::Binary(bin))) => {
-                        if started {
-                            let _ = session::push_pcm_s16le(&ctx, &bin, sample_rate);
+                        if let Some(session_id) = started {
+                            if *ctx.current_session_id.read() != Some(session_id) {
+                                // Keep the owner until its queued completion is
+                                // delivered; late audio must not swallow Final.
+                                continue;
+                            }
+                            if bin.len() % 2 != 0 {
+                                let _ = sink.send(Message::Text(send(ServerMsg::Error { code: "bad_audio".into(), message: "PCM audio must contain complete 16-bit samples".into() }))).await;
+                                continue;
+                            }
+                            let samples = crate::audio::AudioResampler::pcm16_bytes_to_f32(&bin);
+                            let samples = resampler.resample_f32(&samples);
+                            if let Err(err) = session::push_f32_owned(&ctx, session_id, &samples) {
+                                let _ = sink.send(Message::Text(send(ServerMsg::Error { code: err.code, message: err.message }))).await;
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
-                        if started {
-                            let _ = session::cancel(&ctx);
+                        if let Some(session_id) = started {
+                            let _ = session::cancel_owned(&ctx, Some(session_id));
                         }
                         break;
                     }
@@ -458,8 +511,8 @@ async fn handle_socket(ctx: AppContext, socket: WebSocket) {
                     }
                     Some(Ok(_)) => {}
                     Some(Err(_)) => {
-                        if started {
-                            let _ = session::cancel(&ctx);
+                        if let Some(session_id) = started {
+                            let _ = session::cancel_owned(&ctx, Some(session_id));
                         }
                         break;
                     }
@@ -467,13 +520,14 @@ async fn handle_socket(ctx: AppContext, socket: WebSocket) {
             }
             event = events.recv() => {
                 match event {
-                    Ok(DoryEvent::Partial(p)) if started => {
+                    Ok(DoryEvent::Partial(p)) if started.is_some() && *ctx.current_session_id.read() == started => {
                         if sink.send(Message::Text(send(ServerMsg::from_partial(p)))).await.is_err() {
                             break;
                         }
                     }
-                    Ok(DoryEvent::AutoStop) if started => {
-                        // stop() is invoked by the session watch; wait for Final via REST path
+                    Ok(DoryEvent::SessionFinished { session_id, raw, text, language, metrics }) if started == Some(session_id) => {
+                        started = None;
+                        let _ = sink.send(Message::Text(send(ServerMsg::Final { raw, text, language, metrics }))).await;
                     }
                     Ok(DoryEvent::Error(message)) => {
                         let _ = sink.send(Message::Text(send(ServerMsg::Error {
@@ -487,6 +541,9 @@ async fn handle_socket(ctx: AppContext, socket: WebSocket) {
                 }
             }
         }
+    }
+    if let Some(session_id) = started {
+        let _ = session::cancel_owned(&ctx, Some(session_id));
     }
 }
 
@@ -507,6 +564,11 @@ fn wav_or_pcm_to_f32(bytes: &[u8]) -> Result<Vec<f32>, String> {
         let cursor = Cursor::new(bytes.to_vec());
         let mut reader = hound::WavReader::new(cursor).map_err(|e| e.to_string())?;
         let spec = reader.spec();
+        session::validate_sample_rate(spec.sample_rate).map_err(|e| e.message)?;
+        if spec.channels == 0 || spec.channels > 8 {
+            return Err("WAV audio must contain 1 to 8 channels".into());
+        }
+
         let mut samples: Vec<f32> = Vec::new();
         match spec.sample_format {
             hound::SampleFormat::Int => {
@@ -516,7 +578,11 @@ fn wav_or_pcm_to_f32(bytes: &[u8]) -> Result<Vec<f32>, String> {
             }
             hound::SampleFormat::Float => {
                 for s in reader.samples::<f32>() {
-                    samples.push(s.map_err(|e| e.to_string())?);
+                    let sample = s.map_err(|e| e.to_string())?;
+                    if !sample.is_finite() {
+                        return Err("WAV samples must be finite".into());
+                    }
+                    samples.push(sample);
                 }
             }
         }
@@ -542,6 +608,24 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode as HttpStatus};
     use tower::ServiceExt;
+
+    #[test]
+    fn wav_rejects_unreasonable_sample_rate_before_resampling() {
+        let mut bytes = Cursor::new(Vec::new());
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 1,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        {
+            let mut writer = hound::WavWriter::new(&mut bytes, spec).unwrap();
+            writer.write_sample(100i16).unwrap();
+            writer.write_sample(100i16).unwrap();
+            writer.finalize().unwrap();
+        }
+        assert!(wav_or_pcm_to_f32(bytes.get_ref()).is_err());
+    }
 
     #[tokio::test]
     async fn health_is_public() {

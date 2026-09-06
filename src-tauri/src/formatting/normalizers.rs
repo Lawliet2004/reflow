@@ -1,15 +1,68 @@
 use regex::Regex;
 
+/// Weekday and month names, which are always capitalised in English.
+///
+/// Stage 1 has to do this itself. Sentence capitalisation only fixes the first
+/// word, so ASR output like "ship this on thursday" kept a lowercase proper noun
+/// — and leaving it to the polish model means it is simply never fixed in Fast
+/// mode, where there is no polish model. It is a closed, unambiguous list, so
+/// there is no reason to spend an LLM call on it.
+const PROPER_NOUNS: &[&str] = &[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "january",
+    "february",
+    "march",
+    "april",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
+
+/// Capitalise the closed set of always-capitalised words.
+///
+/// "may" and "march" are deliberately absent from the pattern as bare words:
+/// they are common verbs ("may I", "march on") and capitalising them would be
+/// wrong more often than right. Only unambiguous names are corrected.
+fn capitalize_proper_nouns(text: &str) -> String {
+    let mut out = text.to_string();
+    for name in PROPER_NOUNS {
+        let Ok(re) = Regex::new(&format!(r"(?i)\b{name}\b")) else {
+            continue;
+        };
+        let mut capitalized = String::with_capacity(name.len());
+        let mut chars = name.chars();
+        if let Some(first) = chars.next() {
+            capitalized.extend(first.to_uppercase());
+            capitalized.push_str(chars.as_str());
+        }
+        out = re.replace_all(&out, capitalized.as_str()).to_string();
+    }
+    out
+}
+
 /// Conservative spoken-list cleanup. Does not rewrite prose number-words.
 pub fn apply_normalizers(text: &str, dictation_mode: &str) -> String {
     let mut out = text.trim().to_string();
     let mode = dictation_mode.to_lowercase();
-    if matches!(mode.as_str(), "notes" | "email") {
-        if looks_like_enumeration(&out) {
-            if let Some(list) = try_numbered_list(&out) {
-                out = list;
-            }
+    if matches!(mode.as_str(), "notes" | "email") && looks_like_enumeration(&out) {
+        if let Some(list) = try_numbered_list(&out) {
+            out = list;
         }
+    }
+    // Not applied in coding mode: identifiers like `march` or `friday` are
+    // ordinary lowercase symbols there, and rewriting them would break code.
+    if mode != "coding" {
+        out = capitalize_proper_nouns(&out);
     }
     let spaces = Regex::new(r"[ \t]+\n").expect("trail space");
     out = spaces.replace_all(&out, "\n").to_string();
@@ -65,9 +118,7 @@ fn try_numbered_list(text: &str) -> Option<String> {
     if words.is_empty() {
         return None;
     }
-    if marker_num(&word_key(words[0])).is_none() {
-        return None;
-    }
+    marker_num(&word_key(words[0]))?;
 
     let mut items: Vec<(u32, Vec<&str>)> = Vec::new();
     let mut current_n: Option<u32> = None;

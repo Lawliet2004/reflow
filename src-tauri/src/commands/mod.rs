@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -17,17 +19,29 @@ use crate::platform::{self, PlatformInfo, PlatformSys};
 use crate::rewrite::RewriteRequest;
 use crate::session;
 use crate::settings::{AppSettings, DictionaryTerm};
-use crate::state::{AppStateEnum, LatencyMetrics, ModelStatus, SystemMetrics};
+use crate::state::{AppStateEnum, LatencyMetrics, LatencyReport, ModelStatus, SystemMetrics};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 pub use crate::context::AppContext;
 
 pub fn spawn_start(app: AppHandle) {
+    spawn_start_at(app, Instant::now());
+}
+
+/// `pressed_at` must be captured as early as possible in the input path —
+/// ideally inside the OS hook callback — so `hotkey_to_recording_ms`
+/// includes thread spawn, `SendInput`, IPC and tokio scheduling.
+pub fn spawn_start_at(app: AppHandle, pressed_at: Instant) {
     tauri::async_runtime::spawn(async move {
         let ctx = app.state::<AppContext>().inner().clone();
-        if let Err(err) = session::start_microphone(&ctx).await {
+        if let Err(err) = session::start_microphone_at(&ctx, Some(pressed_at)).await {
             log::error!("start_recording failed: {}", err.message);
-            *ctx.state_enum.write() = AppStateEnum::Error;
+            // A model still loading, a busy microphone, or a transient device
+            // error is recoverable. Leaving the state as Error made the next
+            // hotkey press fail as `session_busy` even though no session ever
+            // started. Always return admission failures to Ready so retrying
+            // works after the underlying condition clears.
+            *ctx.state_enum.write() = AppStateEnum::Ready;
             let _ = app.emit("recording:error", err.message);
             overlay::hide_overlay(&app);
         }
@@ -35,9 +49,15 @@ pub fn spawn_start(app: AppHandle) {
 }
 
 pub fn spawn_stop(app: AppHandle) {
+    spawn_stop_at(app, Instant::now());
+}
+
+/// `released_at` is the key-release instant from the input path. It is the
+/// true start of `speech_end_to_final_ms`.
+pub fn spawn_stop_at(app: AppHandle, released_at: Instant) {
     tauri::async_runtime::spawn(async move {
         let ctx = app.state::<AppContext>().inner().clone();
-        if let Err(err) = session::stop(&ctx, true, Some(&app)).await {
+        if let Err(err) = session::stop_at(&ctx, true, Some(released_at)).await {
             log::error!("stop_recording failed: {}", err.message);
             *ctx.state_enum.write() = AppStateEnum::Ready;
             let _ = app.emit("recording:error", err.message);
@@ -47,11 +67,15 @@ pub fn spawn_stop(app: AppHandle) {
 }
 
 pub fn spawn_toggle(app: AppHandle) {
+    spawn_toggle_at(app, Instant::now());
+}
+
+pub fn spawn_toggle_at(app: AppHandle, event_at: Instant) {
     let ctx = app.state::<AppContext>();
     let state = *ctx.state_enum.read();
     match state {
-        AppStateEnum::Recording => spawn_stop(app),
-        AppStateEnum::Ready | AppStateEnum::Idle => spawn_start(app),
+        AppStateEnum::Recording => spawn_stop_at(app, event_at),
+        AppStateEnum::Ready | AppStateEnum::Idle => spawn_start_at(app, event_at),
         _ => {}
     }
 }
@@ -74,8 +98,8 @@ pub fn register_dictation_hotkey(app: &AppHandle, shortcut_str: &str) -> Result<
         let app_stop = app.clone();
         let ok = crate::hotkey::hook::set_combo(
             flags,
-            std::sync::Arc::new(move || spawn_start(app_start.clone())),
-            std::sync::Arc::new(move || spawn_stop(app_stop.clone())),
+            std::sync::Arc::new(move |pressed_at| spawn_start_at(app_start.clone(), pressed_at)),
+            std::sync::Arc::new(move |released_at| spawn_stop_at(app_stop.clone(), released_at)),
         );
         return if ok {
             log::info!("Registered push-to-talk combo via keyboard hook: {shortcut_str}");
@@ -100,6 +124,10 @@ pub fn register_dictation_hotkey(app: &AppHandle, shortcut_str: &str) -> Result<
     let app_for_handler = app.clone();
     shortcuts
         .on_shortcut(shortcut, move |app_handle, _shortcut, event| {
+            // Timestamp before any state or settings reads, for the same
+            // reason the low-level hook does: everything after this line is
+            // latency the user pays for.
+            let event_at = Instant::now();
             let ctx = app_handle.state::<AppContext>();
             let settings = ctx.settings_store.get();
             let state = *ctx.state_enum.read();
@@ -109,16 +137,16 @@ pub fn register_dictation_hotkey(app: &AppHandle, shortcut_str: &str) -> Result<
                         if state != AppStateEnum::Recording
                             && matches!(state, AppStateEnum::Ready | AppStateEnum::Idle)
                         {
-                            spawn_start(app_handle.clone());
+                            spawn_start_at(app_handle.clone(), event_at);
                         }
                     } else if matches!(state, AppStateEnum::Ready | AppStateEnum::Idle | AppStateEnum::Recording)
                     {
-                        spawn_toggle(app_handle.clone());
+                        spawn_toggle_at(app_handle.clone(), event_at);
                     }
                 }
                 ShortcutState::Released => {
                     if settings.push_to_talk && state == AppStateEnum::Recording {
-                        spawn_stop(app_handle.clone());
+                        spawn_stop_at(app_handle.clone(), event_at);
                     }
                 }
             }
@@ -140,7 +168,7 @@ pub async fn start_recording_inner(_app: AppHandle, ctx: &AppContext) -> Result<
 }
 
 pub async fn stop_recording_inner(_app: AppHandle, ctx: &AppContext) -> Result<String, String> {
-    session::stop(ctx, true, None)
+    session::stop(ctx, true)
         .await
         .map(|outcome| outcome.final_text)
         .map_err(Into::into)
@@ -171,6 +199,12 @@ pub fn update_settings(
     } else {
         settings
     };
+    let gpu_retry_requested = patch
+        .get("refinement")
+        .and_then(Value::as_object)
+        .and_then(|refinement| refinement.get("device"))
+        .and_then(Value::as_str)
+        .is_some_and(|device| !device.eq_ignore_ascii_case("cpu"));
 
     let previous = ctx.settings_store.get();
     let updated = ctx.settings_store.merge_update(patch)?;
@@ -208,17 +242,37 @@ pub fn update_settings(
         });
     }
 
-    let level = updated.resolved_cleanup_level();
-    if matches!(level.as_str(), "raw" | "light") {
+    if updated.history_retention != previous.history_retention {
+        let store = ctx.history_store.clone();
+        let policy = updated.history_retention.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::history::RetentionCleaner::apply_retention(&store, &policy);
+        });
+    }
+
+    if !updated.resolve_intent().run_llm {
+        // The user turned refinement off entirely; release its memory.
         ctx.flow_runtime.shutdown();
-    } else if updated.flow_n_gpu_layers != previous.flow_n_gpu_layers
-        || updated.compute_backend != previous.compute_backend
+    } else if gpu_retry_requested
+        || updated.refinement.gpu_layers != previous.refinement.gpu_layers
+        || updated.refinement.device != previous.refinement.device
+        || updated.memory_policy.vram_reserve_mb != previous.memory_policy.vram_reserve_mb
     {
-        // Relaunch the flow runtime on the next inference so the new
-        // --n-gpu-layers / compute_backend takes effect. The shutdown
-        // invalidates the cached active_mode and active_n_gpu_layers,
-        // and FlowRuntime::ensure will pick up the new values.
+        // An explicit GPU click is also a retry signal. This deliberately
+        // invalidates a cached CPU fallback so newly freed VRAM is reconsidered
+        // on the next inference while successful warm runtimes stay cached.
         ctx.flow_runtime.shutdown();
+    }
+
+    // CPU and Vulkan archives share one on-disk binary path. Reconcile an
+    // existing CPU/unknown install when GPU is explicitly selected; otherwise
+    // the setting can say GPU while the old CPU-only binary keeps running.
+    if gpu_retry_requested && !crate::rewrite::runtime_matches(&updated.refinement.device) {
+        if let Some(spec) = crate::rewrite::pick_runtime_spec(&updated.refinement.device) {
+            if let Err(err) = crate::rewrite::install_runtime(app, ctx.inner().clone(), spec) {
+                log::warn!("Could not reconcile refinement runtime: {err}");
+            }
+        }
     }
 
     Ok(updated)
@@ -230,10 +284,7 @@ pub fn get_audio_devices() -> Vec<AudioDeviceInfo> {
 }
 
 #[tauri::command]
-pub fn set_audio_device(
-    device_id: String,
-    ctx: State<'_, AppContext>,
-) -> Result<(), String> {
+pub fn set_audio_device(device_id: String, ctx: State<'_, AppContext>) -> Result<(), String> {
     let mut current = ctx.settings_store.get();
     current.microphone_device_id = if device_id == "default" {
         None
@@ -255,28 +306,19 @@ pub fn get_current_audio_level(ctx: State<'_, AppContext>) -> f32 {
 }
 
 #[tauri::command]
-pub async fn start_recording(
-    app: AppHandle,
-    ctx: State<'_, AppContext>,
-) -> Result<(), String> {
+pub async fn start_recording(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
     let ctx = ctx.inner().clone();
     start_recording_inner(app, &ctx).await
 }
 
 #[tauri::command]
-pub async fn stop_recording(
-    app: AppHandle,
-    ctx: State<'_, AppContext>,
-) -> Result<String, String> {
+pub async fn stop_recording(app: AppHandle, ctx: State<'_, AppContext>) -> Result<String, String> {
     let ctx = ctx.inner().clone();
     stop_recording_inner(app, &ctx).await
 }
 
 #[tauri::command]
-pub fn cancel_recording(
-    app: AppHandle,
-    ctx: State<'_, AppContext>,
-) -> Result<(), String> {
+pub fn cancel_recording(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
     session::cancel(ctx.inner()).map_err(Into::<String>::into)?;
     overlay::hide_overlay(&app);
     if let Some(tray) = app.tray_by_id("main") {
@@ -286,16 +328,13 @@ pub fn cancel_recording(
 }
 
 #[tauri::command]
-pub fn inject_text(
-    text: String,
-    ctx: State<'_, AppContext>,
-) -> Result<bool, String> {
+pub fn inject_text(text: String, ctx: State<'_, AppContext>) -> Result<bool, String> {
     let settings = ctx.settings_store.get();
     // No target hwnd captured for this manual command — skip the
     // foreground-match verification and let the paste go to whatever is
     // currently focused.
-    TextInjector::inject(&text, settings.clipboard_restore_enabled, 0)?;
-    Ok(true)
+    let outcome = TextInjector::inject(&text, settings.clipboard_restore_enabled, 0)?;
+    Ok(outcome.pasted)
 }
 
 #[tauri::command]
@@ -316,10 +355,7 @@ pub fn search_history(
 }
 
 #[tauri::command]
-pub fn delete_history_item(
-    id: String,
-    ctx: State<'_, AppContext>,
-) -> Result<bool, String> {
+pub fn delete_history_item(id: String, ctx: State<'_, AppContext>) -> Result<bool, String> {
     ctx.history_store.delete_entry(&id)
 }
 
@@ -355,10 +391,7 @@ pub fn save_dictionary_term(
 }
 
 #[tauri::command]
-pub fn delete_dictionary_term(
-    id: String,
-    ctx: State<'_, AppContext>,
-) -> Result<bool, String> {
+pub fn delete_dictionary_term(id: String, ctx: State<'_, AppContext>) -> Result<bool, String> {
     let mut current = ctx.settings_store.get();
     current.dictionary_terms.retain(|t| t.id != id);
     ctx.settings_store.update(current)?;
@@ -387,10 +420,7 @@ pub fn save_custom_replacement(
 }
 
 #[tauri::command]
-pub fn delete_custom_replacement(
-    id: String,
-    ctx: State<'_, AppContext>,
-) -> Result<bool, String> {
+pub fn delete_custom_replacement(id: String, ctx: State<'_, AppContext>) -> Result<bool, String> {
     let mut current = ctx.settings_store.get();
     current.custom_replacements.retain(|r| r.id != id);
     ctx.settings_store.update(current)?;
@@ -399,9 +429,59 @@ pub fn delete_custom_replacement(
 
 #[tauri::command]
 pub fn get_model_status(ctx: State<'_, AppContext>) -> ModelStatus {
-    let active = ctx.settings_store.get().asr_model;
-    let engine_status = ctx.asr_engine.write().engine_status();
-    ctx.model_manager.get_status(&engine_status, &active)
+    let active = ctx.settings_store.get().asr.model;
+    let engine_status = ctx.asr_handle.engine_status();
+    let mut status = ctx.model_manager.get_status(&engine_status, &active);
+    status.asr_selection_notice = ctx.asr_selection_notice.read().clone();
+    status
+}
+
+/// Resolve which ASR model to actually load, and record why if it is not the
+/// one the user picked.
+///
+/// The user's Settings choice is a ceiling, not a command: a model that does not
+/// fit free VRAM used to fall back to the CPU, which measured 17.5s for 7.3s of
+/// audio against 2.9s for a smaller model on the GPU. Choosing here — in the one
+/// place both the startup load and `reload_model` go through — keeps that
+/// decision from drifting between the two.
+pub fn resolve_asr_load(ctx: &AppContext) -> (String, String, String) {
+    let settings = ctx.settings_store.get();
+    let requested = settings.asr.model.clone();
+    let manager = ctx.model_manager.clone();
+    let installed = move |id: &str| manager.is_installed(id);
+    let caps = crate::capability::capabilities_uncached();
+    // The performance preset now reaches the real load. It used to be read only
+    // by `preview_profile`, so choosing "Fast" or "Accurate" in Settings changed
+    // what the preview said and nothing else.
+    let preset = crate::profile::Preset::parse(&settings.preset);
+
+    let selection = crate::profile::select_asr_load(
+        preset,
+        &requested,
+        &settings.asr.device,
+        &settings.asr.precision,
+        &installed,
+        &caps,
+        &crate::profile::no_measurements,
+    );
+
+    match &selection.downgrade {
+        Some(reason) => log::warn!("ASR model selection: {reason}"),
+        None => log::info!(
+            "ASR model selection: {} on {} ({}), preset {}",
+            selection.model_id,
+            selection.device.as_str(),
+            selection.precision.as_str(),
+            preset.as_str()
+        ),
+    }
+    *ctx.asr_selection_notice.write() = selection.downgrade.clone();
+
+    (
+        selection.model_id.to_string(),
+        selection.device.as_str().to_string(),
+        selection.precision.as_str().to_string(),
+    )
 }
 
 #[tauri::command]
@@ -410,51 +490,95 @@ pub fn install_model(
     model_size: Option<String>,
     ctx: State<'_, AppContext>,
 ) -> Result<(), String> {
-    let active = model_size.unwrap_or_else(|| ctx.settings_store.get().asr_model);
+    let active = model_size.unwrap_or_else(|| ctx.settings_store.get().asr.model);
     let model_dir = ctx.model_manager.get_model_dir(&active);
     let repo = ctx.model_manager.repo_for(&active);
-    ctx.asr_engine
-        .write()
-        .install_model_dir(&model_dir.to_string_lossy(), repo)?;
+    ctx.asr_handle
+        .install_model_dir_blocking(&model_dir.to_string_lossy(), repo)?;
     spawn_model_status_watch(app, ctx.inner().clone());
     Ok(())
 }
 
 #[tauri::command]
 pub fn remove_model(model_size: Option<String>, ctx: State<'_, AppContext>) -> Result<(), String> {
-    let active = model_size.unwrap_or_else(|| ctx.settings_store.get().asr_model);
-    let _ = ctx.asr_engine.write().unload_model();
+    let active = model_size.unwrap_or_else(|| ctx.settings_store.get().asr.model);
+    let _ = ctx.asr_handle.unload_model_blocking();
     ctx.model_manager.remove_model(&active)
 }
 
 #[tauri::command]
 pub fn reload_model(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
-    let active = ctx.settings_store.get().asr_model;
-    let model_dir = ctx.model_manager.get_model_dir(&active);
-    let settings = ctx.settings_store.get();
-    ctx.asr_engine.write().load_model_with_precision(
+    // Same resolution as the startup load, so a manual reload cannot end up
+    // running a different model than a launch would.
+    let (model_id, device, precision) = resolve_asr_load(ctx.inner());
+    let model_dir = ctx.model_manager.get_model_dir(&model_id);
+    ctx.asr_handle.load_model_with_precision_blocking(
         &model_dir.to_string_lossy(),
-        &settings.compute_backend,
-        &settings.asr_precision,
+        &device,
+        &precision,
     )?;
     spawn_model_status_watch(app, ctx.inner().clone());
     Ok(())
 }
 
 /// Emits `model:status` to the UI whenever the sidecar model state changes
-/// (loading → ready on GPU, download progress, errors). Exits once stable.
+/// (loading → ready on GPU, download progress, errors).
+///
+/// Runs for the life of the app and is idempotent: the first call starts the
+/// poller, later calls are no-ops.
+///
+/// It must not stop. `get_model_status` — and, more importantly, the gate in
+/// `session::start_microphone_at` that refuses to record unless the engine
+/// reports `loaded` — both read the `AsrHandle` status cache, and this poller
+/// is the only thing that ever refreshes it. The previous version gave up after
+/// a bounded number of ticks, so when the sidecar was still warming at that
+/// point the cache froze on "not loaded" forever: the model finished loading,
+/// the UI never noticed, and the hotkey stayed dead for the rest of the
+/// session.
 pub fn spawn_model_status_watch(app: AppHandle, ctx: AppContext) {
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
+
+    // While the model is not ready, poll briskly so the UI converges quickly.
+    const POLL_PENDING: Duration = Duration::from_millis(700);
+    // Once ready, keep polling so an unload, crash or manual reload is still
+    // noticed — but slowly, so a long transcription (which occupies the ASR
+    // actor) cannot accumulate a deep backlog of queued status commands.
+    const POLL_READY: Duration = Duration::from_secs(10);
+
+    if ctx
+        .model_status_watch_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        // A poller is already running; it will pick up the new state.
+        return;
+    }
 
     tauri::async_runtime::spawn(async move {
         let mut last: Option<ModelStatus> = None;
-        for _ in 0..600 {
+        loop {
             let status = {
-                let active = ctx.settings_store.get().asr_model;
-                let engine_status = ctx.asr_engine.write().engine_status();
+                let active = ctx.settings_store.get().asr.model;
+                // Model loading happens on the Python sidecar's background
+                // thread. The actor cache only changes when a command reaches
+                // the engine, so merely reading it here leaves the UI stuck on
+                // the initial `loading` snapshot forever. Poll the sidecar and
+                // let RefreshStatus update the shared cache before publishing.
+                let engine_status = ctx.asr_handle.refresh_status().await.unwrap_or_else(|err| {
+                    // Expected while the sidecar warms its native imports and
+                    // cannot answer probes at all. Not a fault on its own.
+                    log::debug!("Could not refresh ASR model status: {err}");
+                    ctx.asr_handle.engine_status()
+                });
                 ctx.model_manager.get_status(&engine_status, &active)
             };
-            let stable = status.loaded && !status.is_downloading && !status.is_loading;
+            let status = {
+                let mut status = status;
+                status.asr_selection_notice = ctx.asr_selection_notice.read().clone();
+                status
+            };
+            let ready = status.loaded && !status.is_downloading && !status.is_loading;
             let changed = last
                 .as_ref()
                 .map(|prev| {
@@ -477,10 +601,7 @@ pub fn spawn_model_status_watch(app: AppHandle, ctx: AppContext) {
                 );
             }
             last = Some(status);
-            if stable {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(700)).await;
+            tokio::time::sleep(if ready { POLL_READY } else { POLL_PENDING }).await;
         }
     });
 }
@@ -490,9 +611,84 @@ pub fn get_latency_metrics(ctx: State<'_, AppContext>) -> LatencyMetrics {
     ctx.last_latency_metrics.read().clone()
 }
 
+/// Everything the developer diagnostics waterfall needs in one round trip:
+/// the last dictation, the rolling p50/p95, and the recent samples behind it.
+#[tauri::command]
+pub fn get_latency_report(ctx: State<'_, AppContext>) -> LatencyReport {
+    crate::state::build_latency_report(&ctx)
+}
+
+/// Discard the rolling latency window. Used when changing configuration, so
+/// percentiles are not mixed across two different profiles.
+#[tauri::command]
+pub fn reset_latency_history(ctx: State<'_, AppContext>) -> LatencyReport {
+    ctx.latency_history.write().clear();
+    crate::state::build_latency_report(&ctx)
+}
+
 #[tauri::command]
 pub fn get_system_metrics() -> SystemMetrics {
     PlatformSys::get_system_metrics()
+}
+
+/// The full hardware picture: separate total/used/free VRAM, GPU presence as
+/// distinct from CUDA availability, Vulkan, CPU topology and per-runtime RAM.
+#[tauri::command]
+pub fn get_capabilities() -> crate::capability::Capabilities {
+    crate::capability::capabilities()
+}
+
+/// Force a fresh probe. Used before a load decision, where a cached free-VRAM
+/// reading would be actively misleading.
+#[tauri::command]
+pub fn refresh_capabilities() -> crate::capability::Capabilities {
+    crate::capability::capabilities_uncached()
+}
+
+#[tauri::command]
+pub fn get_benchmark_report() -> crate::benchmark::FullBenchmarkReport {
+    crate::benchmark::load_benchmark_report().unwrap_or_else(|| {
+        let report = crate::benchmark::run_synthetic_benchmark(&[], 0, 0.0);
+        crate::benchmark::persist_benchmark_report(&report);
+        report
+    })
+}
+
+#[tauri::command]
+pub fn run_system_benchmark(
+    ctx: State<'_, AppContext>,
+) -> Result<crate::benchmark::FullBenchmarkReport, String> {
+    let asr_status = ctx.asr_handle.engine_status();
+    let load_ms = (asr_status.load_seconds * 1000.0) as u64;
+    let warmup_rtf = asr_status.warmup_rtf.unwrap_or(0.25);
+
+    let report = crate::benchmark::run_synthetic_benchmark(&[], load_ms, warmup_rtf as f64);
+    crate::benchmark::persist_benchmark_report(&report);
+    Ok(report)
+}
+
+/// Every declared model and runtime, for the settings and download UI.
+#[tauri::command]
+pub fn get_model_manifests() -> Vec<crate::profile::ModelManifest> {
+    crate::profile::all_manifests().cloned().collect()
+}
+
+/// Resolve a configuration for the current hardware without applying it.
+///
+/// This is what the settings page calls to preview a preset, so the user sees
+/// the resolved configuration and the reasons behind it before committing.
+#[tauri::command]
+pub fn preview_profile(
+    preset: String,
+    overrides: Option<crate::profile::ProfileOverrides>,
+) -> crate::profile::ResolvedProfile {
+    let caps = crate::capability::capabilities_uncached();
+    crate::profile::resolve_profile(
+        &caps,
+        crate::profile::Preset::parse(&preset),
+        &overrides.unwrap_or_default(),
+        &crate::profile::no_measurements,
+    )
 }
 
 #[tauri::command]
@@ -571,11 +767,7 @@ pub struct FlowStatus {
 }
 
 fn tier_to_flow_model(tier: &str) -> &'static str {
-    match tier.trim().to_ascii_lowercase().as_str() {
-        "deep_context" => "qwen3.5-2b",
-        "raw_verbatim" => "none",
-        _ => "lfm2.5-1.2b",
-    }
+    crate::settings::flow_model_for_tier(tier)
 }
 
 fn flow_model_to_tier(model: &str) -> &'static str {
@@ -611,16 +803,15 @@ fn build_flow_status(ctx: &AppContext) -> FlowStatus {
         crate::rewrite::LlamaMode::Gpu(_) => "gpu",
     });
     let n_gpu_layers = ctx.flow_runtime.active_n_gpu_layers();
-    let vram_used_mb = if active_mode
-        .as_ref()
-        .map(|m| m.is_gpu())
-        .unwrap_or(false)
-    {
+    let vram_used_mb = if active_mode.as_ref().map(|m| m.is_gpu()).unwrap_or(false) {
         crate::platform::PlatformSys::detect_gpu().1
     } else {
         0.0
     };
-    let any_active = ctx.active_intelligence_downloads.lock().contains(&active_tier);
+    let any_active = ctx
+        .active_intelligence_downloads
+        .lock()
+        .contains(&active_tier);
     let runtime_active = ctx
         .active_runtime_downloads
         .lock()
@@ -670,7 +861,7 @@ pub fn get_intelligence_tiers(ctx: State<'_, AppContext>) -> Vec<IntelligenceTie
     let active = ctx.active_intelligence_downloads.lock().clone();
     let runtime_present = crate::rewrite::llama_server_bin().exists();
     [
-        ("smart_flow", "lfm2.5-1.2b"),
+        ("smart_flow", "qwen3.5-0.8b"),
         ("deep_context", "qwen3.5-2b"),
     ]
     .iter()
@@ -716,6 +907,104 @@ pub fn set_intelligence_tier(
     Ok(updated)
 }
 
+/// `true` when Stage 2 polishing is currently on.
+#[tauri::command]
+pub fn get_polish_enabled(ctx: State<'_, AppContext>) -> bool {
+    ctx.settings_store.get().resolve_intent().run_llm
+}
+
+/// Turn Stage 2 polishing on or off, remembering the tier to come back to.
+///
+/// This is the "fast now, polished later" switch. It persists like any other
+/// setting, so the choice survives a restart, and `session::stop_at` re-reads
+/// settings on every dictation, so it takes effect on the very next utterance
+/// with no reload.
+///
+/// Turning it on also starts the runtime immediately instead of leaving the cost
+/// for the first dictation: a cold `llama-server` is ~2-5s and the shared prompt
+/// prefix costs seconds more on CPU, and paying that while the user waits for
+/// their first transcript is exactly the latency this is meant to avoid.
+#[tauri::command]
+pub fn set_polish_enabled(
+    enabled: bool,
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<AppSettings, String> {
+    let current = ctx.settings_store.get();
+    let current_tier = current.resolve_intent().tier;
+
+    let (tier, last_polish_tier) = if enabled {
+        // Restore whichever polishing tier was last in use.
+        let restore = if current
+            .last_polish_tier
+            .trim()
+            .eq_ignore_ascii_case("raw_verbatim")
+            || current.last_polish_tier.trim().is_empty()
+        {
+            "smart_flow".to_string()
+        } else {
+            current.last_polish_tier.trim().to_ascii_lowercase()
+        };
+        (restore.clone(), restore)
+    } else {
+        // Remember where to come back to before erasing it.
+        let remember = if current_tier == "raw_verbatim" {
+            current.last_polish_tier.clone()
+        } else {
+            current_tier
+        };
+        ("raw_verbatim".to_string(), remember)
+    };
+
+    let updated = ctx.settings_store.update(AppSettings {
+        intelligence_tier: tier,
+        last_polish_tier,
+        ..current
+    })?;
+
+    let intent = updated.resolve_intent();
+    if intent.run_llm {
+        let ctx_flow = ctx.inner().clone();
+        let flow_model = intent.flow_model.clone();
+        let backend = updated.refinement.device.clone();
+        let override_layers = if updated.refinement.gpu_layers < 0 {
+            None
+        } else {
+            Some(updated.refinement.gpu_layers.max(0) as u32)
+        };
+        let reserve = updated.memory_policy.vram_reserve_mb;
+        let context_size = updated.refinement.context_size;
+        tauri::async_runtime::spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                let runtime = &ctx_flow.flow_runtime;
+                match runtime.ensure(
+                    &flow_model,
+                    &backend,
+                    override_layers,
+                    reserve,
+                    context_size,
+                ) {
+                    Ok(()) => runtime.warm_prompt_cache(&flow_model),
+                    Err(err) => log::warn!("Could not start the polish runtime: {err}"),
+                }
+            })
+            .await;
+        });
+    } else {
+        // Free the VRAM and the process straight away; the user asked for speed.
+        ctx.flow_runtime.shutdown();
+    }
+
+    let _ = app.emit("settings:changed", updated.clone());
+    log::info!(
+        "Polish {} (tier={}, restore={})",
+        if enabled { "enabled" } else { "disabled" },
+        updated.intelligence_tier,
+        updated.last_polish_tier
+    );
+    Ok(updated)
+}
+
 #[tauri::command]
 pub fn install_intelligence_model(
     tier: String,
@@ -725,7 +1014,7 @@ pub fn install_intelligence_model(
     use std::time::Instant;
     let normalized = tier.trim().to_ascii_lowercase();
     let spec = match normalized.as_str() {
-        "smart_flow" => crate::rewrite::server::flow_model_spec("lfm2.5-1.2b"),
+        "smart_flow" => crate::rewrite::server::flow_model_spec("qwen3.5-0.8b"),
         "deep_context" => crate::rewrite::server::flow_model_spec("qwen3.5-2b"),
         _ => return Err(format!("Tier '{tier}' has no model to install")),
     };
@@ -744,7 +1033,9 @@ pub fn install_intelligence_model(
     // the second one truncates the partial work back to 0 bytes.
     let mut active = ctx.active_intelligence_downloads.lock();
     if active.contains(&normalized) {
-        return Err(format!("A download for '{normalized}' is already in progress"));
+        return Err(format!(
+            "A download for '{normalized}' is already in progress"
+        ));
     }
     active.insert(normalized.clone());
     drop(active);
@@ -787,7 +1078,12 @@ pub fn install_intelligence_model(
         let mut response = match request.send() {
             Ok(r) => r,
             Err(err) => {
-                emit_error(&app_handle, &tier_label, pct_from(resume_from, spec.approx_bytes), err.to_string());
+                emit_error(
+                    &app_handle,
+                    &tier_label,
+                    pct_from(resume_from, spec.approx_bytes),
+                    err.to_string(),
+                );
                 clear_active(&ctx_for_thread, &tier_label);
                 return;
             }
@@ -811,7 +1107,9 @@ pub fn install_intelligence_model(
             return;
         };
         // content_length is the number of bytes remaining when resuming, or the full size otherwise.
-        let remaining = response.content_length().unwrap_or(spec.approx_bytes.saturating_sub(already_have));
+        let remaining = response
+            .content_length()
+            .unwrap_or(spec.approx_bytes.saturating_sub(already_have));
         let total = already_have + remaining;
 
         // Open the destination without truncating so we append to the existing partial file.
@@ -824,13 +1122,23 @@ pub fn install_intelligence_model(
         {
             Ok(f) => f,
             Err(err) => {
-                emit_error(&app_handle, &tier_label, pct_from(already_have, total), err.to_string());
+                emit_error(
+                    &app_handle,
+                    &tier_label,
+                    pct_from(already_have, total),
+                    err.to_string(),
+                );
                 clear_active(&ctx_for_thread, &tier_label);
                 return;
             }
         };
         if let Err(err) = dest_file.seek(SeekFrom::Start(already_have)) {
-            emit_error(&app_handle, &tier_label, pct_from(already_have, total), err.to_string());
+            emit_error(
+                &app_handle,
+                &tier_label,
+                pct_from(already_have, total),
+                err.to_string(),
+            );
             clear_active(&ctx_for_thread, &tier_label);
             return;
         }
@@ -871,7 +1179,8 @@ pub fn install_intelligence_model(
                     downloaded += n as u64;
                     if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
                         let elapsed = started.elapsed().as_secs_f32().max(0.001);
-                        let speed_mbps = ((downloaded - already_have) as f32 / 1_048_576.0) / elapsed;
+                        let speed_mbps =
+                            ((downloaded - already_have) as f32 / 1_048_576.0) / elapsed;
                         let pct = pct_from(downloaded, total);
                         let _ = app_handle.emit(
                             "intelligence:download-progress",
@@ -937,13 +1246,10 @@ fn clear_active(ctx: &AppContext, tier: &str) {
 }
 
 #[tauri::command]
-pub fn remove_intelligence_model(
-    tier: String,
-    ctx: State<'_, AppContext>,
-) -> Result<(), String> {
+pub fn remove_intelligence_model(tier: String, ctx: State<'_, AppContext>) -> Result<(), String> {
     let normalized = tier.trim().to_ascii_lowercase();
     let flow_id = match normalized.as_str() {
-        "smart_flow" => "lfm2.5-1.2b",
+        "smart_flow" => "qwen3.5-0.8b",
         "deep_context" => "qwen3.5-2b",
         _ => return Err(format!("Tier '{tier}' has no model to remove")),
     };
@@ -992,6 +1298,11 @@ pub fn remove_llama_runtime(ctx: State<'_, AppContext>) -> Result<(), String> {
         }
         std::fs::remove_file(&bin)
             .map_err(|e| format!("Could not remove llama-server binary: {e}"))?;
+        let marker = crate::rewrite::runtime_kind_path();
+        if marker.exists() {
+            std::fs::remove_file(marker)
+                .map_err(|e| format!("Could not remove runtime kind marker: {e}"))?;
+        }
     }
     Ok(())
 }
@@ -1012,7 +1323,7 @@ pub fn preview_tier_cleanup(
     let model_id = match tier_label.as_str() {
         "deep_context" => "qwen3.5-2b",
         "raw_verbatim" => "none",
-        _ => "lfm2.5-1.2b",
+        _ => "qwen3.5-0.8b",
     };
     let mut settings = ctx.settings_store.get();
     settings.intelligence_tier = tier_label.clone();
@@ -1050,15 +1361,23 @@ pub fn preview_tier_cleanup(
     let mut rewriter_error: Option<String> = None;
     if wants_flow {
         let runtime = std::sync::Arc::clone(&ctx.flow_runtime);
-        let compute_backend = settings.compute_backend.clone();
-        let override_layers = if settings.flow_n_gpu_layers < 0 {
+        let compute_backend = settings.refinement.device.clone();
+        let override_layers = if settings.refinement.gpu_layers < 0 {
             None
         } else {
-            Some(settings.flow_n_gpu_layers.max(0) as u32)
+            Some(settings.refinement.gpu_layers.max(0) as u32)
         };
-        let ensure_result = tokio::task::block_in_place(|| {
-            runtime.ensure(model_id, &compute_backend, override_layers)
-        });
+        let vram_reserve_mb = settings.memory_policy.vram_reserve_mb;
+        // Direct call: this command is synchronous, so there is no async
+        // context to preserve. The previous `block_in_place` panicked outright
+        // when Tauri dispatched this onto a current-thread runtime.
+        let ensure_result = runtime.ensure(
+            model_id,
+            &compute_backend,
+            override_layers,
+            vram_reserve_mb,
+            settings.refinement.context_size,
+        );
         if let Err(err) = &ensure_result {
             crate::rewrite::auto_install_if_missing(&app, ctx.inner(), &compute_backend, err);
         }

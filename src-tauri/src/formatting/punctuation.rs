@@ -70,13 +70,22 @@ impl PunctuationInferer {
         }
 
         let last_char = trimmed.chars().last().unwrap_or(' ');
-        if last_char == '.' || last_char == '?' || last_char == '!' || last_char == ';' || last_char == ':' {
+        if last_char == '.'
+            || last_char == '?'
+            || last_char == '!'
+            || last_char == ';'
+            || last_char == ':'
+        {
             return trimmed.to_string();
         }
 
         // Check if begins or trailing clause begins with common question words
         let lower = trimmed.to_lowercase();
-        let last_clause = lower.split([',', ';', '\n']).last().unwrap_or(&lower).trim();
+        let last_clause = lower
+            .split([',', ';', '\n'])
+            .next_back()
+            .unwrap_or(&lower)
+            .trim();
         let is_question = lower.starts_with("what ")
             || lower.starts_with("why ")
             || lower.starts_with("how ")

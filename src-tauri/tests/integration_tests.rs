@@ -1,9 +1,9 @@
-use std::fs;
 use reflow_lib::asr::{ASREngine, MockASREngine};
 use reflow_lib::audio::{VadConfig, VoiceActivityDetector};
 use reflow_lib::formatting::{format_transcript, CustomReplacements, ReplacementRule};
 use reflow_lib::history::{HistoryEntry, HistoryStore};
 use reflow_lib::settings::SettingsStore;
+use std::fs;
 
 #[test]
 fn test_sqlite_history_store_full_lifecycle() {
@@ -55,7 +55,10 @@ fn test_sqlite_history_store_full_lifecycle() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].id, "id-2"); // Latest first
     assert!(entries[0].rewriter_used);
-    assert_eq!(entries[0].smart_transcript, "Aaj humein deployment karna hai.");
+    assert_eq!(
+        entries[0].smart_transcript,
+        "Aaj humein deployment karna hai."
+    );
     assert!(!entries[1].rewriter_used);
 
     // 3. Search query
@@ -126,9 +129,12 @@ fn test_legacy_settings_json_defaults_api_fields() {
 fn test_default_settings_are_tray_first() {
     let s = reflow_lib::settings::AppSettings::default();
     assert!(!s.developer_mode);
-    assert_eq!(s.cleanup_level, "light");
     assert_eq!(s.style, "neutral");
+    // The default tier performs LLM refinement, so the default cleanup level
+    // has to be one that does not short-circuit Stage 2.
+    assert_eq!(s.cleanup_level, "light");
     assert_eq!(s.resolved_cleanup_level(), "light");
+    assert!(s.resolve_intent().run_llm);
 }
 
 #[test]

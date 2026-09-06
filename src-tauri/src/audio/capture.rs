@@ -1,9 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use super::resampler::AudioResampler;
@@ -103,14 +103,17 @@ fn resolve_input_device(host: &Host, device_id: Option<&str>) -> Result<(Device,
             }
         }
     }
-    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    // Highest score first.
+    ranked.sort_by_key(|(score, _, _)| std::cmp::Reverse(*score));
     if let Some((score, name, dev)) = ranked.into_iter().next() {
         if score < 0 {
             return Err(format!(
                 "No usable microphone found (best candidate '{name}' is a virtual/Hands-Free endpoint)."
             ));
         }
-        log::info!("Default capture '{default_name}' looks unusable; using '{name}' (score {score})");
+        log::info!(
+            "Default capture '{default_name}' looks unusable; using '{name}' (score {score})"
+        );
         return Ok((dev, name));
     }
 
@@ -133,6 +136,12 @@ fn pick_input_config(device: &Device) -> Result<SupportedStreamConfig, String> {
     // device mix. Stick to default_input_config (GetMixFormat).
     let _ = device;
     Ok(default)
+}
+
+impl Default for AudioCaptureEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AudioCaptureEngine {
@@ -196,7 +205,7 @@ impl AudioCaptureEngine {
         gain: f32,
         vad_sensitivity: f32,
         silence_timeout_ms: u64,
-        sample_sender: mpsc::UnboundedSender<Vec<f32>>,
+        sample_sender: mpsc::Sender<Vec<f32>>,
         auto_stop_notify: mpsc::Sender<()>,
     ) -> Result<(), String> {
         self.stop_capture();
@@ -278,10 +287,8 @@ impl AudioCaptureEngine {
                         if !is_recording_flag.load(Ordering::Relaxed) {
                             return;
                         }
-                        let f32_samples: Vec<f32> = data
-                            .iter()
-                            .map(|&s| (s as f32 / 32768.0) * gain)
-                            .collect();
+                        let f32_samples: Vec<f32> =
+                            data.iter().map(|&s| (s as f32 / 32768.0) * gain).collect();
                         dispatch_chunk(
                             &f32_samples,
                             &resampler_clone,
@@ -381,7 +388,7 @@ fn dispatch_chunk(
     resampler: &Mutex<AudioResampler>,
     vad: &Mutex<VoiceActivityDetector>,
     audio_level: &Mutex<f32>,
-    sender: &mpsc::UnboundedSender<Vec<f32>>,
+    sender: &mpsc::Sender<Vec<f32>>,
     auto_stop: &mpsc::Sender<()>,
 ) {
     let mono_16k = resampler.lock().resample_f32(native);
@@ -394,7 +401,15 @@ fn dispatch_chunk(
     drop(vad_guard);
 
     *audio_level.lock() = (rms * 6.0).min(1.0);
-    let _ = sender.send(mono_16k);
+    match sender.try_send(mono_16k) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            log::warn!(
+                "Audio capture sample channel full; dropped chunk to prevent memory runaway"
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
+    }
     if should_auto_stop {
         let _ = auto_stop.try_send(());
     }

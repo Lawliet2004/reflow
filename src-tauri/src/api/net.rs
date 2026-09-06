@@ -29,9 +29,7 @@ pub fn lan_ipv4_addrs() -> Vec<String> {
 
 pub fn is_rfc1918(ip: Ipv4Addr) -> bool {
     let o = ip.octets();
-    o[0] == 10
-        || (o[0] == 172 && (16..=31).contains(&o[1]))
-        || (o[0] == 192 && o[1] == 168)
+    o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
 }
 
 fn guessed_lan_ip() -> Option<String> {

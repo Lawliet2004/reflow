@@ -99,6 +99,9 @@ mod tests {
         let manager = CustomReplacements::new(CustomReplacements::default_rules());
         let input = "I pushed the commit to git hub using vs code and type script.";
         let result = manager.apply(input);
-        assert_eq!(result, "I pushed the commit to GitHub using VS Code and TypeScript.");
+        assert_eq!(
+            result,
+            "I pushed the commit to GitHub using VS Code and TypeScript."
+        );
     }
 }

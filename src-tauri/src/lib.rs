@@ -1,6 +1,8 @@
 pub mod api;
 pub mod asr;
 pub mod audio;
+pub mod benchmark;
+pub mod capability;
 pub mod commands;
 pub mod context;
 pub mod dory;
@@ -11,8 +13,9 @@ pub mod injection;
 pub mod model;
 pub mod overlay;
 pub mod pairing;
-pub mod rewrite;
 pub mod platform;
+pub mod profile;
+pub mod rewrite;
 pub mod session;
 pub mod settings;
 pub mod state;
@@ -35,7 +38,7 @@ pub fn run() {
         &context.history_store,
         &initial_settings.history_retention,
     );
-    let asr_engine = std::sync::Arc::clone(&context.asr_engine);
+    let asr_handle = context.asr_handle.clone();
     let hotkey_error = std::sync::Arc::clone(&context.hotkey_error);
 
     tauri::Builder::default()
@@ -75,10 +78,28 @@ pub fn run() {
         .manage(context.clone())
         .setup(move |app| {
             if let Ok(resource_dir) = app.path().resource_dir() {
-                asr_engine.write().set_resource_dir(resource_dir);
+                let _ = asr_handle.set_resource_dir_blocking(resource_dir);
             }
-            if let Err(err) = asr_engine.write().initialize() {
+            if let Err(err) = asr_handle.initialize_blocking() {
                 log::warn!("ASR initialize failed: {err}");
+            }
+
+            // Install the refinement-runtime recovery hook here, where an
+            // `AppHandle` legitimately exists. The session layer only sees a
+            // callback, so it never links the GUI runtime.
+            {
+                let app_recovery = app.handle().clone();
+                let ctx_recovery = context.clone();
+                *context.runtime_recovery.write() = Some(std::sync::Arc::new(
+                    move |request: crate::context::RuntimeRecoveryRequest| {
+                        crate::rewrite::auto_install_if_missing(
+                            &app_recovery,
+                            &ctx_recovery,
+                            &request.compute_backend,
+                            &request.reason,
+                        );
+                    },
+                ));
             }
 
             // Load the ASR model (GPU-first, CPU fallback) as soon as the
@@ -86,34 +107,142 @@ pub fn run() {
             // precision is whatever the user last picked — this is what
             // makes the "remember my precision across launches" guarantee
             // work.
-            if initial_settings.keep_model_loaded
-                && context.model_manager.is_installed(&initial_settings.asr_model)
+            if initial_settings.asr.keep_loaded
+                && context
+                    .model_manager
+                    .is_installed(&initial_settings.asr.model)
             {
                 let ctx_load = context.clone();
-                let model_dir = ctx_load
-                    .model_manager
-                    .get_model_dir(&initial_settings.asr_model);
-                let backend = initial_settings.compute_backend.clone();
-                let precision = initial_settings.asr_precision.clone();
-                std::thread::spawn(move || {
-                    let result = {
-                        let mut engine = ctx_load.asr_engine.write();
-                        engine.load_model_with_precision(
+                tauri::async_runtime::spawn(async move {
+                    // Ask the sidecar to compute its CUDA probe, then wait for
+                    // the answer before resolving the load. The probe runs
+                    // inside the sidecar's `_warm_imports` (measured 9–57s on
+                    // this machine) and previously only ran on the first
+                    // `load_model` — so resolving at startup always saw
+                    // `cuda_available=false` (still pending) and picked the
+                    // CPU path (0.6B on CPU) on a machine with a perfectly
+                    // usable GPU. `probe_cuda` starts the warmup without
+                    // loading anything; the status poll below observes it
+                    // finishing. The budget keeps a probe that never lands
+                    // from blocking the load forever.
+                    if let Err(err) = ctx_load.asr_handle.probe_cuda().await {
+                        log::warn!("Could not start the sidecar CUDA probe: {err}");
+                    }
+                    const CUDA_PROBE_BUDGET: std::time::Duration =
+                        std::time::Duration::from_secs(90);
+                    let started = std::time::Instant::now();
+                    let mut probe_answered = false;
+                    while started.elapsed() < CUDA_PROBE_BUDGET {
+                        if let Ok(status) = ctx_load.asr_handle.refresh_status().await {
+                            if !status.cuda_probe_pending {
+                                probe_answered = true;
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                    }
+                    if !probe_answered {
+                        log::warn!(
+                            "Sidecar CUDA probe did not answer within {:?}; \
+                             resolving the ASR load with whatever is known",
+                            CUDA_PROBE_BUDGET
+                        );
+                    }
+                    // Resolved rather than taken verbatim from Settings: the stored
+                    // choice is a ceiling, and a model that cannot fit free VRAM is
+                    // stepped down so the work stays on the GPU. See
+                    // `profile::select_asr_load`.
+                    let (model_id, backend, precision) = commands::resolve_asr_load(&ctx_load);
+                    let model_dir = ctx_load.model_manager.get_model_dir(&model_id);
+                    let asr = ctx_load.asr_handle.clone();
+                    let result = asr
+                        .load_model_with_precision(
                             &model_dir.to_string_lossy(),
                             &backend,
                             &precision,
                         )
-                    };
+                        .await;
                     if let Err(err) = result {
                         log::warn!("Deferred model load failed: {err}");
                     }
                 });
-                commands::spawn_model_status_watch(app.handle().clone(), context.clone());
-            } else if !context.model_manager.is_installed(&initial_settings.asr_model) {
+            } else if !context
+                .model_manager
+                .is_installed(&initial_settings.asr.model)
+            {
                 log::warn!(
                     "Qwen3-ASR ({}) weights not found; install from Settings → Model.",
-                    initial_settings.asr_model
+                    initial_settings.asr.model
                 );
+            }
+
+            // Unconditionally, and regardless of whether a load was just
+            // queued. This poller owns the only refresh of the ASR status
+            // cache, which both the UI and the "may I record?" gate read. If it
+            // is not running, a model that loads (or is loaded by a later
+            // Settings action) is never observed.
+            commands::spawn_model_status_watch(app.handle().clone(), context.clone());
+
+            // A force-killed previous run leaves its llama-server child
+            // orphaned, still holding VRAM. Clear those out before the
+            // refinement runtime starts budgeting memory — otherwise every
+            // subsequent launch inherits a tighter GPU than it really has.
+            {
+                let killed = crate::rewrite::server::kill_orphaned_llama_servers();
+                if killed > 0 {
+                    log::warn!("Killed {killed} orphaned llama-server process(es)");
+                }
+            }
+
+            // Start the refinement runtime now rather than on the first
+            // dictation.
+            //
+            // Cold-starting `llama-server` measures ~2-5s and evaluating the
+            // shared prompt prefix costs seconds more on CPU, and both used to
+            // land on the user mid-dictation while they waited for text. This
+            // runs after the ASR load has been queued so the VRAM budgeter sees
+            // the memory the ASR model is actually going to take, and it stays
+            // on a background task so a slow or failing runtime never delays
+            // window creation.
+            {
+                let intent = initial_settings.resolve_intent();
+                if intent.run_llm {
+                    let ctx_flow = context.clone();
+                    let flow_model = intent.flow_model.clone();
+                    let backend = initial_settings.refinement.device.clone();
+                    let override_layers = if initial_settings.refinement.gpu_layers < 0 {
+                        None
+                    } else {
+                        Some(initial_settings.refinement.gpu_layers.max(0) as u32)
+                    };
+                    let reserve = initial_settings.memory_policy.vram_reserve_mb;
+                    let context_size = initial_settings.refinement.context_size;
+                    tauri::async_runtime::spawn(async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            let runtime = &ctx_flow.flow_runtime;
+                            runtime
+                                .ensure(
+                                    &flow_model,
+                                    &backend,
+                                    override_layers,
+                                    reserve,
+                                    context_size,
+                                )
+                                .map(|()| {
+                                    runtime.warm_prompt_cache(&flow_model);
+                                })
+                        })
+                        .await;
+                        match result {
+                            Ok(Ok(())) => log::info!("Refinement runtime preloaded"),
+                            Ok(Err(err)) => log::warn!(
+                                "Refinement runtime preload failed ({err}); \
+                                 the first dictation will start it on demand"
+                            ),
+                            Err(err) => log::warn!("Refinement preload task failed: {err}"),
+                        }
+                    });
+                }
             }
 
             if initial_settings.launch_at_startup {
@@ -151,6 +280,20 @@ pub fn run() {
             )?;
             let item_dictate =
                 MenuItem::with_id(app, "dictate", "Start / Stop Dictation", true, None::<&str>)?;
+            // The quick Fast/Polished switch. Reachable without opening
+            // Settings, because the whole point is to flip modes mid-workflow.
+            let polish_on = initial_settings.resolve_intent().run_llm;
+            let item_polish = MenuItem::with_id(
+                app,
+                "toggle_polish",
+                if polish_on {
+                    "Polishing: On  →  switch to Fast"
+                } else {
+                    "Polishing: Off  →  switch to Polished"
+                },
+                true,
+                None::<&str>,
+            )?;
             let item_history =
                 MenuItem::with_id(app, "history", "Open History", true, None::<&str>)?;
             let item_settings =
@@ -161,6 +304,7 @@ pub fn run() {
 
             tray_menu.append(&item_status)?;
             tray_menu.append(&item_dictate)?;
+            tray_menu.append(&item_polish)?;
             tray_menu.append(&item_history)?;
             tray_menu.append(&item_settings)?;
             tray_menu.append(&item_undo)?;
@@ -183,6 +327,25 @@ pub fn run() {
             let _tray = tray_builder
                 .on_menu_event(move |app_handle, event| match event.id.as_ref() {
                     "dictate" => spawn_toggle(app_handle.clone()),
+                    "toggle_polish" => {
+                        let ctx = app_handle.state::<AppContext>();
+                        let enabled = ctx.settings_store.get().resolve_intent().run_llm;
+                        match commands::set_polish_enabled(
+                            !enabled,
+                            app_handle.clone(),
+                            ctx.clone(),
+                        ) {
+                            Ok(updated) => {
+                                let now_on = updated.resolve_intent().run_llm;
+                                let _ = item_polish.set_text(if now_on {
+                                    "Polishing: On  →  switch to Fast"
+                                } else {
+                                    "Polishing: Off  →  switch to Polished"
+                                });
+                            }
+                            Err(err) => log::error!("Could not toggle polishing: {err}"),
+                        }
+                    }
                     "undo_ai" => {
                         let ctx = app_handle.state::<AppContext>();
                         let _ = commands::undo_last_ai_edit_inner(ctx.inner());
@@ -190,6 +353,7 @@ pub fn run() {
                     "history" | "settings" => {
                         if let Some(window) = app_handle.get_webview_window("main") {
                             let _ = window.show();
+                            let _ = window.unminimize();
                             let _ = window.set_focus();
                         }
                     }
@@ -253,7 +417,15 @@ pub fn run() {
             commands::remove_model,
             commands::reload_model,
             commands::get_latency_metrics,
+            commands::get_latency_report,
+            commands::reset_latency_history,
+            commands::get_benchmark_report,
+            commands::run_system_benchmark,
             commands::get_system_metrics,
+            commands::get_capabilities,
+            commands::refresh_capabilities,
+            commands::get_model_manifests,
+            commands::preview_profile,
             commands::open_logs_folder,
             commands::get_diagnostics_report,
             commands::get_platform_info,
@@ -272,6 +444,8 @@ pub fn run() {
             commands::install_llama_runtime,
             commands::remove_llama_runtime,
             commands::set_intelligence_tier,
+            commands::get_polish_enabled,
+            commands::set_polish_enabled,
             commands::preview_tier_cleanup,
         ])
         .run(tauri::generate_context!())
@@ -296,7 +470,9 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                             overlay::resize_overlay(&app, "listening");
                         }
                         AppStateEnum::Injecting => {
-                            overlay::resize_overlay(&app, "preview");
+                            // Still the active pipeline, so it keeps the active
+                            // size. Only the settled result grows.
+                            overlay::resize_overlay(&app, "listening");
                         }
                         AppStateEnum::Ready | AppStateEnum::Idle | AppStateEnum::Error => {
                             overlay::hide_overlay_later(app.clone(), 1200);
@@ -321,6 +497,7 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     overlay::resize_overlay(&app, "preview");
                     let _ = app.emit("transcript:final", payload);
                 }
+                Ok(DoryEvent::SessionFinished { .. }) => {}
                 Ok(DoryEvent::Injection(feedback)) => {
                     overlay::resize_overlay(&app, "preview");
                     let hide_delay = if feedback.fallback_copy { 2500 } else { 1200 };
@@ -333,7 +510,9 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                 Ok(DoryEvent::AutoStop) => {
                     let _ = app.emit("app:auto-stop", ());
                 }
-                Ok(DoryEvent::Stage(_)) => {}
+                Ok(DoryEvent::Stage(stage)) => {
+                    let _ = app.emit("pipeline:stage", stage);
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -344,7 +523,7 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
 pub async fn run_api_standalone(bind: Option<String>) -> Result<(), String> {
     env_logger::init();
     let ctx = AppContext::bootstrap();
-    if let Err(err) = ctx.asr_engine.write().initialize() {
+    if let Err(err) = ctx.asr_handle.initialize().await {
         log::warn!("ASR initialize failed: {err}");
     }
     let mut settings = ctx.settings_store.get();
@@ -361,7 +540,7 @@ pub async fn run_api_standalone(bind: Option<String>) -> Result<(), String> {
             }
         }
     }
-    let _ = ctx.settings_store.update(settings);
+    let _ = ctx.settings_store.update(settings.clone());
     crate::api::sync_server(ctx.clone()).await?;
     let status = crate::api::current_status(&ctx);
     println!("Reflow LAN API listening");
@@ -371,6 +550,61 @@ pub async fn run_api_standalone(bind: Option<String>) -> Result<(), String> {
     if let Some(code) = &status.pairing_code {
         println!("Pairing code: {code}");
     }
+
+    // The API's transcription endpoints need the ASR model. Without this,
+    // `run_api_standalone` served /health and /status fine while every
+    // /v1/transcribe and /v1/stream request wedged for its full 180s
+    // transcription budget inside `_wait_model_ready` and then failed —
+    // the API was reachable but useless. Load the model the same way the
+    // GUI does: probe CUDA first (see the startup-load comment in `run`),
+    // then resolve and load.
+    if settings.asr.keep_loaded && ctx.model_manager.is_installed(&settings.asr.model) {
+        if let Err(err) = ctx.asr_handle.probe_cuda().await {
+            log::warn!("Could not start the sidecar CUDA probe: {err}");
+        }
+        const CUDA_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+        let started = std::time::Instant::now();
+        while started.elapsed() < CUDA_PROBE_BUDGET {
+            match ctx.asr_handle.refresh_status().await {
+                Ok(engine) if !engine.cuda_probe_pending => break,
+                _ => {}
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        }
+        let (model_id, backend, precision) = commands::resolve_asr_load(&ctx);
+        let model_dir = ctx.model_manager.get_model_dir(&model_id);
+        match ctx
+            .asr_handle
+            .load_model_with_precision(&model_dir.to_string_lossy(), &backend, &precision)
+            .await
+        {
+            Ok(()) => log::info!(
+                "ASR model loaded for the headless API ({model_id} on {backend}, {precision})"
+            ),
+            Err(err) => log::warn!("Headless ASR model load failed: {err}"),
+        }
+    } else {
+        log::warn!(
+            "ASR model ({}) is not installed; the API's transcribe endpoints \
+             will reject audio until it is",
+            settings.asr.model
+        );
+    }
+
+    // A headless run has no UI to press "rotate pairing code" on, and the
+    // code minted at startup expires after 5 minutes — after which every
+    // pairing attempt fails with advice the operator cannot follow. Keep a
+    // live offer and announce each rotation, so the console the operator is
+    // actually looking at always shows a usable code.
+    let pairing = ctx.pairing.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(4 * 60)).await;
+            let offer = pairing.rotate_code();
+            println!("Pairing code (refreshed): {}", offer.code);
+        }
+    });
+
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }

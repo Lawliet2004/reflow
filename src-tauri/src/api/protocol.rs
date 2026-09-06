@@ -102,7 +102,11 @@ mod tests {
         )
         .unwrap();
         match msg {
-            ClientMsg::Start { sample_rate, inject, .. } => {
+            ClientMsg::Start {
+                sample_rate,
+                inject,
+                ..
+            } => {
                 assert_eq!(sample_rate, Some(16000));
                 assert_eq!(inject, Some(false));
             }

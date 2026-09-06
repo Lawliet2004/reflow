@@ -1,10 +1,10 @@
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
-use chrono::{Local, Utc};
+use chrono::{Local, TimeZone, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -26,6 +26,8 @@ pub struct HistoryEntry {
     pub processing_mode: String,
 }
 
+pub const CURRENT_HISTORY_SCHEMA_VERSION: i32 = 3;
+
 pub struct HistoryStore {
     conn: Arc<Mutex<Connection>>,
 }
@@ -37,47 +39,76 @@ impl HistoryStore {
                 .map_err(|e| format!("Failed to create database directory: {}", e))?;
         }
 
-        let conn = Connection::open(&db_path)
+        let mut conn = Connection::open(&db_path)
             .map_err(|e| format!("Failed to open SQLite database: {}", e))?;
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS history (
-                id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                duration_ms INTEGER NOT NULL,
-                language TEXT NOT NULL,
-                raw_transcript TEXT NOT NULL,
-                final_transcript TEXT NOT NULL,
-                application_name TEXT NOT NULL,
-                application_process TEXT NOT NULL,
-                word_count INTEGER NOT NULL,
-                character_count INTEGER NOT NULL,
-                model_version TEXT NOT NULL,
-                processing_mode TEXT NOT NULL,
-                smart_transcript TEXT NOT NULL DEFAULT '',
-                rewriter_used INTEGER NOT NULL DEFAULT 0
-            )",
-            [],
-        )
-        .map_err(|e| format!("Failed to initialize database schema: {}", e))?;
-
-        let _ = conn.execute(
-            "ALTER TABLE history ADD COLUMN smart_transcript TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE history ADD COLUMN rewriter_used INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC)",
-            [],
-        );
+        Self::migrate_schema(&mut conn)?;
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    fn migrate_schema(conn: &mut Connection) -> Result<(), String> {
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        if version < 1 {
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS history (
+                    id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    duration_ms INTEGER NOT NULL,
+                    language TEXT NOT NULL,
+                    raw_transcript TEXT NOT NULL,
+                    final_transcript TEXT NOT NULL,
+                    application_name TEXT NOT NULL,
+                    application_process TEXT NOT NULL,
+                    word_count INTEGER NOT NULL,
+                    character_count INTEGER NOT NULL,
+                    model_version TEXT NOT NULL,
+                    processing_mode TEXT NOT NULL,
+                    smart_transcript TEXT NOT NULL DEFAULT '',
+                    rewriter_used INTEGER NOT NULL DEFAULT 0
+                )",
+                [],
+            )
+            .map_err(|e| format!("Failed to initialize database schema: {}", e))?;
+        }
+
+        if version < 2 {
+            let _ = conn.execute(
+                "ALTER TABLE history ADD COLUMN smart_transcript TEXT NOT NULL DEFAULT ''",
+                [],
+            );
+            let _ = conn.execute(
+                "ALTER TABLE history ADD COLUMN rewriter_used INTEGER NOT NULL DEFAULT 0",
+                [],
+            );
+        }
+
+        if version < 3 {
+            let _ = conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC)",
+                [],
+            );
+            let _ = conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_app_proc ON history(application_process, application_name)",
+                [],
+            );
+            let _ = conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_final_tx ON history(final_transcript)",
+                [],
+            );
+        }
+
+        let _ = conn.execute(
+            &format!("PRAGMA user_version = {CURRENT_HISTORY_SCHEMA_VERSION}"),
+            [],
+        );
+
+        Ok(())
     }
 
     pub fn insert_entry(&self, entry: &HistoryEntry) -> Result<(), String> {
@@ -113,6 +144,7 @@ impl HistoryStore {
 
     pub fn get_entries(&self, limit: usize, offset: usize) -> Result<Vec<HistoryEntry>, String> {
         let conn = self.conn.lock();
+        let bounded_limit = limit.clamp(1, 100);
         let mut stmt = conn
             .prepare(
                 "SELECT id, created_at, duration_ms, language, raw_transcript,
@@ -126,22 +158,33 @@ impl HistoryStore {
             .map_err(|e| format!("Failed to prepare select query: {}", e))?;
 
         let rows = stmt
-            .query_map(params![limit as i64, offset as i64], map_history_row)
+            .query_map(
+                params![bounded_limit as i64, offset as i64],
+                map_history_row,
+            )
             .map_err(|e| format!("Query failed: {}", e))?;
 
         let mut results = Vec::new();
-        for row in rows {
-            if let Ok(entry) = row {
-                results.push(entry);
-            }
+        for entry in rows.flatten() {
+            results.push(entry);
         }
 
         Ok(results)
     }
 
     pub fn search_entries(&self, query: &str) -> Result<Vec<HistoryEntry>, String> {
+        self.search_entries_paged(query, 100, 0)
+    }
+
+    pub fn search_entries_paged(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<HistoryEntry>, String> {
         let conn = self.conn.lock();
-        let search_pattern = format!("%{}%", query);
+        let bounded_limit = limit.clamp(1, 100);
+        let search_pattern = format!("%{}%", query.trim());
 
         let mut stmt = conn
             .prepare(
@@ -152,20 +195,22 @@ impl HistoryStore {
                  FROM history
                  WHERE final_transcript LIKE ?1 OR raw_transcript LIKE ?1
                     OR smart_transcript LIKE ?1 OR application_name LIKE ?1
+                    OR application_process LIKE ?1
                  ORDER BY created_at DESC
-                 LIMIT 100",
+                 LIMIT ?2 OFFSET ?3",
             )
             .map_err(|e| format!("Failed to prepare search query: {}", e))?;
 
         let rows = stmt
-            .query_map(params![search_pattern], map_history_row)
+            .query_map(
+                params![search_pattern, bounded_limit as i64, offset as i64],
+                map_history_row,
+            )
             .map_err(|e| format!("Search execution failed: {}", e))?;
 
         let mut results = Vec::new();
-        for row in rows {
-            if let Ok(entry) = row {
-                results.push(entry);
-            }
+        for entry in rows.flatten() {
+            results.push(entry);
         }
 
         Ok(results)
@@ -180,8 +225,23 @@ impl HistoryStore {
     }
 
     pub fn clear_today(&self) -> Result<usize, String> {
+        // `created_at` is stored as RFC3339 (UTC, via `chrono::Utc::now()` in the
+        // stop path, and `purge_older_than` compares against an RFC3339 cutoff).
+        // Comparing against a bare `%Y-%m-%d` date string mixed formats and could
+        // miss rows; compare against the RFC3339 start-of-today instead.
         let today_start = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
-        let today_iso = today_start.format("%Y-%m-%d").to_string();
+        let today_start_utc: chrono::DateTime<Utc> = Local
+            .from_local_datetime(&today_start)
+            .single()
+            .map(|local| local.with_timezone(&Utc))
+            .unwrap_or_else(|| {
+                Utc::now()
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc()
+            });
+        let today_iso = today_start_utc.to_rfc3339();
 
         let conn = self.conn.lock();
         let affected = conn
@@ -275,6 +335,32 @@ mod tests {
         let found = store.search_entries("Hello world").expect("search");
         assert_eq!(found.len(), 1);
         assert!(found[0].rewriter_used);
+
+        // Search by application process
+        let found_proc = store
+            .search_entries_paged("Code.exe", 10, 0)
+            .expect("search by proc");
+        assert_eq!(found_proc.len(), 1);
+
+        // Pagination bounds clamp limit
+        let paged = store.get_entries(500, 0).expect("clamped select");
+        assert_eq!(paged.len(), 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn schema_version_is_tracked() {
+        let dir = std::env::temp_dir().join(format!("reflow_hist_{}", uuid::Uuid::new_v4()));
+        let db_path = dir.join("history.db");
+        {
+            let _store = HistoryStore::new(db_path.clone()).expect("db");
+        }
+        let conn = rusqlite::Connection::open(&db_path).expect("open");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, CURRENT_HISTORY_SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

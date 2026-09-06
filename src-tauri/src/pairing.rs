@@ -27,6 +27,7 @@ pub struct PairedDevicePublic {
 pub struct PairingOffer {
     pub code: String,
     pub expires_at: Instant,
+    failed_attempts: u8,
 }
 
 pub struct PairingState {
@@ -50,18 +51,21 @@ impl PairingState {
         let offer = PairingOffer {
             code,
             expires_at: Instant::now() + PAIRING_TTL,
+            failed_attempts: 0,
         };
         *self.offer.write() = Some(offer.clone());
         offer
     }
 
     pub fn current_offer(&self) -> Option<PairingOffer> {
-        let offer = self.offer.read().clone()?;
-        if Instant::now() >= offer.expires_at {
-            *self.offer.write() = None;
-            return None;
+        let mut offer = self.offer.write();
+        if offer
+            .as_ref()
+            .is_some_and(|o| Instant::now() >= o.expires_at)
+        {
+            *offer = None;
         }
-        Some(offer)
+        offer.clone()
     }
 
     pub fn ensure_offer(&self) -> PairingOffer {
@@ -71,10 +75,29 @@ impl PairingState {
         self.rotate_code()
     }
 
-    pub fn pair(&self, code: &str, device_name: &str) -> Result<(String, PairedDevicePublic), String> {
-        let offer = self.current_offer().ok_or_else(|| "Pairing code expired. Generate a new one on the desktop.".to_string())?;
+    pub fn pair(
+        &self,
+        code: &str,
+        device_name: &str,
+    ) -> Result<(String, PairedDevicePublic), String> {
+        // Keep the offer locked through persistence and consumption: one code
+        // authorizes exactly one device even when requests arrive together.
+        let mut offer_guard = self.offer.write();
+        let offer = offer_guard.as_mut().ok_or_else(|| {
+            "Pairing code expired. Generate a new one on the desktop.".to_string()
+        })?;
+        if Instant::now() >= offer.expires_at {
+            return Err("Pairing code expired. Generate a new one on the desktop.".into());
+        }
+        if offer.failed_attempts >= 5 {
+            return Err("Too many pairing attempts. Generate a new code on the desktop.".into());
+        }
         if offer.code != code.trim() {
+            offer.failed_attempts += 1;
             return Err("Invalid pairing code".into());
+        }
+        if device_name.len() > 128 {
+            return Err("Device name must be at most 128 bytes".into());
         }
 
         let token = uuid::Uuid::new_v4().to_string();
@@ -95,10 +118,12 @@ impl PairingState {
         };
         {
             let mut devices = self.devices.write();
-            devices.push(device);
-            persist_devices(&self.path, &devices)?;
+            let mut next = devices.clone();
+            next.push(device);
+            persist_devices(&self.path, &next)?;
+            *devices = next;
         }
-        *self.offer.write() = None;
+        *offer_guard = None;
         Ok((token, public))
     }
 
@@ -122,16 +147,20 @@ impl PairingState {
     pub fn revoke(&self, id: &str) -> Result<bool, String> {
         let mut devices = self.devices.write();
         let before = devices.len();
-        devices.retain(|d| d.id != id);
-        let removed = devices.len() != before;
-        persist_devices(&self.path, &devices)?;
+        let mut next = devices.clone();
+        next.retain(|d| d.id != id);
+        let removed = next.len() != before;
+        persist_devices(&self.path, &next)?;
+        *devices = next;
         Ok(removed)
     }
 
     pub fn reset(&self) -> Result<(), String> {
-        self.devices.write().clear();
+        let mut offer = self.offer.write();
+        let mut devices = self.devices.write();
         persist_devices(&self.path, &[])?;
-        *self.offer.write() = None;
+        devices.clear();
+        *offer = None;
         Ok(())
     }
 }
@@ -159,7 +188,22 @@ fn persist_devices(path: &PathBuf, devices: &[PairedDevice]) -> Result<(), Strin
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(devices).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| e.to_string())
+    use std::io::Write;
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -171,13 +215,53 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("reflow_pair_{}", uuid::Uuid::new_v4()));
         let state = PairingState::new(dir.join("devices.json"));
         let offer = state.rotate_code();
-        assert!(state.pair("000000", "phone").is_err());
+        assert!(state.pair("invalid", "phone").is_err());
         let (token, device) = state.pair(&offer.code, "Pixel").expect("pair");
         assert!(state.authorize(&token));
         assert!(!state.authorize("nope"));
         assert_eq!(device.name, "Pixel");
         assert!(state.pair(&offer.code, "again").is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pairing_locks_after_too_many_guesses() {
+        let dir = std::env::temp_dir().join(format!("reflow_pair_limit_{}", uuid::Uuid::new_v4()));
+        let state = PairingState::new(dir.join("devices.json"));
+        let offer = state.rotate_code();
+        for _ in 0..5 {
+            assert!(state.pair("invalid", "phone").is_err());
+        }
+        assert!(state.pair(&offer.code, "phone").is_err());
+        let offer = state.rotate_code();
+        assert!(state.pair(&offer.code, "phone").is_ok());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_pairing_consumes_code_once() {
+        let dir = std::env::temp_dir().join(format!("reflow_pair_race_{}", uuid::Uuid::new_v4()));
+        let state = std::sync::Arc::new(PairingState::new(dir.join("devices.json")));
+        let offer = state.rotate_code();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let state = state.clone();
+                let code = offer.code.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    state.pair(&code, "phone").is_ok()
+                })
+            })
+            .collect();
+        let successes = threads
+            .into_iter()
+            .map(|t| usize::from(t.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(successes, 1);
+        assert_eq!(state.list_public().len(), 1);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

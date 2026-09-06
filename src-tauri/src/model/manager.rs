@@ -1,13 +1,13 @@
-use std::fs;
-use std::path::{Path, PathBuf};
 use crate::asr::engine::EngineStatus;
 use crate::state::ModelStatus;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub struct ModelSpec {
-    pub id: &'static str,        // "0.6b" | "1.7b"
-    pub dir_name: &'static str,  // qwen3-asr-0.6b
-    pub repo: &'static str,      // Qwen/Qwen3-ASR-0.6B-hf
-    pub label: &'static str,     // "0.6B · Realtime"
+    pub id: &'static str,       // "0.6b" | "1.7b"
+    pub dir_name: &'static str, // qwen3-asr-0.6b
+    pub repo: &'static str,     // Qwen/Qwen3-ASR-0.6B-hf
+    pub label: &'static str,    // "0.6B · Realtime"
     pub approx_bytes: u64,
 }
 
@@ -29,10 +29,7 @@ pub const MODELS: &[ModelSpec] = &[
 ];
 
 pub fn spec_for(id: &str) -> &'static ModelSpec {
-    MODELS
-        .iter()
-        .find(|m| m.id == id)
-        .unwrap_or(&MODELS[0])
+    MODELS.iter().find(|m| m.id == id).unwrap_or(&MODELS[0])
 }
 
 pub struct ModelManager {
@@ -77,8 +74,8 @@ impl ModelManager {
             0
         };
         let downloading = engine.is_downloading;
-        let backend_loading = engine.is_loading
-            || engine.backend.to_ascii_lowercase().contains("loading");
+        let backend_loading =
+            engine.is_loading || engine.backend.to_ascii_lowercase().contains("loading");
         let (gpu_name, _) = crate::platform::PlatformSys::detect_gpu();
         let gpu_available = !gpu_name.is_empty() && gpu_name != "CPU";
         // Only surface the `pip install` hint when there's actually a GPU to
@@ -116,6 +113,7 @@ impl ModelManager {
             cuda_available: engine.cuda_available,
             torch_cuda_version: engine.torch_cuda_version.clone(),
             asr_gpu_hint,
+            asr_selection_notice: None,
         }
     }
 
@@ -151,12 +149,10 @@ pub fn weights_present(model_dir: &Path) -> bool {
     let has_config = model_dir.join("config.json").is_file();
     let has_weights = fs::read_dir(model_dir)
         .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .any(|e| {
-                    let name = e.file_name().to_string_lossy().to_lowercase();
-                    name.ends_with(".safetensors") || name.ends_with(".bin")
-                })
+            entries.filter_map(|e| e.ok()).any(|e| {
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                name.ends_with(".safetensors") || name.ends_with(".bin")
+            })
         })
         .unwrap_or(false);
     has_config && has_weights

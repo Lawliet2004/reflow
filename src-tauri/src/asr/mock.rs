@@ -9,6 +9,12 @@ pub struct MockASREngine {
     phrase_index: usize,
 }
 
+impl Default for MockASREngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockASREngine {
     pub fn new() -> Self {
         Self {
@@ -54,7 +60,11 @@ impl ASREngine for MockASREngine {
     }
 
     fn start_stream(&mut self, language: &str, _vocabulary: &[String]) -> Result<(), String> {
-        self.language = if language == "auto" { "en".into() } else { language.to_string() };
+        self.language = if language == "auto" {
+            "en".into()
+        } else {
+            language.to_string()
+        };
         self.sample_count = 0;
         self.current_stream_text.clear();
         Ok(())

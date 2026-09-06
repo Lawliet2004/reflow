@@ -18,7 +18,9 @@ impl PlatformAdapter for WindowsAdapter {
         unsafe {
             use windows::Win32::Foundation::MAX_PATH;
             use windows::Win32::System::ProcessStatus::GetProcessImageFileNameW;
-            use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+            use windows::Win32::System::Threading::{
+                OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            };
             use windows::Win32::UI::WindowsAndMessaging::{
                 GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
             };
@@ -45,7 +47,7 @@ impl PlatformAdapter for WindowsAdapter {
                 let path_len = GetProcessImageFileNameW(process_handle, &mut path_buf);
                 if path_len > 0 {
                     let full_path = String::from_utf16_lossy(&path_buf[..path_len as usize]);
-                    if let Some(filename) = full_path.split('\\').last() {
+                    if let Some(filename) = full_path.split('\\').next_back() {
                         proc_name = filename.to_string();
                     }
                 }
@@ -62,8 +64,8 @@ impl PlatformAdapter for WindowsAdapter {
         unsafe {
             use windows::Win32::UI::Input::KeyboardAndMouse::{
                 SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-                KEYEVENTF_KEYUP, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-                VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
+                KEYEVENTF_KEYUP, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+                VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
             };
 
             let key = |vk, up: bool| INPUT {
@@ -85,7 +87,15 @@ impl PlatformAdapter for WindowsAdapter {
 
             // Release leftover Shift/Win/Alt from the PTT combo so Ctrl+V is
             // not turned into Win+Ctrl+V.
-            let inputs = [
+            //
+            // Sent as its own batch, ahead of the chord and with a settling
+            // gap. Queueing the releases and the Ctrl+V in a single SendInput
+            // call puts them in the target's input queue back-to-back, and the
+            // target can still observe the old modifier state when V arrives —
+            // so a Shift+Win push-to-talk combo turns the paste into
+            // Ctrl+Shift+V (or opens the Start menu) instead of pasting. The
+            // gap is what makes the modifier state actually settle first.
+            let releases = [
                 key(VK_LWIN, true),
                 key(VK_RWIN, true),
                 key(VK_LSHIFT, true),
@@ -96,14 +106,21 @@ impl PlatformAdapter for WindowsAdapter {
                 key(VK_MENU, true),
                 key(VK_LCONTROL, true),
                 key(VK_RCONTROL, true),
+            ];
+            let sent = SendInput(&releases, std::mem::size_of::<INPUT>() as i32);
+            if sent != releases.len() as u32 {
+                return Err("Failed to release held modifiers before pasting".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+
+            let chord = [
                 key(VK_CONTROL, false),
                 key(VK_V, false),
                 key(VK_V, true),
                 key(VK_CONTROL, true),
             ];
-
-            let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-            if sent != inputs.len() as u32 {
+            let sent = SendInput(&chord, std::mem::size_of::<INPUT>() as i32);
+            if sent != chord.len() as u32 {
                 return Err("Failed to send full Ctrl+V keystroke input".into());
             }
             Ok(())
@@ -144,7 +161,8 @@ impl PlatformAdapter for WindowsAdapter {
 
         let exe = std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))?;
         let script = format!("@echo off\r\nstart \"\" \"{}\"\r\n", exe.display());
-        std::fs::write(&launcher, script).map_err(|e| format!("Failed to write startup launcher: {e}"))
+        std::fs::write(&launcher, script)
+            .map_err(|e| format!("Failed to write startup launcher: {e}"))
     }
 
     fn foreground_hwnd() -> isize {
@@ -192,9 +210,7 @@ impl PlatformAdapter for WindowsAdapter {
             let _ = AttachThreadInput(cur, fg_thread, false);
             let _ = AttachThreadInput(cur, target_thread, false);
             let result = ok || GetForegroundWindow() == target;
-            log::info!(
-                "focus_hwnd({hwnd}) fg_pid={fg_pid} target_pid={target_pid} -> {result}"
-            );
+            log::info!("focus_hwnd({hwnd}) fg_pid={fg_pid} target_pid={target_pid} -> {result}");
             result
         }
         #[cfg(not(windows))]

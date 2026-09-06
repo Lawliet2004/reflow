@@ -1,9 +1,8 @@
 use std::path::PathBuf;
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 
 use crate::state::SystemMetrics;
 
-use super::{os_display_name, session};
+use super::session;
 
 pub struct PlatformSys;
 
@@ -30,78 +29,71 @@ impl PlatformSys {
         Self::get_app_dir().join("logs")
     }
 
+    /// Legacy shim: GPU name plus **total** VRAM.
+    ///
+    /// The second element used to be `memory.used`, which callers then treated
+    /// as capacity. Prefer [`crate::capability::capabilities`] for anything
+    /// that makes a decision; this exists for display-only call sites.
     pub fn detect_gpu() -> (String, f32) {
-        static GPU: std::sync::OnceLock<(String, f32)> = std::sync::OnceLock::new();
-        GPU.get_or_init(|| {
-            if let Some(info) = nvidia_smi_gpu() {
-                return info;
-            }
-            ("CPU".into(), 0.0)
-        })
-        .clone()
+        let caps = crate::capability::capabilities();
+        match caps.primary_gpu() {
+            Some(gpu) => (gpu.name.clone(), gpu.total_vram_mb),
+            None => ("CPU".into(), 0.0),
+        }
     }
 
     pub fn get_system_metrics() -> SystemMetrics {
-        use std::sync::{Mutex, OnceLock};
-
-        // Reuse one sysinfo handle and refresh only what the UI shows.
-        // A full process-list scan on every poll wastes noticeable CPU.
-        static SYS: OnceLock<Mutex<System>> = OnceLock::new();
-        let sys = SYS.get_or_init(|| {
-            Mutex::new(System::new_with_specifics(
-                RefreshKind::nothing()
-                    .with_cpu(CpuRefreshKind::everything())
-                    .with_memory(MemoryRefreshKind::everything()),
-            ))
-        });
-
-        let cpu_usage_pct;
-        let total_ram_mb;
-        let used_ram_mb;
-        let app_ram_mb;
-        {
-            let mut guard = sys
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.refresh_cpu_all();
-            guard.refresh_memory();
-            guard.refresh_processes_specifics(
-                ProcessesToUpdate::Some(&[Pid::from_u32(std::process::id())]),
-                true,
-                ProcessRefreshKind::everything(),
-            );
-            cpu_usage_pct = guard.global_cpu_usage();
-            total_ram_mb = (guard.total_memory() as f32) / (1024.0 * 1024.0);
-            used_ram_mb = (guard.used_memory() as f32) / (1024.0 * 1024.0);
-            app_ram_mb = guard
-                .process(Pid::from_u32(std::process::id()))
-                .map(|proc| proc.memory() as f32 / (1024.0 * 1024.0))
-                .unwrap_or(0.0);
-        }
-
-        let (gpu_name, vram_mb) = Self::detect_gpu();
+        let caps = crate::capability::capabilities();
+        let gpu = caps.primary_gpu();
+        let gpu_name = gpu.map(|g| g.name.clone()).unwrap_or_else(|| "CPU".into());
         let session = session();
 
+        // Name the backend by what can actually be dispatched, not by what is
+        // physically present. "GPU (RTX 2050)" while torch is a CPU-only build
+        // is the exact misreport this task removes.
+        let backend_name = match gpu {
+            None => "CPU".to_string(),
+            Some(g) if caps.cuda.torch_cuda_available => format!("CUDA ({})", g.name),
+            Some(g) if caps.vulkan.available => format!("Vulkan ({})", g.name),
+            Some(g) => format!("CPU ({} present, CUDA unavailable)", g.name),
+        };
+
         SystemMetrics {
-            cpu_usage_pct,
-            app_ram_mb,
-            model_ram_mb: 0.0,
-            total_ram_mb: used_ram_mb.min(total_ram_mb),
-            vram_mb,
-            gpu_name: gpu_name.clone(),
+            cpu_usage_pct: caps.cpu.load_pct,
+            app_ram_mb: caps.ram.app_mb,
+            model_ram_mb: caps.ram.asr_mb,
+            total_ram_mb: caps.ram.total_mb,
+            used_ram_mb: caps.ram.used_mb,
+            available_ram_mb: caps.ram.available_mb,
+            vram_mb: gpu.map(|g| g.used_vram_mb).unwrap_or(0.0),
+            total_vram_mb: gpu.map(|g| g.total_vram_mb).unwrap_or(0.0),
+            used_vram_mb: gpu.map(|g| g.used_vram_mb).unwrap_or(0.0),
+            free_vram_mb: gpu.map(|g| g.free_vram_mb).unwrap_or(0.0),
+            gpu_name,
+            gpu_vendor: gpu
+                .map(|g| g.vendor.as_str().to_string())
+                .unwrap_or_default(),
+            gpu_present: gpu.is_some(),
+            cuda_available: caps.cuda.torch_cuda_available,
+            vulkan_available: caps.vulkan.available,
+            cpu_model: caps.cpu.model.clone(),
+            physical_cores: caps.cpu.physical_cores.unwrap_or(0),
+            logical_cores: caps.cpu.logical_cores,
+            asr_ram_mb: caps.ram.asr_mb,
+            refinement_ram_mb: caps.ram.refinement_mb,
             model_loaded: false,
-            backend_name: if gpu_name == "CPU" {
-                "CPU".into()
-            } else {
-                format!("GPU ({gpu_name})")
-            },
-            os_name: os_display_name(),
+            backend_name,
+            os_name: caps.os_name.clone(),
             session: session.as_str().to_string(),
         }
     }
 
+    /// Human-readable diagnostics.
+    ///
+    /// Deliberately contains no transcript text: dictation content must never
+    /// leak into a report a user might paste into an issue.
     pub fn generate_diagnostics_report() -> String {
-        let metrics = Self::get_system_metrics();
+        let caps = crate::capability::capabilities_uncached();
         let audio_backend = if cfg!(windows) {
             "WASAPI (cpal)"
         } else if cfg!(target_os = "linux") {
@@ -110,59 +102,118 @@ impl PlatformSys {
             "cpal"
         };
 
-        format!(
-            "# Reflow Local Dictation System Diagnostics\n\n\
-            - App Version: 0.1.0 (Tauri 2)\n\
-            - OS: {}\n\
-            - Display session: {}\n\
-            - Primary ASR Model: Qwen/Qwen3-ASR-0.6B\n\
-            - Active Backend: {}\n\
-            - GPU Device: {}\n\
-            - GPU memory (used): {:.1} MB\n\
-            - App RAM: {:.1} MB\n\
-            - System RAM (used): {:.1} MB\n\
-            - CPU Load: {:.1}%\n\
-            - Audio Subsystem: {}\n\
-            - VAD: Low-Latency RMS Energy + Hangover Pre/Post Buffer\n\
-            - History: Local SQLite @ {}\n\
-            - Data directory: {}\n\
-            - Privacy: 100% Offline (No Cloud API / Zero Audio Telemetry)\n",
-            metrics.os_name,
-            metrics.session,
-            metrics.backend_name,
-            metrics.gpu_name,
-            metrics.vram_mb,
-            metrics.app_ram_mb,
-            metrics.total_ram_mb,
-            metrics.cpu_usage_pct,
-            audio_backend,
-            Self::get_db_path().display(),
-            Self::get_app_dir().display()
-        )
-    }
-}
+        let mut report = String::new();
+        report.push_str("# Reflow Local Dictation System Diagnostics\n\n");
+        report.push_str(&format!(
+            "- App version: {} (Tauri 2)\n",
+            env!("CARGO_PKG_VERSION")
+        ));
+        report.push_str(&format!("- OS: {}\n", caps.os_name));
+        report.push_str(&format!("- Display session: {}\n", session().as_str()));
+        report.push_str(&format!("- Probed at: {}\n", caps.probed_at));
 
-fn nvidia_smi_gpu() -> Option<(String, f32)> {
-    let output = std::process::Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=name,memory.used",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+        report.push_str("\n## CPU\n");
+        report.push_str(&format!("- Model: {}\n", caps.cpu.model));
+        report.push_str(&format!(
+            "- Cores: {} physical / {} logical ({} available to inference)\n",
+            caps.cpu
+                .physical_cores
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            caps.cpu.logical_cores,
+            caps.cpu.inference_threads()
+        ));
+        report.push_str(&format!("- Load: {:.1}%\n", caps.cpu.load_pct));
+
+        report.push_str("\n## Memory\n");
+        report.push_str(&format!(
+            "- System RAM: {:.0} MB total / {:.0} MB used / {:.0} MB available\n",
+            caps.ram.total_mb, caps.ram.used_mb, caps.ram.available_mb
+        ));
+        report.push_str(&format!("- Reflow: {:.0} MB\n", caps.ram.app_mb));
+        report.push_str(&format!("- ASR sidecar: {:.0} MB\n", caps.ram.asr_mb));
+        report.push_str(&format!(
+            "- Refinement runtime: {:.0} MB\n",
+            caps.ram.refinement_mb
+        ));
+
+        report.push_str("\n## GPU\n");
+        if caps.gpus.is_empty() {
+            report.push_str("- No GPU detected\n");
+        } else {
+            for gpu in &caps.gpus {
+                report.push_str(&format!(
+                    "- [{}] {} ({}): {:.0} MB total / {:.0} MB used / {:.0} MB free\n",
+                    gpu.index,
+                    gpu.name,
+                    gpu.vendor.as_str(),
+                    gpu.total_vram_mb,
+                    gpu.used_vram_mb,
+                    gpu.free_vram_mb
+                ));
+                if let Some(driver) = &gpu.driver_version {
+                    report.push_str(&format!("  - Driver: {driver}\n"));
+                }
+                if let Some(cc) = &gpu.compute_capability {
+                    report.push_str(&format!("  - Compute capability: {cc}\n"));
+                }
+            }
+        }
+        report.push_str(&format!(
+            "- NVIDIA device present: {}\n",
+            caps.cuda.nvidia_gpu_present
+        ));
+        report.push_str(&format!(
+            "- NVIDIA driver present: {}{}\n",
+            caps.cuda.driver_present,
+            caps.cuda
+                .driver_cuda_version
+                .as_ref()
+                .map(|v| format!(" (supports CUDA {v})"))
+                .unwrap_or_default()
+        ));
+        report.push_str(&format!(
+            "- torch.cuda.is_available(): {}{}\n",
+            caps.cuda.torch_cuda_available,
+            caps.cuda
+                .torch_cuda_version
+                .as_ref()
+                .map(|v| format!(" (built for CUDA {v})"))
+                .unwrap_or_default()
+        ));
+        if caps.cuda.gpu_present_but_unusable() {
+            report.push_str(
+                "  - GPU present but CUDA is unavailable to Python: the installed torch is \
+                 most likely a CPU-only wheel.\n",
+            );
+        }
+        report.push_str(&format!(
+            "- Vulkan: {}{}\n",
+            caps.vulkan.available,
+            caps.vulkan
+                .api_version
+                .as_ref()
+                .map(|v| format!(" (instance {v})"))
+                .unwrap_or_default()
+        ));
+        for device in &caps.vulkan.devices {
+            report.push_str(&format!("  - {device}\n"));
+        }
+
+        report.push_str("\n## Pipeline\n");
+        report.push_str(&format!("- Audio subsystem: {audio_backend}\n"));
+        report.push_str("- VAD: RMS energy with hangover and silence-boundary detection\n");
+        report.push_str(&format!(
+            "- History: local SQLite @ {}\n",
+            Self::get_db_path().display()
+        ));
+        report.push_str(&format!(
+            "- Data directory: {}\n",
+            Self::get_app_dir().display()
+        ));
+        report.push_str("- Privacy: fully local. No cloud API, no audio telemetry.\n");
+        report.push_str("- Transcript contents are excluded from this report by design.\n");
+
+        report
     }
-    let line = String::from_utf8_lossy(&output.stdout);
-    let line = line.lines().next()?.trim();
-    if line.is_empty() {
-        return None;
-    }
-    let mut parts = line.split(',').map(|part| part.trim());
-    let name = parts.next()?.to_string();
-    let vram = parts
-        .next()
-        .and_then(|value| value.parse::<f32>().ok())
-        .unwrap_or(0.0);
-    Some((name, vram))
 }

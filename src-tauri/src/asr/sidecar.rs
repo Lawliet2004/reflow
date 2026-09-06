@@ -1,14 +1,89 @@
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use serde_json::{json, Value};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
-use super::stabilizer::TranscriptStabilizer;
 use crate::audio::resampler::AudioResampler;
 
 const ASR_PUSH_CHUNK_SAMPLES: usize = 16_000;
+
+/// Marker prefix for a sidecar read timeout.
+///
+/// Timeouts have to be distinguishable from ordinary engine errors so the
+/// supervisor can restart the process instead of surfacing an opaque failure,
+/// and so callers never confuse "the model rejected this" with "the pipe is
+/// wedged". Matching a prefix keeps the `Result<_, String>` trait boundary
+/// intact while still being machine-checkable.
+pub const ENGINE_TIMEOUT_PREFIX: &str = "engine_timeout:";
+
+/// `true` when `err` came from a sidecar read timeout.
+pub fn is_engine_timeout(err: &str) -> bool {
+    err.starts_with(ENGINE_TIMEOUT_PREFIX)
+}
+
+fn engine_timeout_error(command: &str, waited: Duration) -> String {
+    format!(
+        "{ENGINE_TIMEOUT_PREFIX} '{command}' did not answer within {:.1}s",
+        waited.as_secs_f32()
+    )
+}
+
+/// Liveness check. Answered on the sidecar's reader thread before any heavy
+/// import happens, so this genuinely is a millisecond-scale round trip.
+const TIMEOUT_FAST: Duration = Duration::from_secs(5);
+/// Status polling. Answered on the sidecar's main loop from cached state, so
+/// normally a millisecond-scale round trip.
+///
+/// Deliberately short rather than generous. The sidecar cannot answer *any*
+/// probe while its main thread is inside `_warm_imports` (9-52s, measured), so
+/// a long budget does not make the answer arrive sooner — it just parks the
+/// single-threaded ASR actor for the whole budget, and every queued command
+/// (including the hotkey's `start_stream`) waits behind it. Abandoning a probe
+/// early is safe because replies are matched by request id, so a late answer is
+/// recognised and discarded rather than misread as the reply to a later
+/// request. A timeout here means "no news yet", not "broken".
+const TIMEOUT_STATUS: Duration = Duration::from_secs(8);
+/// Stream control and model-load acknowledgements. These return an ack, not a
+/// completed operation, so they are still fast — but `load_model` is acked
+/// only after the sidecar's main thread has finished the one-time warm import
+/// of torch/transformers/scipy (15-30s on a cold filesystem; see
+/// `_warm_imports` in the runtime), so this budget has to cover that warmup.
+const TIMEOUT_CONTROL: Duration = Duration::from_secs(90);
+/// Incremental audio submission.
+const TIMEOUT_PUSH_AUDIO: Duration = Duration::from_secs(30);
+/// Whole-utterance transcription floor. The real budget scales with how much
+/// audio was captured — see `transcribe_timeout`.
+const TIMEOUT_TRANSCRIBE: Duration = Duration::from_secs(180);
+
+/// Worst-case seconds of compute per second of audio.
+///
+/// Measured on the development machine: ~0.40 with the model on the GPU, ~2.4
+/// with it on the CPU. The CPU figure is the one that has to be budgeted for,
+/// because falling back to the CPU is exactly when a transcription is slowest and
+/// least deserving of being killed mid-flight. Rounded up for headroom.
+const WORST_CASE_RTF: f32 = 3.0;
+
+/// Upper bound regardless of audio length, so a genuinely wedged sidecar is
+/// still noticed eventually.
+const TIMEOUT_TRANSCRIBE_MAX: Duration = Duration::from_secs(45 * 60);
+
+/// How long to allow for transcribing `samples` of 16 kHz audio.
+///
+/// A fixed budget is wrong in both directions. 180s is far more than a
+/// five-second utterance needs, and far less than ten minutes of hands-free
+/// dictation needs — and because `stop_stream` is not a read-only probe, blowing
+/// its budget tears the sidecar down and counts a crash strike. So raising the
+/// audio limit without raising this turns a truncated transcript into a dead
+/// sidecar and no transcript at all.
+fn transcribe_timeout(samples: usize) -> Duration {
+    let audio_secs = samples as f32 / 16_000.0;
+    let scaled = Duration::from_secs_f32(audio_secs * WORST_CASE_RTF);
+    scaled.clamp(TIMEOUT_TRANSCRIBE, TIMEOUT_TRANSCRIBE_MAX)
+}
 
 fn audio_chunks(samples: &[f32]) -> impl Iterator<Item = &[f32]> {
     samples.chunks(ASR_PUSH_CHUNK_SAMPLES)
@@ -17,14 +92,64 @@ fn audio_chunks(samples: &[f32]) -> impl Iterator<Item = &[f32]> {
 pub struct Qwen3AsrSidecar {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
-    reader: Option<BufReader<ChildStdout>>,
+    /// Lines produced by a dedicated reader thread. Reading through a channel
+    /// rather than blocking on the pipe is what makes a bounded wait possible:
+    /// `BufReader::read_line` has no timeout, so a wedged sidecar used to
+    /// deadlock the caller forever while holding the engine lock.
+    ///
+    /// The `Mutex` is only there to satisfy `Sync`: `Receiver` is `Send` but
+    /// not `Sync`, and the engine lives behind a shared `RwLock`.
+    responses: Option<parking_lot::Mutex<Receiver<String>>>,
     backend_name: String,
     detected_language: String,
-    stabilizer: TranscriptStabilizer,
+    /// Non-fatal notice from the last transcription, e.g. that the dictation
+    /// exceeded the single-pass audio limit and was cut.
+    last_warning: Option<String>,
     fallback_mock: MockASREngine,
     use_fallback: bool,
     resource_dir: Option<PathBuf>,
     status_cache: EngineStatus,
+    crash_timestamps: Vec<std::time::Instant>,
+    circuit_breaker_tripped_until: Option<std::time::Instant>,
+    /// Monotonic request counter. Echoed by the sidecar so replies can be
+    /// matched to requests instead of relying on arrival order.
+    next_request_id: u64,
+    /// Consecutive read-only probe timeouts. A single slow poll during a heavy
+    /// load is normal and must not be reported as a fault, so the error is only
+    /// surfaced once the sidecar has missed `PROBE_TIMEOUT_TOLERANCE` in a row.
+    consecutive_probe_timeouts: u32,
+    /// `true` between a `load_model` ack and the load resolving (ready or
+    /// failed).
+    ///
+    /// While this is set, the sidecar is expected to go mute for tens of
+    /// seconds: its main thread is blocked warming native imports and cannot
+    /// answer probes at all. Silence in that window is the normal shape of a
+    /// load in progress, so it must never be recorded as an engine error.
+    /// Doing so is what made a healthy load surface as
+    /// "Model failed to load: engine_timeout" and, because the recording path
+    /// gates on that, silently disabled the hotkey.
+    load_in_flight: bool,
+    /// Samples handed to the engine since `start_stream`.
+    ///
+    /// Kept so the transcription timeout can be derived from how much audio
+    /// actually has to be processed. A fixed budget is wrong in both directions:
+    /// 180s is far more than a 5-second utterance needs, and far less than ten
+    /// minutes of hands-free dictation needs.
+    pushed_samples: usize,
+}
+
+/// How many consecutive `status`/`ping` timeouts to absorb before telling the
+/// user something is wrong.
+const PROBE_TIMEOUT_TOLERANCE: u32 = 3;
+
+pub const CRASH_LOOP_WINDOW_SECS: u64 = 30;
+pub const CRASH_LOOP_MAX_CRASHES: usize = 3;
+pub const CRASH_LOOP_COOLDOWN_SECS: u64 = 60;
+
+impl Default for Qwen3AsrSidecar {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Qwen3AsrSidecar {
@@ -32,14 +157,20 @@ impl Qwen3AsrSidecar {
         Self {
             child: None,
             stdin: None,
-            reader: None,
+            responses: None,
             backend_name: "Qwen3-ASR (Local CUDA/CPU)".into(),
             detected_language: "en".into(),
-            stabilizer: TranscriptStabilizer::new(2),
+            last_warning: None,
             fallback_mock: MockASREngine::new(),
             use_fallback: false,
             resource_dir: None,
             status_cache: EngineStatus::default(),
+            crash_timestamps: Vec::new(),
+            circuit_breaker_tripped_until: None,
+            next_request_id: 1,
+            consecutive_probe_timeouts: 0,
+            load_in_flight: false,
+            pushed_samples: 0,
         }
     }
 
@@ -59,7 +190,11 @@ impl Qwen3AsrSidecar {
                 .unwrap_or(false);
             if ok {
                 // The Windows Store python.exe stub "succeeds" then fails to run.
-                if let Ok(out) = Command::new(name).arg("-c").arg("import sys; print(sys.executable)").output() {
+                if let Ok(out) = Command::new(name)
+                    .arg("-c")
+                    .arg("import sys; print(sys.executable)")
+                    .output()
+                {
                     let exe = String::from_utf8_lossy(&out.stdout).to_lowercase();
                     if exe.contains("windowsapps") {
                         continue;
@@ -81,7 +216,11 @@ impl Qwen3AsrSidecar {
             if let Some(parent) = exe.parent() {
                 candidates.push(parent.join("model-runtime").join("qwen3_asr_runtime.py"));
                 candidates.push(parent.join("../model-runtime").join("qwen3_asr_runtime.py"));
-                candidates.push(parent.join("../../model-runtime").join("qwen3_asr_runtime.py"));
+                candidates.push(
+                    parent
+                        .join("../../model-runtime")
+                        .join("qwen3_asr_runtime.py"),
+                );
                 candidates.push(
                     parent
                         .join("../resources/model-runtime")
@@ -102,27 +241,201 @@ impl Qwen3AsrSidecar {
         candidates.into_iter().find(|path| path.exists())
     }
 
+    /// Timeout to use for a given command name.
+    fn timeout_for(command: &str) -> Duration {
+        match command {
+            "ping" => TIMEOUT_FAST,
+            "status" => TIMEOUT_STATUS,
+            "push_audio_b64" => TIMEOUT_PUSH_AUDIO,
+            "stop_stream" => TIMEOUT_TRANSCRIBE,
+            _ => TIMEOUT_CONTROL,
+        }
+    }
+
+    /// `true` for read-only probes whose failure says nothing about the health
+    /// of an in-flight model load, and which therefore must not tear the child
+    /// down. See `send_command_timeout`.
+    fn is_probe(command: &str) -> bool {
+        matches!(command, "ping" | "status")
+    }
+
     fn send_command(&mut self, payload: Value) -> Result<Value, String> {
-        let stdin = self.stdin.as_mut().ok_or("Subprocess stdin is not open")?;
-        let reader = self.reader.as_mut().ok_or("Subprocess stdout reader is not open")?;
+        let command = payload
+            .get("cmd")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let timeout = Self::timeout_for(&command);
+        self.send_command_timeout(payload, timeout)
+    }
 
-        let line = payload.to_string();
-        writeln!(stdin, "{}", line).map_err(|e| format!("Failed to write to sidecar stdin: {}", e))?;
-        stdin.flush().map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
+    /// Write a command and wait at most `timeout` for its reply.
+    ///
+    /// Replies are matched to requests by an echoed `id` rather than by arrival
+    /// order. The sidecar answers `status`, `ping` and `cancel_stream` on its
+    /// reader thread so they stay responsive while a long transcription is in
+    /// flight, which means replies genuinely can arrive out of order. Matching
+    /// on `id` also makes a timeout survivable: a late reply is recognised as
+    /// belonging to an abandoned request and discarded, instead of being
+    /// misread as the answer to the next one.
+    ///
+    /// Because of that, a timeout on a read-only probe (`status`/`ping`) no
+    /// longer tears down the child. It used to, and that was the bug: the very
+    /// first `status` after spawn had to wait on a cold `import torch` inside
+    /// the sidecar, blew its budget, and killed the process before the model
+    /// could finish loading — on every single launch.
+    fn send_command_timeout(&mut self, payload: Value, timeout: Duration) -> Result<Value, String> {
+        let command = payload
+            .get("cmd")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
 
-        let mut response_line = String::new();
-        reader
-            .read_line(&mut response_line)
-            .map_err(|e| format!("Failed to read sidecar stdout: {}", e))?;
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
 
-        if response_line.trim().is_empty() {
-            return Err("Received empty response from sidecar".into());
+        {
+            let stdin = self.stdin.as_mut().ok_or("Subprocess stdin is not open")?;
+            let mut payload = payload;
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("id".into(), Value::from(request_id));
+            }
+            let line = payload.to_string();
+            writeln!(stdin, "{}", line)
+                .map_err(|e| format!("Failed to write to sidecar stdin: {}", e))?;
+            stdin
+                .flush()
+                .map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
         }
 
-        let resp: Value = serde_json::from_str(&response_line)
-            .map_err(|e| format!("Invalid JSON response: {}: {}", e, response_line))?;
+        // The sidecar may interleave non-JSON chatter; skip blank lines but
+        // keep the overall wait bounded by `timeout`.
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(self.on_command_timeout(&command, timeout));
+            }
+            let received = {
+                let guard = self
+                    .responses
+                    .as_ref()
+                    .ok_or("Subprocess stdout reader is not open")?
+                    .lock();
+                guard.recv_timeout(remaining)
+            };
+            match received {
+                Ok(line) if line.trim().is_empty() => continue,
+                Ok(line) => {
+                    let parsed: Value = match serde_json::from_str(&line) {
+                        Ok(v) => v,
+                        Err(e) => return Err(format!("Invalid JSON response: {}: {}", e, line)),
+                    };
+                    // A reply carrying a different id belongs to a request we
+                    // already gave up on. Drop it and keep waiting for ours.
+                    match parsed.get("id").and_then(|v| v.as_u64()) {
+                        Some(id) if id != request_id => {
+                            log::debug!(
+                                "Discarding stale sidecar reply for request {id} \
+                                 while waiting on {request_id} ('{command}')"
+                            );
+                            continue;
+                        }
+                        _ => return Ok(parsed),
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(self.on_command_timeout(&command, timeout));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    let err = "ASR sidecar closed its output pipe".to_string();
+                    self.kill_child();
+                    self.record_crash_and_check_breaker(&err);
+                    return Err(err);
+                }
+            }
+        }
+    }
 
-        Ok(resp)
+    /// Decide what a read timeout means for the child process.
+    ///
+    /// Probes are non-destructive: id-matched replies mean a late answer cannot
+    /// corrupt a later request, so a slow probe is reported and retried rather
+    /// than escalated into a process kill and a crash-loop strike. Real
+    /// operations still tear the child down, because a wedged transcription is
+    /// evidence the runtime itself is stuck.
+    fn on_command_timeout(&mut self, command: &str, timeout: Duration) -> String {
+        let err = engine_timeout_error(command, timeout);
+        if Self::is_probe(command) {
+            self.consecutive_probe_timeouts = self.consecutive_probe_timeouts.saturating_add(1);
+            // A load in progress is expected to be mute: the sidecar's main
+            // thread is inside a blocking native import and physically cannot
+            // answer. Recording that as an engine error makes a healthy load
+            // look like a failed one to every consumer of `engine_status`,
+            // including the gate that decides whether the hotkey may record.
+            let loading = self.load_in_flight || self.status_cache.is_loading;
+            if loading {
+                log::debug!(
+                    "{err}; sidecar is mid-load and cannot answer probes yet \
+                     ({} consecutive)",
+                    self.consecutive_probe_timeouts
+                );
+                return err;
+            }
+            log::warn!(
+                "{err}; keeping the sidecar alive (read-only probe, {}/{} consecutive)",
+                self.consecutive_probe_timeouts,
+                PROBE_TIMEOUT_TOLERANCE
+            );
+            // Keep the last known state. A load in progress is still in
+            // progress; only escalate once the sidecar is persistently mute.
+            if self.consecutive_probe_timeouts >= PROBE_TIMEOUT_TOLERANCE {
+                self.status_cache.error = Some(err.clone());
+            }
+            err
+        } else {
+            log::error!("{err}; tearing down the sidecar to avoid a desynchronised pipe");
+            self.kill_child();
+            self.record_crash_and_check_breaker(&err);
+            err
+        }
+    }
+
+    pub fn is_circuit_breaker_open(&mut self) -> bool {
+        if let Some(deadline) = self.circuit_breaker_tripped_until {
+            if std::time::Instant::now() < deadline {
+                return true;
+            }
+            self.circuit_breaker_tripped_until = None;
+            self.crash_timestamps.clear();
+        }
+        false
+    }
+
+    pub fn record_crash_and_check_breaker(&mut self, reason: &str) {
+        let now = std::time::Instant::now();
+        self.crash_timestamps.push(now);
+        let cutoff = now
+            .checked_sub(std::time::Duration::from_secs(CRASH_LOOP_WINDOW_SECS))
+            .unwrap_or(now);
+        self.crash_timestamps.retain(|t| *t >= cutoff);
+
+        if self.crash_timestamps.len() >= CRASH_LOOP_MAX_CRASHES {
+            let cooldown = now + std::time::Duration::from_secs(CRASH_LOOP_COOLDOWN_SECS);
+            self.circuit_breaker_tripped_until = Some(cooldown);
+            let msg = format!(
+                "ASR sidecar crashed {} times within {}s. Crash loop circuit breaker tripped (cooldown: {}s). Last error: {}",
+                CRASH_LOOP_MAX_CRASHES, CRASH_LOOP_WINDOW_SECS, CRASH_LOOP_COOLDOWN_SECS, reason
+            );
+            log::error!("{msg}");
+            self.use_fallback = false;
+            self.status_cache.loaded = false;
+            self.status_cache.is_loading = false;
+            self.status_cache.backend = "circuit_breaker_tripped".into();
+            self.status_cache.error = Some(msg);
+        } else {
+            self.fallback(reason);
+        }
     }
 
     fn fallback(&mut self, reason: &str) {
@@ -130,6 +443,7 @@ impl Qwen3AsrSidecar {
         // reports loaded=true and inserts canned text unrelated to the mic.
         log::error!("ASR sidecar unavailable ({reason})");
         self.use_fallback = false;
+        self.load_in_flight = false;
         self.status_cache.loaded = false;
         self.status_cache.is_loading = false;
         self.status_cache.backend = "unavailable".into();
@@ -138,12 +452,47 @@ impl Qwen3AsrSidecar {
 
     fn kill_child(&mut self) {
         if let Some(mut child) = self.child.take() {
+            if let Some(mut stdin) = self.stdin.take() {
+                use std::io::Write;
+                let _ = writeln!(stdin, "{{\"cmd\":\"quit\"}}");
+                let _ = stdin.flush();
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
         self.stdin = None;
-        self.reader = None;
+        self.responses = None;
     }
+}
+
+/// Pump the sidecar's stdout into a channel on a dedicated thread.
+///
+/// The thread ends when the pipe closes, which disconnects the receiver and
+/// lets `send_command_timeout` report a dead sidecar instead of blocking.
+fn spawn_response_reader(
+    stdout: std::process::ChildStdout,
+) -> parking_lot::Mutex<Receiver<String>> {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::Builder::new()
+        .name("asr-sidecar-reader".into())
+        .spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                match line {
+                    Ok(line) => {
+                        if tx.send(line).is_err() {
+                            // Receiver dropped: the sidecar was replaced.
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        log::warn!("ASR sidecar stdout read error: {err}");
+                        break;
+                    }
+                }
+            }
+        })
+        .ok();
+    parking_lot::Mutex::new(rx)
 }
 
 impl ASREngine for Qwen3AsrSidecar {
@@ -151,12 +500,61 @@ impl ASREngine for Qwen3AsrSidecar {
         self.resource_dir = Some(dir);
     }
 
+    /// Ask the sidecar to compute its CUDA capability snapshot now.
+    ///
+    /// The probe only used to run inside the first `load_model`'s warm
+    /// imports, so a load decision made before any load always read
+    /// `cuda_available=false`/pending and sent GPU-capable machines to the
+    /// CPU. This fires the warmup without loading anything.
+    ///
+    /// The ack means "started", not "done": the warm imports block the
+    /// sidecar's main thread for 10-60s on a cold filesystem, during which
+    /// `status` cannot answer at all. That silence is the normal shape of a
+    /// probe in flight — the same semantics `load_in_flight` exists for —
+    /// so this sets it, which keeps the mute window from being recorded as
+    /// an engine error. Completion is observed through
+    /// `engine_status().cuda_probe_pending` flipping to `false`.
+    fn probe_cuda(&mut self) -> Result<(), String> {
+        if self.use_fallback {
+            return Ok(());
+        }
+        if self.child.is_none() {
+            return Err("ASR sidecar is not running".into());
+        }
+        match self.send_command(json!({"cmd": "probe_cuda"})) {
+            Ok(resp) => {
+                if resp.get("status") == Some(&Value::String("error".into())) {
+                    let err = resp
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("probe_cuda failed");
+                    return Err(err.to_string());
+                }
+                // The sidecar's main thread now blocks in the warm imports
+                // and cannot answer `status` until the probe lands. Treat
+                // that silence as expected, exactly like a model load.
+                self.load_in_flight = true;
+                self.consecutive_probe_timeouts = 0;
+                Ok(())
+            }
+            Err(e) => Err(format!("Could not reach the ASR sidecar: {e}")),
+        }
+    }
+
     fn initialize(&mut self) -> Result<(), String> {
+        if self.is_circuit_breaker_open() {
+            return Err(
+                "ASR sidecar circuit breaker is open (cooling down after crash loop).".into(),
+            );
+        }
+
         log::info!("Initializing Qwen3-ASR sidecar process...");
 
         let Some(python) = Self::find_python() else {
             self.fallback("Python 3 was not found on PATH");
-            return Err("Python 3 was not found on PATH. Install Python and restart Reflow.".into());
+            return Err(
+                "Python 3 was not found on PATH. Install Python and restart Reflow.".into(),
+            );
         };
 
         let Some(script) = Self::find_runtime_script(self.resource_dir.as_deref()) else {
@@ -186,11 +584,11 @@ impl ASREngine for Qwen3AsrSidecar {
             match cmd.spawn() {
                 Ok(mut child) => {
                     let stdin = child.stdin.take();
-                    let stdout = child.stdout.take().map(BufReader::new);
+                    let responses = child.stdout.take().map(spawn_response_reader);
 
                     self.child = Some(child);
                     self.stdin = stdin;
-                    self.reader = stdout;
+                    self.responses = responses;
 
                     // The sidecar answers ping before importing torch, so
                     // this returns in milliseconds and app startup stays fast.
@@ -205,9 +603,7 @@ impl ASREngine for Qwen3AsrSidecar {
                     self.kill_child();
                 }
                 Err(err) => {
-                    log::warn!(
-                        "Could not spawn python sidecar (attempt {attempt}/3): {err}"
-                    );
+                    log::warn!("Could not spawn python sidecar (attempt {attempt}/3): {err}");
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -246,16 +642,23 @@ impl ASREngine for Qwen3AsrSidecar {
                         .get("error")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown model load error");
+                    self.load_in_flight = false;
                     return Err(err.to_string());
                 }
                 // "loading" | "ok" | "already-loading" — completion is
                 // observable through engine_status().
+                self.load_in_flight = true;
+                self.consecutive_probe_timeouts = 0;
                 self.status_cache.loaded = false;
                 self.status_cache.is_loading = true;
                 self.status_cache.backend = "loading…".into();
+                self.status_cache.error = None;
                 Ok(())
             }
-            Err(e) => Err(format!("Could not reach the ASR sidecar: {e}")),
+            Err(e) => {
+                self.load_in_flight = false;
+                Err(format!("Could not reach the ASR sidecar: {e}"))
+            }
         }
     }
 
@@ -292,7 +695,8 @@ impl ASREngine for Qwen3AsrSidecar {
             let _ = child.kill();
         }
         self.stdin = None;
-        self.reader = None;
+        self.responses = None;
+        self.load_in_flight = false;
         self.status_cache = EngineStatus::default();
         Ok(())
     }
@@ -305,12 +709,18 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn start_stream(&mut self, language: &str, vocabulary: &[String]) -> Result<(), String> {
-        self.stabilizer.reset();
-        self.detected_language = if language == "auto" { "en".into() } else { language.to_string() };
+        self.detected_language = if language == "auto" {
+            "en".into()
+        } else {
+            language.to_string()
+        };
 
         if self.use_fallback {
             return self.fallback_mock.start_stream(language, vocabulary);
         }
+
+        // New utterance, new audio budget.
+        self.pushed_samples = 0;
 
         let cmd = json!({
             "cmd": "start_stream",
@@ -338,61 +748,60 @@ impl ASREngine for Qwen3AsrSidecar {
 
     fn push_audio(&mut self, samples_16k_mono: &[f32]) -> Result<Option<String>, String> {
         if self.use_fallback {
-            let res = self.fallback_mock.push_audio(samples_16k_mono)?;
-            if let Some(ref text) = res {
-                self.stabilizer.update(text);
-            }
-            return Ok(res);
+            return self.fallback_mock.push_audio(samples_16k_mono);
         }
 
-        use base64::Engine;
-        let mut latest_text = None;
+        self.pushed_samples = self.pushed_samples.saturating_add(samples_16k_mono.len());
+        let stdin = self.stdin.as_mut().ok_or("Subprocess stdin is not open")?;
 
-        // Keep each JSON/pipe write bounded. This also protects callers that
+        // Keep each binary frame write bounded. This also protects callers that
         // submit a large buffer (for example external audio), while normal
         // microphone capture still benefits from its ~0.5 s batching.
         for chunk in audio_chunks(samples_16k_mono) {
             let pcm_bytes = AudioResampler::f32_to_pcm16_bytes(chunk);
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&pcm_bytes);
-            let cmd = json!({
-                "cmd": "push_audio_b64",
-                "audio_b64": b64
-            });
+            let len = pcm_bytes.len() as u32;
 
-            match self.send_command(cmd) {
-                Ok(resp) => {
-                    if let Some(text) = resp.get("text").and_then(|v| v.as_str()) {
-                        if !text.is_empty() {
-                            self.stabilizer.update(text);
-                            latest_text = Some(text.to_string());
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("push_audio failed: {e}");
-                    return Err(e);
-                }
-            }
+            let mut header = [0u8; 13];
+            header[0] = 0x01; // binary frame marker
+            header[1..5].copy_from_slice(&0u32.to_le_bytes()); // session_id
+            header[5..9].copy_from_slice(&0u32.to_le_bytes()); // sequence_id
+            header[9..13].copy_from_slice(&len.to_le_bytes()); // len
+
+            stdin
+                .write_all(&header)
+                .map_err(|e| format!("Failed to write binary frame header: {e}"))?;
+            stdin
+                .write_all(&pcm_bytes)
+                .map_err(|e| format!("Failed to write binary audio data: {e}"))?;
+            stdin
+                .flush()
+                .map_err(|e| format!("Failed to flush sidecar stdin: {e}"))?;
         }
 
-        Ok(latest_text)
+        Ok(None)
     }
 
     fn get_partial_transcript(&mut self) -> Result<String, String> {
         if self.use_fallback {
             return self.fallback_mock.get_partial_transcript();
         }
-        Ok(self.stabilizer.full_transcript())
+        Ok(String::new())
     }
 
     fn stop_stream(&mut self) -> Result<String, String> {
         if self.use_fallback {
-            let res = self.fallback_mock.stop_stream()?;
-            return Ok(self.stabilizer.finalize(&res));
+            return self.fallback_mock.stop_stream();
         }
 
         let cmd = json!({"cmd": "stop_stream"});
-        match self.send_command(cmd) {
+        // Budget derived from the audio actually captured, not a constant.
+        let budget = transcribe_timeout(self.pushed_samples);
+        log::debug!(
+            "Transcribing {:.1}s of audio with a {:.0}s budget",
+            self.pushed_samples as f32 / 16_000.0,
+            budget.as_secs_f32()
+        );
+        match self.send_command_timeout(cmd, budget) {
             Ok(resp) => {
                 if resp.get("status") == Some(&Value::String("error".into())) {
                     let err = resp
@@ -407,11 +816,22 @@ impl ASREngine for Qwen3AsrSidecar {
                         self.detected_language = lang.to_string();
                     }
                 }
+                // A transcript that silently omits the end of what was said is
+                // worse than one that says it was cut. Keep the notice so the
+                // session can show it.
+                self.last_warning = resp
+                    .get("warning")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                if let Some(warning) = &self.last_warning {
+                    log::warn!("ASR: {warning}");
+                }
                 let text = resp
                     .get("text")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                Ok(self.stabilizer.finalize(text))
+                Ok(text.to_string())
             }
             Err(e) => {
                 log::error!("stop_stream failed: {e}");
@@ -421,7 +841,6 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn cancel_stream(&mut self) -> Result<(), String> {
-        self.stabilizer.reset();
         if self.use_fallback {
             return self.fallback_mock.cancel_stream();
         }
@@ -431,6 +850,10 @@ impl ASREngine for Qwen3AsrSidecar {
 
     fn get_detected_language(&self) -> String {
         self.detected_language.clone()
+    }
+
+    fn take_last_warning(&mut self) -> Option<String> {
+        self.last_warning.take()
     }
 
     fn get_backend_name(&self) -> String {
@@ -454,6 +877,8 @@ impl Qwen3AsrSidecar {
     /// the status command is answered instantly by the Python process.
     fn refresh_status(&mut self) -> Result<(), String> {
         let resp = self.send_command(json!({"cmd": "status"}))?;
+        // The sidecar answered, so any earlier slow polls were transient.
+        self.consecutive_probe_timeouts = 0;
         if resp.get("status") == Some(&Value::String("ok".into())) {
             let loaded = resp
                 .get("loaded")
@@ -471,6 +896,11 @@ impl Qwen3AsrSidecar {
                 .get("is_loading")
                 .and_then(|v| v.as_bool())
                 .unwrap_or_else(|| backend.to_ascii_lowercase().contains("loading"));
+            // The sidecar has spoken and the load is no longer pending, so
+            // future probe silence is a real fault rather than warmup.
+            if !is_loading {
+                self.load_in_flight = false;
+            }
             self.status_cache = EngineStatus {
                 loaded: loaded && !is_loading,
                 device: resp
@@ -502,6 +932,10 @@ impl Qwen3AsrSidecar {
                     .get("cuda_available")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
+                cuda_probe_pending: resp
+                    .get("cuda_probe_pending")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
                 torch_cuda_version: resp
                     .get("torch_cuda_version")
                     .and_then(|v| v.as_str())
@@ -511,7 +945,57 @@ impl Qwen3AsrSidecar {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(String::from),
+                spill_detected: resp
+                    .get("spill_detected")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                spill_reasons: resp
+                    .get("spill_reasons")
+                    .and_then(|v| v.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                spill_checked: resp
+                    .get("spill_checked")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                failure_kind: resp
+                    .get("failure_kind")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+                precision: resp
+                    .get("precision")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                load_seconds: resp
+                    .get("load_seconds")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32,
+                warmup_rtf: resp
+                    .get("warmup_rtf")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32),
             };
+            if self.status_cache.spill_detected {
+                log::error!(
+                    "VRAM spill detected: {}",
+                    self.status_cache.spill_reasons.join("; ")
+                );
+            }
+            // The sidecar is the only place that can answer
+            // `torch.cuda.is_available()`. Publish it so the capability probe
+            // can distinguish "no GPU" from "GPU present, CUDA unusable"
+            // instead of inferring one from the other.
+            crate::capability::set_torch_cuda(
+                self.status_cache.cuda_available,
+                self.status_cache.torch_cuda_version.clone(),
+            );
         }
         Ok(())
     }
@@ -525,7 +1009,7 @@ impl Drop for Qwen3AsrSidecar {
 
 #[cfg(test)]
 mod tests {
-    use super::{audio_chunks, ASR_PUSH_CHUNK_SAMPLES};
+    use super::*;
 
     #[test]
     fn audio_push_chunks_are_bounded_to_one_second() {
@@ -545,5 +1029,265 @@ mod tests {
     fn empty_audio_produces_no_push_chunks() {
         let samples: [f32; 0] = [];
         assert_eq!(audio_chunks(&samples).count(), 0);
+    }
+
+    /// A wedged sidecar used to deadlock the caller forever while holding the
+    /// engine write lock. Every command must now have a bounded wait, and the
+    /// resulting error must be recognisable as a timeout.
+    #[test]
+    fn every_command_has_a_bounded_timeout() {
+        for command in [
+            "ping",
+            "status",
+            "load_model",
+            "install_model",
+            "start_stream",
+            "push_audio_b64",
+            "stop_stream",
+            "cancel_stream",
+            "unload_model",
+            "something_new",
+        ] {
+            let timeout = Qwen3AsrSidecar::timeout_for(command);
+            assert!(timeout > Duration::ZERO, "{command} has no timeout");
+            assert!(
+                timeout <= TIMEOUT_TRANSCRIBE,
+                "{command} timeout {timeout:?} exceeds the transcription bound"
+            );
+        }
+    }
+
+    #[test]
+    fn hot_path_commands_are_not_given_transcription_timeouts() {
+        // The status poller and the hotkey path must fail fast; waiting three
+        // minutes on a status query is what made the UI hang.
+        assert_eq!(Qwen3AsrSidecar::timeout_for("ping"), TIMEOUT_FAST);
+        assert!(Qwen3AsrSidecar::timeout_for("status") < TIMEOUT_CONTROL);
+        // Only the whole-utterance transcription gets the long bound.
+        assert_eq!(
+            Qwen3AsrSidecar::timeout_for("stop_stream"),
+            TIMEOUT_TRANSCRIBE
+        );
+    }
+
+    /// `status` is polled while a multi-gigabyte checkpoint is being quantized
+    /// and warmed, which starves the interpreter for seconds at a time. It gets
+    /// more headroom than `ping` for that reason — but still nothing like the
+    /// transcription bound, because a genuinely mute sidecar must be noticed.
+    #[test]
+    fn status_has_more_headroom_than_ping_but_stays_bounded() {
+        let status = Qwen3AsrSidecar::timeout_for("status");
+        assert!(
+            status > TIMEOUT_FAST,
+            "status budget {status:?} must exceed the bare liveness budget"
+        );
+        assert!(
+            status < TIMEOUT_TRANSCRIBE,
+            "status budget {status:?} must stay far below the transcription bound"
+        );
+    }
+
+    /// The teardown policy is the whole point of the fix: a read-only probe
+    /// timing out must not kill a sidecar that is legitimately mid-load.
+    #[test]
+    fn only_real_operations_are_treated_as_fatal_on_timeout() {
+        assert!(Qwen3AsrSidecar::is_probe("status"));
+        assert!(Qwen3AsrSidecar::is_probe("ping"));
+        for command in [
+            "load_model",
+            "install_model",
+            "start_stream",
+            "push_audio_b64",
+            "stop_stream",
+            "unload_model",
+        ] {
+            assert!(
+                !Qwen3AsrSidecar::is_probe(command),
+                "{command} must still tear the child down when it wedges"
+            );
+        }
+    }
+
+    /// The budget has to grow with the audio, or raising the audio limit just
+    /// converts a truncated transcript into a killed sidecar.
+    ///
+    /// `stop_stream` is not a read-only probe: exceeding its budget tears the
+    /// child down and counts a crash strike. Against the old fixed 180s, the
+    /// measured worst case of 2.4x realtime on CPU covered only ~75s of audio.
+    #[test]
+    fn the_transcription_budget_scales_with_the_audio() {
+        let one_second = 16_000;
+
+        // Short utterances keep the floor; there is no reason to shrink below it.
+        assert_eq!(transcribe_timeout(one_second * 5), TIMEOUT_TRANSCRIBE);
+
+        // Ten minutes of audio must get far more than the old fixed budget.
+        let ten_minutes = transcribe_timeout(one_second * 600);
+        assert!(
+            ten_minutes > TIMEOUT_TRANSCRIBE,
+            "600s of audio still only got {ten_minutes:?}"
+        );
+        // And enough to cover the measured worst-case CPU throughput.
+        assert!(
+            ten_minutes.as_secs_f32() >= 600.0 * 2.4,
+            "budget {ten_minutes:?} is under the measured CPU cost of 600s of audio"
+        );
+
+        // An hour is admitted by the Python side, so it must be budgeted for.
+        let one_hour = transcribe_timeout(one_second * 3600);
+        assert!(one_hour > ten_minutes);
+
+        // Still bounded, so a wedged sidecar is eventually noticed.
+        assert!(transcribe_timeout(one_second * 100_000) <= TIMEOUT_TRANSCRIBE_MAX);
+    }
+
+    #[test]
+    fn timeout_errors_are_distinguishable_from_engine_errors() {
+        let err = engine_timeout_error("stop_stream", Duration::from_secs(180));
+        assert!(is_engine_timeout(&err), "{err}");
+        assert!(err.contains("stop_stream"));
+        assert!(!is_engine_timeout("Transcription failed"));
+        assert!(!is_engine_timeout("Python 3 was not found on PATH"));
+    }
+
+    /// The sidecar cannot answer any probe while its main thread is blocked
+    /// warming native imports, which takes 9-52s in practice. That silence is
+    /// the normal shape of a load in progress. Recording it as an engine error
+    /// made `engine_status().error` report "Model failed to load: engine_timeout"
+    /// for a model that was loading perfectly well — and because
+    /// `session::start_microphone_at` refuses to record when the engine reports
+    /// an error or `!loaded`, it silently killed the hotkey for the session.
+    #[test]
+    fn probe_timeouts_during_a_load_are_not_reported_as_errors() {
+        let mut sidecar = Qwen3AsrSidecar::new();
+        sidecar.load_in_flight = true;
+        sidecar.status_cache.is_loading = true;
+
+        for _ in 0..(PROBE_TIMEOUT_TOLERANCE + 5) {
+            let err = sidecar.on_command_timeout("status", TIMEOUT_STATUS);
+            assert!(is_engine_timeout(&err));
+        }
+
+        assert!(
+            sidecar.status_cache.error.is_none(),
+            "a warming sidecar must not be reported as failed, got {:?}",
+            sidecar.status_cache.error
+        );
+        assert!(
+            sidecar.status_cache.is_loading,
+            "the load must still be reported as in progress"
+        );
+    }
+
+    /// The tolerance must still work once the load has resolved: a sidecar that
+    /// has gone permanently mute is a real fault and has to be surfaced.
+    #[test]
+    fn persistent_probe_timeouts_outside_a_load_still_surface() {
+        let mut sidecar = Qwen3AsrSidecar::new();
+        sidecar.load_in_flight = false;
+        sidecar.status_cache.is_loading = false;
+
+        for _ in 0..(PROBE_TIMEOUT_TOLERANCE - 1) {
+            sidecar.on_command_timeout("status", TIMEOUT_STATUS);
+        }
+        assert!(
+            sidecar.status_cache.error.is_none(),
+            "a couple of slow polls are not a fault"
+        );
+
+        sidecar.on_command_timeout("status", TIMEOUT_STATUS);
+        assert!(
+            sidecar.status_cache.error.is_some(),
+            "a persistently mute sidecar must be reported"
+        );
+    }
+
+    /// A short status budget is only safe because replies are id-matched, and it
+    /// is necessary because every status poll occupies the single-threaded ASR
+    /// actor for its whole duration — including the hotkey's `start_stream`.
+    #[test]
+    fn status_budget_stays_short_enough_not_to_stall_the_actor() {
+        let status = Qwen3AsrSidecar::timeout_for("status");
+        assert!(
+            status <= Duration::from_secs(10),
+            "status budget {status:?} would park the ASR actor too long"
+        );
+    }
+
+    /// Sending a command with no live subprocess must return an error rather
+    /// than panic or block.
+    #[test]
+    fn command_without_a_subprocess_fails_fast() {
+        let mut sidecar = Qwen3AsrSidecar::new();
+        let started = std::time::Instant::now();
+        let result = sidecar.send_command(serde_json::json!({"cmd": "status"}));
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "must not wait on a pipe that was never opened"
+        );
+    }
+
+    #[test]
+    fn binary_audio_frame_header_format() {
+        let pcm_bytes = [0x12, 0x34, 0x56, 0x78];
+        let len = pcm_bytes.len() as u32;
+
+        let mut header = [0u8; 13];
+        header[0] = 0x01;
+        header[1..5].copy_from_slice(&7u32.to_le_bytes());
+        header[5..9].copy_from_slice(&3u32.to_le_bytes());
+        header[9..13].copy_from_slice(&len.to_le_bytes());
+
+        assert_eq!(header[0], 0x01);
+        assert_eq!(u32::from_le_bytes(header[1..5].try_into().unwrap()), 7);
+        assert_eq!(u32::from_le_bytes(header[5..9].try_into().unwrap()), 3);
+        assert_eq!(u32::from_le_bytes(header[9..13].try_into().unwrap()), 4);
+    }
+
+    /// A status reply that predates `cuda_probe_pending` (an older sidecar)
+    /// must deserialize with the field defaulting to `false`, not fail or
+    /// read as pending forever.
+    #[test]
+    fn engine_status_tolerates_a_reply_without_the_probe_field() {
+        let legacy = serde_json::json!({
+            "status": "ok",
+            "loaded": false,
+            "device": "none",
+            "backend": "not loaded",
+            "is_loading": false,
+            "cuda_available": true,
+        });
+        let parsed: EngineStatus = serde_json::from_value(legacy).expect("legacy reply parses");
+        assert!(parsed.cuda_available);
+        assert!(
+            !parsed.cuda_probe_pending,
+            "an absent field must not read as probe-pending, or the startup \
+             load would wait on a reply that will never change"
+        );
+    }
+
+    /// The startup load decision waits on this field, so its two meanings
+    /// must stay distinct: `pending=true` means "not looked yet" and
+    /// `cuda_available=false` with `pending=false` means "looked, and no".
+    #[test]
+    fn probe_pending_is_distinct_from_an_answered_no() {
+        let base = serde_json::json!({
+            "status": "ok",
+            "loaded": false,
+            "device": "none",
+            "backend": "not loaded",
+            "is_loading": false,
+            "cuda_available": false,
+        });
+        let mut pending = base.clone();
+        pending["cuda_probe_pending"] = serde_json::json!(true);
+        let mut answered_no = base;
+        answered_no["cuda_probe_pending"] = serde_json::json!(false);
+        let pending: EngineStatus = serde_json::from_value(pending).unwrap();
+        let answered_no: EngineStatus = serde_json::from_value(answered_no).unwrap();
+        assert!(pending.cuda_probe_pending);
+        assert!(!answered_no.cuda_probe_pending);
+        assert!(!pending.cuda_available && !answered_no.cuda_available);
     }
 }

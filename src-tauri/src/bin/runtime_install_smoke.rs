@@ -7,9 +7,7 @@
 // pure-function code paths: spec selection, archive-kind detection,
 // SHA-256 verification, and the env-var override.
 
-use reflow_lib::rewrite::runtime_install::{
-    pick_runtime_spec, ArchiveKind, RUNTIME_LOCK_KEY,
-};
+use reflow_lib::rewrite::runtime_install::{pick_runtime_spec, ArchiveKind, RUNTIME_LOCK_KEY};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
@@ -34,29 +32,70 @@ fn main() {
 
 fn run_basic_tests(failures: &mut u32) {
     // Archive kind detection.
-    pass(failures, "ArchiveKind::from_extension detects .zip", ArchiveKind::from_extension("foo.zip") == ArchiveKind::Zip);
-    pass(failures, "ArchiveKind::from_extension detects .tar.gz", ArchiveKind::from_extension("foo.tar.gz") == ArchiveKind::TarGz);
+    pass(
+        failures,
+        "ArchiveKind::from_extension detects .zip",
+        ArchiveKind::from_extension("foo.zip") == ArchiveKind::Zip,
+    );
+    pass(
+        failures,
+        "ArchiveKind::from_extension detects .tar.gz",
+        ArchiveKind::from_extension("foo.tar.gz") == ArchiveKind::TarGz,
+    );
 
     // Lock key is stable.
-    pass(failures, "RUNTIME_LOCK_KEY is 'llama-runtime'", RUNTIME_LOCK_KEY == "llama-runtime");
+    pass(
+        failures,
+        "RUNTIME_LOCK_KEY is 'llama-runtime'",
+        RUNTIME_LOCK_KEY == "llama-runtime",
+    );
 
     // pick_runtime_spec returns a CPU spec when the user asks for it.
     let cpu = pick_runtime_spec("cpu");
-    pass(failures, "pick_runtime_spec('cpu') returns Some", cpu.is_some());
+    pass(
+        failures,
+        "pick_runtime_spec('cpu') returns Some",
+        cpu.is_some(),
+    );
     if let Some(spec) = cpu {
-        pass(failures, "CPU spec is labelled 'CPU'", spec.kind_label == "CPU");
-        pass(failures, "CPU spec has 64-char SHA-256", spec.sha256.len() == 64);
-        pass(failures, "CPU spec URL points at the pinned tag", spec.url.contains("b10621"));
+        pass(
+            failures,
+            "CPU spec is labelled 'CPU'",
+            spec.kind_label == "CPU",
+        );
+        pass(
+            failures,
+            "CPU spec has 64-char SHA-256",
+            spec.sha256.len() == 64,
+        );
+        pass(
+            failures,
+            "CPU spec URL points at the pinned tag",
+            spec.url.contains("b10621"),
+        );
         pass(
             failures,
             "CPU spec binary_basename matches the platform",
-            spec.binary_basename == if cfg!(windows) { "llama-server.exe" } else { "llama-server" },
+            spec.binary_basename
+                == if cfg!(windows) {
+                    "llama-server.exe"
+                } else {
+                    "llama-server"
+                },
         );
     }
 
     // pick_runtime_spec handles "auto" and unknown values.
-    pass(failures, "pick_runtime_spec('auto') returns Some", pick_runtime_spec("auto").is_some());
-    pass(failures, "pick_runtime_spec('garbage') returns Some", pick_runtime_spec("garbage").is_some());
+    pass(
+        failures,
+        "pick_runtime_spec('auto') returns Some",
+        pick_runtime_spec("auto").is_some(),
+    );
+    pass(
+        failures,
+        "pick_runtime_spec('garbage') returns Some",
+        pick_runtime_spec("garbage").is_some(),
+    );
 
     // SHA-256 of a known string.
     let mut hasher = Sha256::new();
@@ -171,7 +210,11 @@ fn run_live_download(failures: &mut u32) {
             break;
         }
     }
-    pass(failures, "Archive contains the expected binary entry", extracted);
+    pass(
+        failures,
+        "Archive contains the expected binary entry",
+        extracted,
+    );
     let exists = dest.exists();
     pass(failures, "Extracted binary exists on disk", exists);
     let impl_path = dest.with_file_name("llama-server-impl.dll");
