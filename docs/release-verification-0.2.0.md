@@ -14,6 +14,8 @@ The existing working tree contained a substantial unreleased implementation. Thi
 
 ## Architecture
 
+Local validation passed 67 frontend tests, 354 Rust tests, and 60 Python runtime self-test checks. The installed speech-recognition and refinement integration tests ran on the Windows development machine. The frontend dependency audit reported zero vulnerabilities. ESLint passed with six warning-level React effect findings; TypeScript, Prettier, Rustfmt, and Windows Clippy passed. Linux CI caught a Windows-only GPU-parser import, which is now conditionally compiled. Installer verification caught and corrected the NSIS language identifier before publication.
+
 Rust owns recording state, model execution, persistence, and OS integration. React sends settings patches through a serialized queue and displays authoritative results; failed writes reload persisted settings. Model/cleanup pages consume a shared status hub. Asynchronous event registrations have explicit ownership and release subscriptions even when setup finishes after unmount.
 
 Copy is the manual transcript action. Automatic insertion belongs to the hotkey recording flow, where an external target window was captured before recording. This avoids claiming that a hub button can reliably paste into another foreground application.
