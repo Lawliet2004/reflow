@@ -12,9 +12,11 @@ use sysinfo::{
     System,
 };
 
+#[cfg(target_os = "windows")]
+use super::probe::parse_wmi_adapters;
 use super::probe::{
-    parse_driver_cuda_version, parse_nvidia_smi, parse_vulkaninfo, parse_wmi_adapters,
-    Capabilities, CpuInfo, CudaStatus, GpuInfo, GpuVendor, RamInfo, VulkanStatus, NVIDIA_SMI_QUERY,
+    parse_driver_cuda_version, parse_nvidia_smi, parse_vulkaninfo, Capabilities, CpuInfo,
+    CudaStatus, GpuInfo, GpuVendor, RamInfo, VulkanStatus, NVIDIA_SMI_QUERY,
 };
 
 /// How long a full snapshot is reused.
