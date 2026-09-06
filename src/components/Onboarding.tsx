@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Check, ChevronRight, Download, Keyboard, Mic, Sparkles, Loader2, ArrowRight } from "lucide-react";
+import { Check, ChevronRight, Download, Keyboard, Mic, Loader2 } from "lucide-react";
 import { AppSettings, AudioDevice, ModelStatus, isModelReady } from "../types";
 import { api } from "../services/tauriApi";
 import { HotkeyPicker } from "./HotkeyPicker";
@@ -24,6 +24,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   onComplete,
 }) => {
   const [step, setStep] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
   const [devices, setDevices] = useState<AudioDevice[]>([]);
 
   const installed = Boolean(modelStatus?.installed);
@@ -31,7 +33,12 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   const ready = isModelReady(modelStatus);
 
   useEffect(() => {
-    api.getAudioDevices().then(setDevices).catch(() => {});
+    api
+      .getAudioDevices()
+      .then(setDevices)
+      .catch(() =>
+        setError("Could not list microphones. Check your audio permissions and reopen setup."),
+      );
   }, []);
 
   const pickMic = (id: string) => {
@@ -41,17 +48,21 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   };
 
   const downloadModel = async () => {
+    setError(null);
+    setInstalling(true);
     try {
-      await api.installModel(settings.asr_model);
+      await api.installModel(settings.asr.model);
     } catch (e) {
       console.error("Model install failed:", e);
+      setError(
+        "The model could not be installed. Check your connection and available disk space, then try again.",
+      );
+    } finally {
+      setInstalling(false);
     }
   };
 
-  const canContinue =
-    step === 0 ||
-    step === 1 ||
-    (step === 2 && (installed || ready));
+  const canContinue = step === 0 || step === 1 || (step === 2 && (installed || ready));
 
   const goNext = () => {
     if (step >= STEPS.length - 1) {
@@ -61,13 +72,16 @@ export const Onboarding: React.FC<OnboardingProps> = ({
     setStep((s) => s + 1);
   };
 
-  const isDone = step === STEPS.length; // success screen
-
   return (
-    <div className="max-w-xl mx-auto px-7 py-10 animate-fade-rise">
+    <div className="workspace-page max-w-2xl animate-fade-rise">
+      {error && (
+        <p role="alert" className="text-sm text-danger mb-4">
+          {error}
+        </p>
+      )}
       <p className="label-micro text-accent mb-2">First run</p>
-      <h1 className="font-display text-[22px] font-semibold tracking-tight text-ink">
-        Set up Reflow
+      <h1 className="font-display text-[34px] font-semibold tracking-tight text-ink">
+        A few things. Then just speak.
       </h1>
       <p className="text-[13px] text-muted mt-1">
         Three quick steps so dictation is ready on this computer.
@@ -88,7 +102,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
         ))}
       </div>
 
-      {!isDone && step === 0 && (
+      {step === 0 && (
         <section className="panel p-5 space-y-4">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-accent-soft border border-accent-border text-accent flex items-center justify-center">
@@ -96,11 +110,14 @@ export const Onboarding: React.FC<OnboardingProps> = ({
             </div>
             <div>
               <h2 className="text-[14.5px] font-semibold text-ink">Choose a microphone</h2>
-              <p className="text-[12px] text-muted">You can change this later in Settings → Audio.</p>
+              <p className="text-[12px] text-muted">
+                You can change this later in Settings → Audio.
+              </p>
             </div>
           </div>
           <select
             className="field w-full"
+            aria-label="Microphone"
             value={settings.microphone_device_id ?? "default"}
             onChange={(e) => pickMic(e.target.value)}
           >
@@ -117,7 +134,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
         </section>
       )}
 
-      {!isDone && step === 1 && (
+      {step === 1 && (
         <section className="panel p-5 space-y-4">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-accent-soft border border-accent-border text-accent flex items-center justify-center">
@@ -145,7 +162,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
         </section>
       )}
 
-      {!isDone && step === 2 && (
+      {step === 2 && (
         <section className="panel p-5 space-y-4">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-accent-soft border border-accent-border text-accent flex items-center justify-center">
@@ -166,18 +183,20 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 { id: "1.7b", title: "1.7B", desc: "Higher accuracy" },
               ] as const
             ).map((m) => {
-              const active = settings.asr_model === m.id;
+              const active = settings.asr.model === m.id;
               return (
                 <button
                   key={m.id}
-                  onClick={() => onUpdateSettings({ asr_model: m.id })}
+                  onClick={() => onUpdateSettings({ asr: { ...settings.asr, model: m.id } })}
                   className={`text-left rounded-xl border p-3 transition-all cursor-pointer ${
                     active
                       ? "border-accent bg-accent-soft"
                       : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
                   }`}
                 >
-                  <p className={`text-[13px] font-semibold ${active ? "text-accent" : "text-ink-2"}`}>
+                  <p
+                    className={`text-[13px] font-semibold ${active ? "text-accent" : "text-ink-2"}`}
+                  >
                     {m.title}
                   </p>
                   <p className="text-[11.5px] text-muted mt-0.5">{m.desc}</p>
@@ -205,7 +224,11 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               </div>
             </div>
           ) : (
-            <button className="btn btn-primary w-full" onClick={downloadModel}>
+            <button
+              className="btn btn-primary w-full"
+              onClick={downloadModel}
+              disabled={installing}
+            >
               <Download className="w-4 h-4" />
               Download model
             </button>
@@ -218,31 +241,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
         </section>
       )}
 
-      {isDone && (
-        <section className="panel p-6 space-y-4 text-center">
-          <div className="w-12 h-12 mx-auto rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
-            <Check className="w-6 h-6" strokeWidth={2.4} />
-          </div>
-          <div>
-            <h2 className="text-[16px] font-semibold text-ink">You're ready to dictate</h2>
-            <p className="text-[13px] text-muted mt-1">
-              Hold <span className="kbd !text-[11px]">{settings.hotkey}</span> anywhere on your computer to speak.
-            </p>
-          </div>
-          <div className="flex items-center justify-center gap-2 pt-2">
-            <button
-              className="btn btn-primary"
-              onClick={onComplete}
-              autoFocus
-            >
-              Start dictating
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </div>
-        </section>
-      )}
-
-      {!isDone && (
+      {
         <div className="flex items-center justify-between mt-6">
           <button
             className="btn btn-ghost"
@@ -251,11 +250,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
           >
             Back
           </button>
-          <button
-            className="btn btn-primary"
-            disabled={!canContinue}
-            onClick={goNext}
-          >
+          <button className="btn btn-primary" disabled={!canContinue} onClick={goNext}>
             {step === STEPS.length - 1 ? (
               "Finish"
             ) : (
@@ -266,7 +261,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
             )}
           </button>
         </div>
-      )}
+      }
     </div>
   );
 };

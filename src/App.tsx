@@ -4,16 +4,18 @@ import {
   AppSettings,
   IntelligenceTier,
   LatencyMetrics,
+  LatencyPercentiles,
   ModelStatus,
-  RuntimeDownloadEvent,
   StreamingTranscriptPayload,
   isModelReady,
   normalizeSettings,
 } from "./types";
 import { api, safeListen, isTauri } from "./services/tauriApi";
+import { useIntelligenceHub } from "./hooks/useIntelligenceHub";
 import { Navigation, NavTab } from "./components/Navigation";
 import { TitleBar } from "./components/TitleBar";
 import { DictateHome } from "./components/DictateHome";
+import { BackendStage } from "./components/hud/stages";
 import { HistoryView } from "./components/HistoryView";
 import { SettingsView } from "./components/SettingsView";
 import { Overlay } from "./components/Overlay";
@@ -42,197 +44,185 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<NavTab>("dictate");
   const [appState, setAppState] = useState<AppState>("READY");
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [startupError, setStartupError] = useState(false);
+  const [startupAttempt, setStartupAttempt] = useState(0);
   const [transcript, setTranscript] = useState<StreamingTranscriptPayload>(EMPTY_TRANSCRIPT);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  // Latest backend pipeline stage (`DoryEvent::Stage`, forwarded as
+  // `pipeline:stage`). Cleared on each new recording so a stale stage from the
+  // previous dictation never leaks into the next one.
+  const [backendStage, setBackendStage] = useState<BackendStage | null>(null);
   const [latencyMetrics, setLatencyMetrics] = useState<LatencyMetrics | null>(null);
+  const [latencyPercentiles, setLatencyPercentiles] = useState<LatencyPercentiles | null>(null);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [toast, setToast] = useState<{ kind: "error" | "info"; text: string } | null>(null);
-  const [intelligenceDownload, setIntelligenceDownload] =
-    useState<IntelligenceDownloadEvent | null>(null);
-  // Tiers that currently have a download in flight. The 2-second status poll
-  // reports `is_downloading: false` until the file is fully written, so we
-  // need a separate "download is active" signal to keep the Download button
-  // hidden and to suspend the poll while a download is running.
-  const [activeDownloadTiers, setActiveDownloadTiers] = useState<Set<IntelligenceTier>>(
-    () => new Set()
-  );
-  // Runtime (llama-server) download state. There is only one runtime, so a
-  // single event + a single boolean (for "in flight") is enough.
-  const [runtimeDownload, setRuntimeDownload] = useState<RuntimeDownloadEvent | null>(
-    null
-  );
-  const [runtimeDownloadActive, setRuntimeDownloadActive] = useState(false);
-  const [runtimeDownloadError, setRuntimeDownloadError] = useState<string | null>(null);
+  // Single intelligence hub: download progress arrives as events, status via
+  // polling only when idle. Replaces the old inline listeners + per-page polls.
+  const intelligence = useIntelligenceHub();
 
   const settingsTokenRef = useRef(0);
+  const settingsQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingSettingsRef = useRef(0);
+
+  // Depend on exactly the fields `applyTheme` reads, not on the whole
+  // settings object: re-applying the theme on every unrelated settings write
+  // would rebind the system colour-scheme listener for no reason.
+  const appTheme = settings?.app_theme;
+  const accentColor = settings?.accent_color;
+  const reduceMotion = settings?.reduce_motion;
+  const uiFontScale = settings?.ui_font_scale;
+  const overlayTheme = settings?.overlay_theme;
 
   useEffect(() => {
-    if (settings) {
-      return applyTheme(settings);
-    }
-  }, [
-    settings?.app_theme,
-    settings?.accent_color,
-    settings?.reduce_motion,
-    settings?.ui_font_scale,
-    settings?.overlay_theme,
-  ]);
+    if (!appTheme) return;
+    return applyTheme({
+      app_theme: appTheme,
+      accent_color: accentColor ?? "sky",
+      reduce_motion: reduceMotion ?? false,
+      ui_font_scale: uiFontScale ?? "normal",
+      overlay_theme: overlayTheme ?? "dark",
+    });
+  }, [appTheme, accentColor, reduceMotion, uiFontScale, overlayTheme]);
 
   useEffect(() => {
-    const init = async () => {
-      try {
-        const [st, cfg, model] = await Promise.all([
-          api.getAppState(),
-          api.getSettings(),
-          api.getModelStatus(),
-        ]);
-        setAppState(st);
-        setSettings(normalizeSettings(cfg));
+    let cancelled = false;
+
+    // Settings are the only data required to render the application shell.
+    // Do not couple them to model status: the ASR sidecar can be slow or
+    // unavailable, but that must never hold the whole UI on its startup gate.
+    void api
+      .getSettings()
+      .then((cfg) => {
+        if (!cancelled) setSettings(normalizeSettings(cfg));
+      })
+      .catch((err) => {
+        console.error("Settings load failed:", err);
+        if (!cancelled) setStartupError(true);
+      });
+
+    void api
+      .getAppState()
+      .then((st) => {
+        if (!cancelled) setAppState(st);
+      })
+      .catch((err) => {
+        console.error("App state load failed:", err);
+      });
+
+    void api
+      .getModelStatus()
+      .then((model) => {
+        if (cancelled) return;
         setModelStatus(model);
-        if (!model.installed && !isModelReady(model)) {
+        if (isTauri() && !model.installed && !isModelReady(model)) {
           setWizardOpen(true);
         }
-      } catch (err) {
-        console.error("Initial load failed:", err);
-      }
+      })
+      .catch((err) => {
+        // Model readiness is optional for rendering the home screen. The
+        // settings/model UI can report and recover from an unavailable engine.
+        console.error("Model status load failed:", err);
+      });
+
+    return () => {
+      cancelled = true;
     };
-    init();
-  }, []);
+  }, [startupAttempt]);
 
   // Live events: model status, app state, transcript streaming, audio level.
   useEffect(() => {
     const unsubs: (() => void)[] = [];
+    let disposed = false;
+    const track = (unsubscribe: () => void) => {
+      if (disposed) unsubscribe();
+      else unsubs.push(unsubscribe);
+    };
     const setup = async () => {
-      unsubs.push(
-        await safeListen<ModelStatus>("model:status", (status) => setModelStatus(status))
+      track(await safeListen<ModelStatus>("model:status", (status) => setModelStatus(status)));
+      track(
+        await safeListen<AppState>("app:state-changed", (st) => {
+          setAppState(st);
+          if (st === "RECORDING") {
+            setTranscript({ ...EMPTY_TRANSCRIPT });
+            setBackendStage(null);
+          }
+        }),
       );
-      unsubs.push(
-        await safeListen<AppState>("app:state-changed", (st) => setAppState(st))
-      );
-      unsubs.push(
+      track(
         await safeListen<number>("recording:audio-level", (lvl) =>
-          setTranscript((prev) => ({ ...prev, audio_level: lvl }))
-        )
+          setTranscript((prev) => ({ ...prev, audio_level: lvl })),
+        ),
       );
-      unsubs.push(
+      track(
         await safeListen<StreamingTranscriptPayload>("transcript:partial", (payload) =>
-          setTranscript(payload)
-        )
+          setTranscript(payload),
+        ),
       );
-      unsubs.push(
+      track(
         await safeListen<StreamingTranscriptPayload>("transcript:final", (payload) => {
           setTranscript(payload);
-          api.getLatencyMetrics().then(setLatencyMetrics).catch(() => {});
-        })
+          // One round trip gives both the last waterfall and the rolling
+          // p50/p95, so the two can never disagree in the UI.
+          api
+            .getLatencyReport()
+            .then((report) => {
+              setLatencyMetrics(report.last);
+              setLatencyPercentiles(report.percentiles);
+            })
+            .catch(() => {});
+        }),
       );
-      unsubs.push(
+      track(await safeListen<BackendStage>("pipeline:stage", (stage) => setBackendStage(stage)));
+      track(
         await safeListen<AppSettings>("settings:changed", (cfg) => {
-          setSettings(normalizeSettings(cfg));
-        })
-      );
-      unsubs.push(
-        await safeListen<IntelligenceDownloadEvent>(
-          "intelligence:download-progress",
-          (event) => {
-            // Track which tiers currently have a download in flight.
-            setActiveDownloadTiers((prev) => {
-              const next = new Set(prev);
-              if (event.phase === "starting" || event.phase === "downloading") {
-                next.add(event.tier);
-              } else if (event.phase === "complete" || event.phase === "error") {
-                next.delete(event.tier);
-              }
-              return next;
-            });
-            // Monotonic guard: ignore events that would move the bar backwards
-            // while a download for this tier is already in progress, unless
-            // the new event is `complete` or `error` (those represent a final
-            // state, not progress).
-            setIntelligenceDownload((prev) => {
-              if (
-                prev &&
-                prev.tier === event.tier &&
-                (prev.phase === "starting" || prev.phase === "downloading") &&
-                (event.phase === "starting" || event.phase === "downloading") &&
-                event.progress_pct < prev.progress_pct
-              ) {
-                return prev;
-              }
-              return event;
-            });
-          }
-        )
-      );
-      unsubs.push(
-        await safeListen<RuntimeDownloadEvent>(
-          "runtime:download-progress",
-          (event) => {
-            // The runtime downloader is single-shot, so a single boolean
-            // tracks "in flight" cleanly.
-            const isInFlight =
-              event.phase === "starting" ||
-              event.phase === "downloading" ||
-              event.phase === "verifying" ||
-              event.phase === "extracting";
-            const isTerminal =
-              event.phase === "complete" || event.phase === "error";
-            setRuntimeDownloadActive(isInFlight);
-            setRuntimeDownload(event);
-            if (event.phase === "error") {
-              setRuntimeDownloadError(event.error ?? "Runtime download failed");
-              setToast({
-                kind: "error",
-                text:
-                  event.error ??
-                  "llama-server runtime download failed. Will retry next time.",
-              });
-            } else if (event.phase === "complete") {
-              setRuntimeDownloadError(null);
-              setToast({
-                kind: "info",
-                text: `llama-server ${event.kind_label ?? ""} runtime installed.`,
-              });
-            }
-            // Touch isTerminal to keep the linter quiet; the boolean
-            // is the only state we actually need.
-            void isTerminal;
-          }
-        )
+          if (pendingSettingsRef.current === 0) setSettings(normalizeSettings(cfg));
+        }),
       );
     };
     setup();
-    return () => unsubs.forEach((fn) => fn());
+    return () => {
+      disposed = true;
+      unsubs.forEach((fn) => fn());
+    };
   }, []);
 
-  const handleUpdateSettings = useCallback(async (partial: Partial<AppSettings>) => {
-    // Optimistic update; guard against stale responses overwriting newer ones.
+  const handleUpdateSettings = useCallback((partial: Partial<AppSettings>): Promise<boolean> => {
     const token = ++settingsTokenRef.current;
+    pendingSettingsRef.current += 1;
     setSettings((prev) => (prev ? normalizeSettings({ ...prev, ...partial }) : prev));
-    try {
-      const updated = await api.updateSettings(partial);
-      if (token === settingsTokenRef.current) {
-        setSettings(normalizeSettings(updated));
-      }
-    } catch (e) {
-      console.error("Failed to update settings:", e);
-      if (token === settingsTokenRef.current) {
-        // Rollback to last known server state.
-        try {
-          const fresh = await api.getSettings();
-          if (token === settingsTokenRef.current) {
-            setSettings(normalizeSettings(fresh));
+    const write = settingsQueueRef.current.then(async () => {
+      try {
+        const updated = await api.updateSettings(partial);
+        if (token === settingsTokenRef.current) setSettings(normalizeSettings(updated));
+        return true;
+      } catch (error) {
+        console.error("Failed to update settings:", error);
+        if (token === settingsTokenRef.current) {
+          try {
+            const fresh = await api.getSettings();
+            if (token === settingsTokenRef.current) setSettings(normalizeSettings(fresh));
+          } catch {
+            setToast({
+              kind: "error",
+              text: "Could not save or reload settings. Your changes are not confirmed.",
+            });
+            return false;
           }
-        } catch {
-          /* leave optimistic state */
         }
-        setToast({ kind: "error", text: "Could not save settings. Reverted." });
+        setToast({ kind: "error", text: "Could not save this change. Please try again." });
+        return false;
+      } finally {
+        pendingSettingsRef.current -= 1;
       }
-    }
+    });
+    settingsQueueRef.current = write.then(() => {});
+    return write;
   }, []);
 
   const handleStartRecording = async () => {
     setTranscript({ ...EMPTY_TRANSCRIPT });
+    setBackendStage(null);
     setAppState("RECORDING");
     try {
       await api.startRecording();
@@ -255,18 +245,6 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleInjectText = async (text: string) => {
-    try {
-      const ok = await api.injectText(text);
-      if (!ok) {
-        setToast({ kind: "info", text: "Copied to clipboard — press Ctrl+V to paste." });
-      }
-    } catch (e) {
-      console.error("Inject failed:", e);
-      setToast({ kind: "error", text: "Could not inject text." });
-    }
-  };
-
   // Auto-dismiss toast.
   useEffect(() => {
     if (!toast) return;
@@ -274,11 +252,39 @@ export const App: React.FC = () => {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Hub toasts (runtime download complete/error) flow into the same slot.
+  const hubToast = intelligence.lastToast;
+  useEffect(() => {
+    if (hubToast) setToast(hubToast);
+  }, [hubToast]);
+
   if (!settings) {
     return (
       <div className="h-screen w-screen flex flex-col items-center justify-center bg-base text-ink gap-3">
-        <div className="w-8 h-8 rounded-full border-2 border-accent border-t-transparent animate-spin" />
-        <p className="text-[13px] text-muted font-medium tracking-wide">Starting Reflow…</p>
+        {startupError ? (
+          <>
+            <h1 className="text-xl font-semibold">Reflow couldn’t start</h1>
+            <p role="alert" className="text-sm text-muted">
+              Your settings could not be loaded.
+            </p>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setStartupError(false);
+                setStartupAttempt((n) => n + 1);
+              }}
+            >
+              Try again
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="w-8 h-8 rounded-full border-2 border-accent border-t-transparent animate-spin" />
+            <p role="status" className="text-sm text-muted">
+              Starting Reflow…
+            </p>
+          </>
+        )}
       </div>
     );
   }
@@ -287,7 +293,7 @@ export const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen w-screen bg-base text-ink overflow-hidden font-sans select-none">
-      <TitleBar appState={appState} />
+      <TitleBar />
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <Navigation
@@ -319,15 +325,18 @@ export const App: React.FC = () => {
                 settings={settings}
                 modelStatus={modelStatus}
                 transcript={transcript}
+                backendStage={backendStage}
                 latencyMetrics={latencyMetrics}
+                latencyPercentiles={latencyPercentiles}
                 onStartRecording={handleStartRecording}
                 onStopRecording={handleStopRecording}
                 onUpdateSettings={handleUpdateSettings}
                 onOpenHistory={() => setActiveTab("history")}
+                onOpenSettings={() => setActiveTab("settings")}
               />
             ))}
 
-          {activeTab === "history" && <HistoryView onInjectText={handleInjectText} />}
+          {activeTab === "history" && <HistoryView />}
 
           {activeTab === "settings" && (
             <SettingsView
@@ -335,16 +344,10 @@ export const App: React.FC = () => {
               onUpdateSettings={handleUpdateSettings}
               modelStatus={modelStatus}
               onReloadModel={() => api.reloadModel()}
-              intelligenceDownload={intelligenceDownload}
-              activeDownloadTiers={activeDownloadTiers}
-              runtimeDownload={runtimeDownload}
-              runtimeDownloadActive={runtimeDownloadActive}
-              runtimeDownloadError={runtimeDownloadError}
+              intelligence={intelligence}
               onInstallRuntime={async () => {
                 try {
-                  await api.installLlamaRuntime(
-                    settings?.compute_backend ?? "auto"
-                  );
+                  await api.installLlamaRuntime(settings?.refinement.device ?? "cpu");
                 } catch (e) {
                   console.error("installLlamaRuntime failed:", e);
                   setToast({
@@ -376,9 +379,7 @@ export const App: React.FC = () => {
       {toast && (
         <div
           className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl shadow-pop text-[12.5px] font-medium ${
-            toast.kind === "error"
-              ? "bg-rose-600 text-white"
-              : "bg-slate-900 text-white"
+            toast.kind === "error" ? "bg-rose-600 text-white" : "bg-slate-900 text-white"
           }`}
           role="status"
         >
@@ -386,7 +387,9 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {!isTauri() && <Overlay appState={appState} transcript={transcript} />}
+      {!isTauri() && (
+        <Overlay appState={appState} transcript={transcript} backendStage={backendStage} />
+      )}
     </div>
   );
 };

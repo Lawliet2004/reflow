@@ -14,17 +14,17 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
 
   useEffect(() => {
-    api.getAudioDevices().then(setDevices).catch(() => {});
+    api
+      .getAudioDevices()
+      .then(setDevices)
+      .catch(() => {});
   }, []);
 
   const change = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onUpdateSettings({ [key]: value } as Partial<AppSettings>);
 
   return (
-    <Section
-      icon={<Mic className="w-4 h-4" />}
-      title="Microphone"
-    >
+    <Section icon={<Mic className="w-4 h-4" />} title="Microphone">
       <Row label="Microphone" hint="Input device used for dictation">
         <select
           className="field max-w-[240px]"
@@ -50,6 +50,7 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
         <div className="flex items-center gap-3">
           <input
             type="range"
+            aria-label="Input gain"
             min={0.5}
             max={3}
             step={0.1}
@@ -81,7 +82,12 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
         <select
           className="field"
           value={settings.language}
-          onChange={(e) => change("language", e.target.value)}
+          onChange={(e) =>
+            onUpdateSettings({
+              language: e.target.value,
+              auto_detect_language: e.target.value === "auto",
+            })
+          }
         >
           <option value="auto">Auto-detect per sentence</option>
           <option value="en">English</option>

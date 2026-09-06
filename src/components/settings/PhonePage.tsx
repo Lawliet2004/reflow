@@ -15,6 +15,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
   const [apiStatus, setApiStatus] = useState<ApiStatus | null>(null);
   const [copiedPair, setCopiedPair] = useState<"code" | "uri" | null>(null);
   const [view, setView] = useState<PairView>("qr");
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,20 +36,28 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
   }, [settings.api_enabled, settings.api_bind, settings.api_port]);
 
   const copyPair = async (kind: "code" | "uri", value: string) => {
-    await navigator.clipboard.writeText(value);
-    setCopiedPair(kind);
-    setTimeout(() => setCopiedPair(null), 1400);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedPair(kind);
+    } catch {
+      setError("Could not copy the pairing information. Please try again.");
+    }
   };
 
+  useEffect(() => {
+    if (!copiedPair) return;
+    const timer = setTimeout(() => setCopiedPair(null), 1400);
+    return () => clearTimeout(timer);
+  }, [copiedPair]);
+
   return (
-    <Section
-      icon={<Smartphone className="w-4 h-4" />}
-      title="Phone companion"
-    >
-      <Row
-        label="Enable LAN API"
-        hint="Let a phone on your network stream audio to this computer"
-      >
+    <Section icon={<Smartphone className="w-4 h-4" />} title="Phone companion">
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
+      <Row label="Enable LAN API" hint="Let a phone on your network stream audio to this computer">
         <Toggle
           on={settings.api_enabled}
           onChange={(v) => onUpdateSettings({ api_enabled: v })}
@@ -76,9 +85,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
           min={1024}
           max={65535}
           value={settings.api_port}
-          onChange={(e) =>
-            onUpdateSettings({ api_port: Number(e.target.value) || 7840 })
-          }
+          onChange={(e) => onUpdateSettings({ api_port: Number(e.target.value) || 7840 })}
         />
       </Row>
 
@@ -120,7 +127,12 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
                 )}
                 <button
                   className="btn btn-ghost !py-1.5 !px-2.5 !text-[12px]"
-                  onClick={() => api.rotatePairingCode().then(setApiStatus).catch(() => {})}
+                  onClick={() =>
+                    api
+                      .rotatePairingCode()
+                      .then(setApiStatus)
+                      .catch(() => {})
+                  }
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   Rotate
@@ -156,7 +168,12 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
                 )}
                 <button
                   className="btn btn-ghost !py-1.5 !px-2.5 !text-[12px]"
-                  onClick={() => api.rotatePairingCode().then(setApiStatus).catch(() => {})}
+                  onClick={() =>
+                    api
+                      .rotatePairingCode()
+                      .then(setApiStatus)
+                      .catch(() => {})
+                  }
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   Rotate
@@ -169,9 +186,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
             <div>
               <p className="text-[11.5px] text-muted mb-1">Pair link</p>
               <div className="flex items-center gap-2">
-                <code className="field flex-1 !text-[11.5px] truncate">
-                  {apiStatus.pair_uri}
-                </code>
+                <code className="field flex-1 !text-[11.5px] truncate">{apiStatus.pair_uri}</code>
                 <button
                   className="icon-btn border border-line"
                   onClick={() => copyPair("uri", apiStatus.pair_uri!)}

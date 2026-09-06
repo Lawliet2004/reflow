@@ -1,13 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   AppSettings,
-  FlowStatus,
   IntelligenceTier,
   IntelligenceTierState,
   INTELLIGENCE_TIERS,
   ModelStatus,
   RuntimeDownloadEvent,
-  SystemMetrics,
   TranscriptStyle,
 } from "../../types";
 import { api } from "../../services/tauriApi";
@@ -22,13 +20,14 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
-  Zap,
   Check,
   AlertTriangle,
 } from "lucide-react";
 import type { IntelligenceDownloadEvent } from "../../App";
+import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
 
 interface Props {
+  intelligence: IntelligenceHub;
   settings: AppSettings;
   onUpdateSettings: (s: Partial<AppSettings>) => void;
   modelStatus: ModelStatus | null;
@@ -55,31 +54,27 @@ const TIER_ICONS: Record<IntelligenceTier, React.ReactNode> = {
   deep_context: <Globe className="w-4 h-4" />,
 };
 
-const formatSize = (mb: number) =>
-  mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
+const formatSize = (mb: number) => (mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`);
 
 export const CleanupPage: React.FC<Props> = ({
   settings,
+  intelligence,
   onUpdateSettings,
   modelStatus,
   intelligenceDownload,
   activeDownloadTiers,
   runtimeDownload,
   runtimeDownloadActive,
-  runtimeDownloadError,
+  // Accepted but not rendered yet. Task 38 surfaces runtime errors with a
+  // remediation action, and Task 39 adds the Remove action to this page.
+  runtimeDownloadError: _runtimeDownloadError,
   onInstallRuntime,
-  onRemoveRuntime,
+  onRemoveRuntime: _onRemoveRuntime,
 }) => {
-  const [flowStatus, setFlowStatus] = useState<FlowStatus | null>(null);
-  const [intelligenceTiers, setIntelligenceTiers] = useState<
-    IntelligenceTierState[] | null
-  >(null);
-  const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
-  const [installedModels, setInstalledModels] = useState<Record<string, boolean>>({});
+  const { flowStatus, intelligenceTiers, systemMetrics } = intelligence;
+
   const [installing, setInstalling] = useState<IntelligenceTier | null>(null);
-  const [sample, setSample] = useState(
-    "I want to drink coffee um no wait I want tea"
-  );
+  const [sample, setSample] = useState("I want to drink coffee um no wait I want tea");
   const [previewOut, setPreviewOut] = useState("");
   const [previewLatency, setPreviewLatency] = useState<number | null>(null);
   const [previewModel, setPreviewModel] = useState<string>("");
@@ -87,48 +82,6 @@ export const CleanupPage: React.FC<Props> = ({
   const [removing, setRemoving] = useState<IntelligenceTier | null>(null);
 
   const tier: IntelligenceTier = settings.intelligence_tier ?? "smart_flow";
-
-  // Pull the live flow + system metrics so badges and warnings stay accurate.
-  useEffect(() => {
-    // Suspend polling while a download is in flight: the backend reports
-    // `installed: false` and `is_downloading: false` until the file is fully
-    // written, so polling during the download would clobber our UI state.
-    const anyActive = activeDownloadTiers.size > 0;
-    let alive = true;
-    const refresh = async () => {
-      try {
-        const [fs, sm, tiers] = await Promise.all([
-          api.getIntelligenceStatus(),
-          api.getSystemMetrics(),
-          api.getIntelligenceTiers(),
-        ]);
-        if (!alive) return;
-        setFlowStatus(fs);
-        setSystemMetrics(sm);
-        setIntelligenceTiers(tiers);
-      } catch (e) {
-        console.error("intelligence status refresh failed", e);
-      }
-    };
-    if (anyActive) {
-      return () => {
-        alive = false;
-      };
-    }
-    refresh();
-    const interval = setInterval(refresh, 1500);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
-  }, [settings.flow_model, activeDownloadTiers]);
-
-  // Refresh installed-model markers when a download completes.
-  useEffect(() => {
-    if (intelligenceDownload?.phase === "complete") {
-      setInstalledModels((prev) => ({ ...prev, [intelligenceDownload.tier]: true }));
-    }
-  }, [intelligenceDownload]);
 
   const gpu = (modelStatus?.backend ?? systemMetrics?.gpu_name ?? "").toLowerCase();
   const hasGpu = /cuda|gpu|nvidia|metal|radeon/.test(gpu);
@@ -162,7 +115,7 @@ export const CleanupPage: React.FC<Props> = ({
   const runtimeInstalled = flowStatus?.runtime_installed ?? false;
   const isWeightsOnly = (t: IntelligenceTier) => {
     if (t === "raw_verbatim") return false;
-    const ggufInstalled = installedModels[t] ?? false;
+    const ggufInstalled = tierState(t)?.installed ?? false;
     if (!ggufInstalled) return false;
     return !runtimeInstalled;
   };
@@ -170,24 +123,12 @@ export const CleanupPage: React.FC<Props> = ({
   const isDownloading = (t: IntelligenceTier) => activeDownloadTiers.has(t);
 
   const downloadProgress = (t: IntelligenceTier) =>
-    isDownloading(t) && intelligenceDownload?.tier === t
-      ? intelligenceDownload.progress_pct
-      : 0;
+    isDownloading(t) && intelligenceDownload?.tier === t ? intelligenceDownload.progress_pct : 0;
 
   const downloadSpeed = (t: IntelligenceTier) =>
-    isDownloading(t) && intelligenceDownload?.tier === t
-      ? intelligenceDownload.speed_mbps
-      : 0;
+    isDownloading(t) && intelligenceDownload?.tier === t ? intelligenceDownload.speed_mbps : 0;
 
-  const handleSelectTier = async (t: IntelligenceTier) => {
-    onUpdateSettings({ intelligence_tier: t });
-    try {
-      const updated = await api.setIntelligenceTier(t);
-      onUpdateSettings(updated);
-    } catch (e) {
-      console.error("setIntelligenceTier failed", e);
-    }
-  };
+  const handleSelectTier = (t: IntelligenceTier) => onUpdateSettings({ intelligence_tier: t });
 
   const handleInstall = async (t: IntelligenceTier) => {
     if (t === "raw_verbatim") return;
@@ -197,9 +138,13 @@ export const CleanupPage: React.FC<Props> = ({
     try {
       await api.installIntelligenceModel(t);
     } catch (e) {
+      intelligence.notifyToast(
+        "error",
+        "The model operation could not be completed. Please try again or check the logs.",
+      );
       console.error("installIntelligenceModel failed", e);
     } finally {
-      setTimeout(() => setInstalling(null), 500);
+      setInstalling(null);
     }
   };
 
@@ -208,8 +153,12 @@ export const CleanupPage: React.FC<Props> = ({
     setRemoving(t);
     try {
       await api.removeIntelligenceModel(t);
-      setInstalledModels((prev) => ({ ...prev, [t]: false }));
+      await intelligence.refresh();
     } catch (e) {
+      intelligence.notifyToast(
+        "error",
+        "The model operation could not be completed. Please try again or check the logs.",
+      );
       console.error("removeIntelligenceModel failed", e);
     } finally {
       setRemoving(null);
@@ -224,10 +173,14 @@ export const CleanupPage: React.FC<Props> = ({
       setPreviewLatency(result.latency_ms);
       setPreviewModel(result.model_used);
     } catch (e) {
+      intelligence.notifyToast(
+        "error",
+        "The model operation could not be completed. Please try again or check the logs.",
+      );
       console.error("preview failed", e);
-      setPreviewOut(sample);
-      setPreviewLatency(0);
-      setPreviewModel("none");
+      setPreviewOut("");
+      setPreviewLatency(null);
+      setPreviewModel("");
     } finally {
       setPreviewing(false);
     }
@@ -250,8 +203,7 @@ export const CleanupPage: React.FC<Props> = ({
           const progress = downloadProgress(id);
           const speed = downloadSpeed(id);
           const isRemoving = removing === id;
-          const isRecommended =
-            id === recommendedTier && tier !== id;
+          const isRecommended = id === recommendedTier && tier !== id;
           const isDeepContext = id === "deep_context";
           const needsGpu = isDeepContext && !hasGpu;
           return (
@@ -271,9 +223,7 @@ export const CleanupPage: React.FC<Props> = ({
                 >
                   <div
                     className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                      active
-                        ? "bg-accent text-white"
-                        : "bg-surface-2 text-ink-2"
+                      active ? "bg-accent text-white" : "bg-surface-2 text-ink-2"
                     }`}
                   >
                     {TIER_ICONS[id]}
@@ -304,9 +254,7 @@ export const CleanupPage: React.FC<Props> = ({
                         </span>
                       )}
                     </div>
-                    <p className="text-[11.5px] text-muted mt-0.5 leading-snug">
-                      {meta.tagline}
-                    </p>
+                    <p className="text-[11.5px] text-muted mt-0.5 leading-snug">{meta.tagline}</p>
                     <p className="text-[12.5px] text-ink-2 mt-2 leading-relaxed">
                       {meta.description}
                     </p>
@@ -477,9 +425,7 @@ export const CleanupPage: React.FC<Props> = ({
                   <select
                     className="field"
                     value={settings.style ?? "neutral"}
-                    onChange={(e) =>
-                      onUpdateSettings({ style: e.target.value as TranscriptStyle })
-                    }
+                    onChange={(e) => onUpdateSettings({ style: e.target.value as TranscriptStyle })}
                   >
                     {STYLE_OPTIONS.map((opt) => (
                       <option key={opt.value} value={opt.value}>
@@ -538,9 +484,7 @@ export const CleanupPage: React.FC<Props> = ({
           </button>
           {previewLatency !== null && (
             <span className="text-[11.5px] text-muted">
-              {previewLatency < 5
-                ? "Stage 1 only"
-                : `Cleaned in ${previewLatency}ms`}
+              {previewLatency < 5 ? "Stage 1 only" : `Cleaned in ${previewLatency}ms`}
               {previewModel && previewModel !== "none" && ` with ${previewModel}`}
             </span>
           )}

@@ -1,102 +1,102 @@
-import React, { useEffect, useState } from "react";
-import { AppSettings, CustomReplacement, DictionaryTerm } from "../../types";
-import { api } from "../../services/tauriApi";
+import React, { useState } from "react";
+import { AppSettings, CustomReplacement } from "../../types";
 import { Section, Toggle } from "./ui";
-import { Plus, X, Trash2, Sliders } from "lucide-react";
+import { Plus, X, Trash2, Sliders, BookOpen } from "lucide-react";
 
 interface Props {
   settings: AppSettings;
-  onUpdateSettings: (s: Partial<AppSettings>) => void;
+  onUpdateSettings: (s: Partial<AppSettings>) => Promise<boolean>;
 }
 
 export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
-  const [terms, setTerms] = useState<DictionaryTerm[]>(settings.dictionary_terms);
-  const [replacements, setReplacements] = useState<CustomReplacement[]>(
-    settings.custom_replacements ?? []
-  );
+  const terms = settings.dictionary_terms;
+  const replacements = settings.custom_replacements ?? [];
   const [newTerm, setNewTerm] = useState("");
   const [newBefore, setNewBefore] = useState("");
   const [newAfter, setNewAfter] = useState("");
-  const [replacementsEnabled, setReplacementsEnabled] = useState(true);
-
-  useEffect(() => setTerms(settings.dictionary_terms), [settings.dictionary_terms]);
-  useEffect(
-    () => setReplacements(settings.custom_replacements ?? []),
-    [settings.custom_replacements]
-  );
-
-  const addTerm = async () => {
-    const t = newTerm.trim();
-    if (!t) return;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async (patch: Partial<AppSettings>, done?: () => void) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
     try {
-      const saved = await api.saveDictionaryTerm({
-        id: "",
-        term: t,
-        preferred_spelling: t,
-        category: "Custom",
-      });
-      setTerms((prev) => [...prev, saved]);
-    } catch (e) {
-      console.error("Save term failed:", e);
+      if (await onUpdateSettings(patch)) done?.();
+      else setError("Could not save your dictionary. Please try again.");
+    } catch {
+      setError("Could not save your dictionary. Please try again.");
+    } finally {
+      setBusy(false);
     }
-    setNewTerm("");
   };
-
-  const removeTerm = (id: string) => {
-    setTerms((prev) => prev.filter((t) => t.id !== id));
-    api.deleteDictionaryTerm(id).catch(() => {});
+  const addTerm = () => {
+    const term = newTerm.trim();
+    if (!term || terms.some((item) => item.term.toLowerCase() === term.toLowerCase())) return;
+    return save(
+      {
+        dictionary_terms: [
+          ...terms,
+          { id: crypto.randomUUID(), term, preferred_spelling: term, category: "Custom" },
+        ],
+      },
+      () => setNewTerm(""),
+    );
   };
-
-  const addReplacement = async () => {
+  const removeTerm = (id: string) =>
+    save({ dictionary_terms: terms.filter((term) => term.id !== id) });
+  const addReplacement = () => {
     const before = newBefore.trim();
     const after = newAfter.trim();
     if (!before || !after) return;
-    try {
-      const saved = await api.saveCustomReplacement({
-        id: "",
-        before,
-        after,
-        enabled: replacementsEnabled,
-      });
-      setReplacements((prev) => [...prev, saved]);
-      setNewBefore("");
-      setNewAfter("");
-    } catch (e) {
-      console.error("Save replacement failed:", e);
-    }
+    return save(
+      {
+        custom_replacements: [
+          ...replacements,
+          { id: crypto.randomUUID(), before, after, enabled: true },
+        ],
+      },
+      () => {
+        setNewBefore("");
+        setNewAfter("");
+      },
+    );
   };
-
-  const toggleReplacement = async (rule: CustomReplacement) => {
-    const next = { ...rule, enabled: !rule.enabled };
-    setReplacements((prev) => prev.map((r) => (r.id === rule.id ? next : r)));
-    try {
-      await api.saveCustomReplacement(next);
-    } catch (e) {
-      console.error("Update replacement failed:", e);
-    }
-  };
-
-  const removeReplacement = (id: string) => {
-    setReplacements((prev) => prev.filter((r) => r.id !== id));
-    api.deleteCustomReplacement(id).catch(() => {});
-  };
+  const toggleReplacement = (rule: CustomReplacement) =>
+    save({
+      custom_replacements: replacements.map((item) =>
+        item.id === rule.id ? { ...item, enabled: !item.enabled } : item,
+      ),
+    });
+  const removeReplacement = (id: string) =>
+    save({ custom_replacements: replacements.filter((item) => item.id !== id) });
 
   return (
-    <>
+    <fieldset disabled={busy} className="space-y-6 min-w-0">
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
       <Section
-        icon={<span className="text-sky-600">📖</span>}
+        icon={<BookOpen className="w-4 h-4" />}
         title="Vocabulary"
         description="Names and jargon passed as hotwords to the speech model."
       >
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <input
             className="field flex-1 shadow-sm"
-            placeholder="Add a term (e.g., Supabase, Kubernetes)"
+            placeholder="Add a name, word, or phrase"
+            aria-label="New vocabulary term"
             value={newTerm}
             onChange={(e) => setNewTerm(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addTerm()}
           />
-          <button className="btn btn-primary !px-3.5" onClick={addTerm} title="Add term" aria-label="Add term">
+          <button
+            className="btn btn-primary !px-3.5"
+            onClick={addTerm}
+            title="Add term"
+            aria-label="Add term"
+          >
             <Plus className="w-4 h-4" />
           </button>
         </div>
@@ -129,17 +129,19 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
         title="Custom replacements"
         description='Replace spoken phrases after transcription (e.g. "git hub" → GitHub).'
       >
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <input
-            className="field flex-1"
+            className="field flex-1 min-w-[120px]"
             placeholder="Before"
+            aria-label="Spoken phrase"
             value={newBefore}
             onChange={(e) => setNewBefore(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addReplacement()}
           />
           <input
-            className="field flex-1"
+            className="field flex-1 min-w-[120px]"
             placeholder="After"
+            aria-label="Replacement text"
             value={newAfter}
             onChange={(e) => setNewAfter(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addReplacement()}
@@ -182,6 +184,6 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
           <p className="text-[11.5px] text-muted italic">No replacements yet.</p>
         )}
       </Section>
-    </>
+    </fieldset>
   );
 };

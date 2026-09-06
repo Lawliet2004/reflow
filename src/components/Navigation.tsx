@@ -45,8 +45,9 @@ export const Navigation: React.FC<NavigationProps> = ({
   const live = appState === "RECORDING" || appState === "PROCESSING";
 
   return (
-    <aside className="w-[148px] shrink-0 h-full flex flex-col border-r border-line bg-surface/60 backdrop-blur-md py-4 select-none">
-      <nav className="flex flex-col gap-1 w-full px-2.5">
+    <aside className="app-sidebar">
+      <div className="sidebar-heading">WORKSPACE</div>
+      <nav aria-label="Main navigation" className="flex flex-col gap-1 w-full px-3">
         {ITEMS.map((item) => {
           const active = activeTab === item.id;
           return (
@@ -55,15 +56,8 @@ export const Navigation: React.FC<NavigationProps> = ({
               onClick={() => setActiveTab(item.id)}
               aria-label={item.label}
               aria-current={active ? "page" : undefined}
-              className={`relative w-full h-10 rounded-xl flex items-center gap-2.5 px-3 text-[13px] font-medium transition-all cursor-pointer ${
-                active
-                  ? "bg-accent-soft text-accent border border-accent-border font-semibold shadow-xs"
-                  : "text-muted hover:text-ink hover:bg-base-2 border border-transparent"
-              }`}
+              className={`sidebar-link ${active ? "is-active" : ""}`}
             >
-              {active && (
-                <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-accent shadow-[0_0_8px_var(--color-accent)]" />
-              )}
               {item.icon}
               <span>{item.label}</span>
             </button>
@@ -71,7 +65,7 @@ export const Navigation: React.FC<NavigationProps> = ({
         })}
       </nav>
 
-      <div className="mt-auto px-2.5 pt-4 border-t border-line space-y-1.5">
+      <div className="sidebar-footer mt-auto px-3 pt-4 space-y-1.5">
         {badge && (
           <div
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11.5px] font-semibold"

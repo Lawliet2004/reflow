@@ -1,24 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
-import {
-  Search,
-  Copy,
-  Check,
-  CornerDownLeft,
-  Trash2,
-  Inbox,
-  ShieldCheck,
-  X,
-  Clock,
-  FileText,
-  Undo2,
-} from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Search, Copy, Check, Trash2, Inbox, ShieldCheck, X, Clock, FileText } from "lucide-react";
 import { HistoryEntry } from "../types";
 import { api } from "../services/tauriApi";
-import { hasAiEdit, historyCleaned, historyOriginal, undoAiText } from "../historyDisplay";
-
-interface HistoryViewProps {
-  onInjectText: (text: string) => void;
-}
+import { hasAiEdit, historyCleaned, historyOriginal } from "../historyDisplay";
 
 function dayLabel(iso: string): string {
   const d = new Date(iso);
@@ -64,44 +48,58 @@ function matchesFilter(entry: HistoryEntry, filter: DayFilter): boolean {
     return d.toDateString() === y.toDateString();
   }
   const cutoff = new Date();
-  cutoff.setDate(now.getDate() - 2);
+  cutoff.setDate(now.getDate() - 1);
   cutoff.setHours(0, 0, 0, 0);
   return d.getTime() < cutoff.getTime();
 }
 
-export const HistoryView: React.FC<HistoryViewProps> = ({ onInjectText }) => {
+export const HistoryView: React.FC = () => {
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [injectedId, setInjectedId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [dayFilter, setDayFilter] = useState<DayFilter>("all");
 
-  const load = async (q: string) => {
-    setLoading(true);
-    try {
-      const rows = q.trim()
-        ? await api.searchHistory(q.trim())
-        : await api.getHistory(200, 0);
-      setEntries(rows);
-    } catch (e) {
-      console.error("Failed to load history:", e);
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    const id = ++requestId.current;
+    const t = setTimeout(async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const rows = query.trim()
+          ? await api.searchHistory(query.trim())
+          : await api.getHistory(50, page * 50);
+        if (id !== requestId.current) return;
+        setEntries(rows);
+        setHasMore(!query.trim() && rows.length === 50);
+      } catch {
+        if (id === requestId.current) setError("Could not load history. Try searching again.");
+      } finally {
+        if (id === requestId.current) setLoading(false);
+      }
+    }, 180);
+    return () => {
+      clearTimeout(t);
+      requestId.current += 1;
+    };
+  }, [query, page]);
 
   useEffect(() => {
-    const t = setTimeout(() => load(query), 180);
-    return () => clearTimeout(t);
-  }, [query]);
+    if (!copiedId) return;
+    const timer = setTimeout(() => setCopiedId(null), 1500);
+    return () => clearTimeout(timer);
+  }, [copiedId]);
 
   const visible = useMemo(
     () => entries.filter((e) => matchesFilter(e, dayFilter)),
-    [entries, dayFilter]
+    [entries, dayFilter],
   );
 
   const grouped = useMemo(() => {
@@ -115,48 +113,42 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ onInjectText }) => {
   }, [visible]);
 
   const remove = async (id: string) => {
-    setEntries((prev) => prev.filter((e) => e.id !== id));
     try {
       await api.deleteHistoryItem(id);
+      requestId.current += 1;
+      setLoading(false);
+      setEntries((prev) => prev.filter((e) => e.id !== id));
     } catch (e) {
       console.error("Failed to delete history item:", e);
+      setError("Could not delete this transcript. Please try again.");
     }
   };
 
   const displayText = (entry: HistoryEntry) =>
     showOriginal[entry.id] ? historyOriginal(entry) : historyCleaned(entry);
 
-  const copy = (entry: HistoryEntry) => {
-    navigator.clipboard.writeText(displayText(entry));
-    setCopiedId(entry.id);
-    setTimeout(() => setCopiedId(null), 1500);
-  };
-
-  const handleInject = async (entry: HistoryEntry) => {
-    onInjectText(displayText(entry));
-    setInjectedId(entry.id);
-    setTimeout(() => setInjectedId(null), 1500);
-  };
-
-  const undoAi = (entry: HistoryEntry) => {
-    // Server already restores clipboard via the inject_text path; don't double-write.
-    onInjectText(undoAiText(entry));
-    setCopiedId(entry.id);
-    setInjectedId(entry.id);
-    setTimeout(() => {
-      setCopiedId(null);
-      setInjectedId(null);
-    }, 1500);
+  const copy = async (entry: HistoryEntry) => {
+    try {
+      await navigator.clipboard.writeText(displayText(entry));
+      setCopiedId(entry.id);
+    } catch {
+      setError("Could not copy. Select the transcript and copy it manually.");
+    }
   };
 
   const clearAll = async () => {
     setClearing(true);
     try {
       await api.clearAllHistory();
+      requestId.current += 1;
+      setLoading(false);
       setEntries([]);
       setConfirmClear(false);
+      setPage(0);
+      setHasMore(false);
     } catch (e) {
       console.error("Failed to clear history:", e);
+      setError("Could not clear history. Your transcripts are still saved.");
     } finally {
       setClearing(false);
     }
@@ -170,14 +162,15 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ onInjectText }) => {
   ];
 
   return (
-    <div className="max-w-2xl mx-auto px-7 py-8 animate-fade-rise">
-      <header className="flex items-center justify-between mb-6">
+    <div className="workspace-page history-page animate-fade-rise">
+      <header className="page-heading flex-wrap">
         <div>
-          <h1 className="font-display text-[22px] font-semibold tracking-tight text-ink">
-            History
+          <p className="eyebrow">YOUR WORDS, KEPT CLOSE</p>
+          <h1 className="font-display font-semibold tracking-tight text-ink">
+            A thought worth keeping.
           </h1>
           <p className="text-[12.5px] text-muted mt-0.5">
-            Stored locally on your device · 100% private
+            Find, revisit, and reuse your dictations. Saved on this computer.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -195,6 +188,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ onInjectText }) => {
           )}
         </div>
       </header>
+      {error && (
+        <p role="alert" className="text-sm text-danger mb-4">
+          {error}
+        </p>
+      )}
 
       {confirmClear && (
         <div className="panel p-4 mb-5 border-rose-500/30">
@@ -225,7 +223,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ onInjectText }) => {
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none" />
         <input
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setPage(0);
+            setQuery(e.target.value);
+          }}
+          aria-label="Search transcripts"
           placeholder="Search all transcripts…"
           className="field w-full !pl-10 !pr-9 !py-2.5 shadow-xs"
         />
@@ -248,6 +250,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ onInjectText }) => {
             <button
               key={c.id}
               onClick={() => setDayFilter(c.id)}
+              aria-pressed={active}
               className={`px-2.5 py-1 rounded-full text-[11.5px] font-semibold transition-colors cursor-pointer ${
                 active
                   ? "bg-accent-soft text-accent border border-accent-border"
@@ -325,28 +328,6 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ onInjectText }) => {
                             )}
                           </button>
                           <button
-                            className="icon-btn hover:bg-base-2"
-                            title="Insert into active application"
-                            aria-label="Insert into active app"
-                            onClick={() => handleInject(entry)}
-                          >
-                            {injectedId === entry.id ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                            ) : (
-                              <CornerDownLeft className="w-3.5 h-3.5 text-muted" />
-                            )}
-                          </button>
-                          {edited && (
-                            <button
-                              className="icon-btn hover:bg-base-2"
-                              title="Undo AI edit"
-                              aria-label="Undo AI edit"
-                              onClick={() => undoAi(entry)}
-                            >
-                              <Undo2 className="w-3.5 h-3.5 text-muted" />
-                            </button>
-                          )}
-                          <button
                             className="icon-btn hover:!bg-rose-500/10 hover:!text-rose-500"
                             title="Delete entry"
                             aria-label="Delete entry"
@@ -407,6 +388,25 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ onInjectText }) => {
             </section>
           ))}
         </div>
+      )}
+      {!query.trim() && (page > 0 || hasMore) && (
+        <nav aria-label="History pages" className="flex items-center justify-between mt-6">
+          <button
+            className="btn btn-ghost"
+            disabled={page === 0 || loading}
+            onClick={() => setPage((n) => n - 1)}
+          >
+            Previous
+          </button>
+          <span className="text-sm text-muted">Page {page + 1}</span>
+          <button
+            className="btn btn-ghost"
+            disabled={!hasMore || loading}
+            onClick={() => setPage((n) => n + 1)}
+          >
+            Next
+          </button>
+        </nav>
       )}
     </div>
   );

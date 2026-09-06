@@ -9,19 +9,7 @@ import {
   OverlayPosition,
 } from "../../types";
 import { Section, Row, Toggle } from "./ui";
-import {
-  Palette,
-  Sun,
-  Moon,
-  Monitor,
-  Sparkles,
-  Layers,
-  Sliders,
-  Check,
-  Eye,
-  Activity,
-} from "lucide-react";
-import { Waveform } from "../Waveform";
+import { Palette, Sun, Moon, Monitor, Layers, Sliders, Check } from "lucide-react";
 
 interface Props {
   settings: AppSettings;
@@ -45,13 +33,13 @@ const THEME_OPTIONS: ThemeOption[] = [
   {
     id: "light",
     title: "Light",
-    desc: "Crisp slate and white surfaces",
+    desc: "Soft whites and clear contrast",
     icon: <Sun className="w-4 h-4" />,
   },
   {
     id: "dark",
     title: "Dark",
-    desc: "Midnight slate optimized for OLED and low light",
+    desc: "Quiet charcoal for low-light spaces",
     icon: <Moon className="w-4 h-4" />,
   },
 ];
@@ -85,89 +73,6 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
 
   return (
     <div className="space-y-6">
-      {/* Live Preview Panel */}
-      <section className="panel p-5 overflow-hidden">
-        <div className="flex items-center justify-between pb-3 mb-4 border-b border-line">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-accent-soft border border-accent-border flex items-center justify-center text-accent">
-              <Eye className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-[14.5px] font-semibold text-ink tracking-tight">
-                Live Theme Preview
-              </h2>
-              <p className="text-[11.5px] text-muted">
-                Changes apply instantly across all Reflow windows
-              </p>
-            </div>
-          </div>
-          <span className="chip text-[11px]">
-            {activeTheme.toUpperCase()} · {activeAccent.toUpperCase()}
-          </span>
-        </div>
-
-        {/* Miniature Reflow UI Preview */}
-        <div className="p-4 rounded-xl bg-base-2 border border-line space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-accent animate-pulse" />
-              <span className="text-[12.5px] font-semibold text-ink">
-                Reflow Dictation
-              </span>
-              <span className="kbd !text-[10px]">Ctrl+Space</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="btn btn-primary !py-1.5 !px-3 !text-[11.5px]"
-              >
-                Primary Button
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost !py-1.5 !px-3 !text-[11.5px]"
-              >
-                Ghost Action
-              </button>
-            </div>
-          </div>
-
-          {/* Miniature Floating Overlay HUD */}
-          <div className="pt-2 border-t border-line">
-            <p className="label-micro mb-2">Overlay HUD Preview</p>
-            <div
-              className={`w-full max-w-[360px] mx-auto h-11 px-4 flex items-center justify-between rounded-full transition-all ${
-                overlayTheme === "light"
-                  ? "overlay-hud-light"
-                  : "overlay-hud overlay-hud-pill"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <span className="relative flex items-center justify-center w-2.5 h-2.5">
-                  <span className="absolute inset-0 rounded-full bg-accent/40 animate-ping" />
-                  <span className="relative w-2 h-2 rounded-full bg-accent" />
-                </span>
-                {waveformStyle === "bars" && (
-                  <Waveform
-                    level={0.65}
-                    active
-                    barCount={14}
-                    height={16}
-                    tone={overlayTheme === "light" ? "light" : "dark"}
-                  />
-                )}
-                <span className="text-[11.5px] font-medium text-accent">
-                  Listening…
-                </span>
-              </div>
-              <span className="text-[10.5px] opacity-70">
-                {settings.overlay_position.replace("_", " ")}
-              </span>
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* Theme Selection */}
       <Section
         icon={<Palette className="w-4 h-4" />}
@@ -182,6 +87,7 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                 key={item.id}
                 type="button"
                 onClick={() => change("app_theme", item.id)}
+                aria-pressed={isSelected}
                 className={`flex flex-col text-left p-3.5 rounded-xl border transition-all cursor-pointer relative ${
                   isSelected
                     ? "border-accent bg-accent-soft shadow-sm ring-1 ring-accent"
@@ -191,9 +97,7 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                 <div className="flex items-center justify-between mb-2">
                   <div
                     className={`w-7 h-7 rounded-lg flex items-center justify-center ${
-                      isSelected
-                        ? "bg-accent text-white"
-                        : "bg-base-2 text-muted"
+                      isSelected ? "bg-accent text-white" : "bg-base-2 text-muted"
                     }`}
                   >
                     {item.icon}
@@ -204,12 +108,8 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                     </span>
                   )}
                 </div>
-                <h3 className="text-[13px] font-semibold text-ink">
-                  {item.title}
-                </h3>
-                <p className="text-[11px] text-muted mt-0.5 leading-relaxed">
-                  {item.desc}
-                </p>
+                <h3 className="text-[13px] font-semibold text-ink">{item.title}</h3>
+                <p className="text-[11px] text-muted mt-0.5 leading-relaxed">{item.desc}</p>
               </button>
             );
           })}
@@ -217,9 +117,7 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
 
         {/* Accent Color Palette */}
         <div className="pt-4 border-t border-line">
-          <p className="text-[13px] font-semibold text-ink mb-1">
-            Accent color
-          </p>
+          <p className="text-[13px] font-semibold text-ink mb-1">Accent color</p>
           <p className="text-[11.5px] text-muted mb-3">
             Customizes buttons, waveform visualizer, focus rings, and active tags
           </p>
@@ -243,13 +141,9 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                     className="w-3.5 h-3.5 rounded-full shadow-xs shrink-0 flex items-center justify-center"
                     style={{ backgroundColor: c.hex }}
                   >
-                    {isSelected && (
-                      <Check className="w-2.5 h-2.5 text-white stroke-[3]" />
-                    )}
+                    {isSelected && <Check className="w-2.5 h-2.5 text-white stroke-[3]" />}
                   </span>
-                  <span className="text-[12px] font-medium text-ink">
-                    {c.label}
-                  </span>
+                  <span className="text-[12px] font-medium text-ink">{c.label}</span>
                 </button>
               );
             })}
@@ -263,16 +157,11 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
         title="Overlay & HUD appearance"
         description="Configure the floating listening pill that appears while dictating"
       >
-        <Row
-          label="Overlay position"
-          hint="Screen anchor location for the listening HUD"
-        >
+        <Row label="Overlay position" hint="Screen anchor location for the listening HUD">
           <select
             className="field"
             value={settings.overlay_position}
-            onChange={(e) =>
-              change("overlay_position", e.target.value as OverlayPosition)
-            }
+            onChange={(e) => change("overlay_position", e.target.value as OverlayPosition)}
           >
             <option value="bottom_center">Bottom center (default)</option>
             <option value="top_center">Top center</option>
@@ -281,16 +170,11 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
           </select>
         </Row>
 
-        <Row
-          label="HUD color style"
-          hint="Translucent glass theme for the floating indicator"
-        >
+        <Row label="HUD color style" hint="Translucent glass theme for the floating indicator">
           <select
             className="field"
             value={overlayTheme}
-            onChange={(e) =>
-              change("overlay_theme", e.target.value as "dark" | "light" | "auto")
-            }
+            onChange={(e) => change("overlay_theme", e.target.value as "dark" | "light" | "auto")}
           >
             <option value="dark">Dark OLED glass (recommended)</option>
             <option value="light">Frosted light glass</option>
@@ -298,16 +182,11 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
           </select>
         </Row>
 
-        <Row
-          label="Waveform visualizer"
-          hint="Style of the live audio visualizer while recording"
-        >
+        <Row label="Waveform visualizer" hint="Style of the live audio visualizer while recording">
           <select
             className="field"
             value={waveformStyle}
-            onChange={(e) =>
-              change("waveform_style", e.target.value as WaveformStyle)
-            }
+            onChange={(e) => change("waveform_style", e.target.value as WaveformStyle)}
           >
             <option value="bars">Dynamic multi-bar (22 bars)</option>
             <option value="pulse">Pulse dot only</option>
@@ -315,10 +194,7 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
           </select>
         </Row>
 
-        <Row
-          label="HUD sizing"
-          hint="Scale dimension for the floating pill"
-        >
+        <Row label="HUD sizing" hint="Scale dimension for the floating pill">
           <select
             className="field"
             value={hudScale}
@@ -337,16 +213,11 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
         title="Interface & accessibility"
         description="Display density and motion comfort settings"
       >
-        <Row
-          label="UI font scale"
-          hint="Adjust text and element sizing throughout the application"
-        >
+        <Row label="UI font scale" hint="Adjust text and element sizing throughout the application">
           <select
             className="field"
             value={fontScale}
-            onChange={(e) =>
-              change("ui_font_scale", e.target.value as UIFontScale)
-            }
+            onChange={(e) => change("ui_font_scale", e.target.value as UIFontScale)}
           >
             <option value="compact">Compact (90%)</option>
             <option value="normal">Default (100%)</option>

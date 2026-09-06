@@ -27,8 +27,10 @@ export const Waveform: React.FC<WaveformProps> = ({
   const rafRef = useRef(0);
   const tickFnRef = useRef<(() => void) | null>(null);
 
-  levelRef.current = level;
-  activeRef.current = active;
+  useLayoutEffect(() => {
+    levelRef.current = level;
+    activeRef.current = active;
+  }, [level, active]);
 
   useLayoutEffect(() => {
     const el = containerRef.current;

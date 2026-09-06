@@ -2,11 +2,6 @@ import React, { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../services/tauriApi";
 import logoUrl from "../assets/logo.svg";
-import type { AppState } from "../types";
-
-interface TitleBarProps {
-  appState?: AppState;
-}
 
 const WindowControls: React.FC = () => {
   const [isMaximized, setIsMaximized] = useState(false);
@@ -14,10 +9,12 @@ const WindowControls: React.FC = () => {
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
+    let alive = true;
     (async () => {
       try {
         const appWindow = getCurrentWindow();
-        setIsMaximized(await appWindow.isMaximized());
+        const maximized = await appWindow.isMaximized();
+        if (alive) setIsMaximized(maximized);
         unlisten = await appWindow.onResized(async () => {
           try {
             setIsMaximized(await appWindow.isMaximized());
@@ -25,11 +22,15 @@ const WindowControls: React.FC = () => {
             /* ignore */
           }
         });
+        if (!alive) unlisten();
       } catch (err) {
         console.warn("Could not bind window resize listener:", err);
       }
     })();
-    return () => unlisten?.();
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
   }, []);
 
   const minimize = async (e: React.MouseEvent) => {
@@ -144,7 +145,7 @@ const WindowControls: React.FC = () => {
   );
 };
 
-export const TitleBar: React.FC<TitleBarProps> = () => {
+export const TitleBar: React.FC = () => {
   const handleDoubleClick = async () => {
     if (!isTauri()) return;
     try {
@@ -168,9 +169,17 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
           className="w-4 h-4 rounded-[4px] pointer-events-none drop-shadow-sm"
           draggable={false}
         />
-        <span data-tauri-drag-region className="text-[13px] font-semibold tracking-tight text-ink font-sans">
+        <span
+          data-tauri-drag-region
+          className="text-[13px] font-semibold tracking-tight text-ink font-sans"
+        >
           Reflow
         </span>
+        {!isTauri() && (
+          <span className="text-[10px] text-muted">
+            Preview · dictation requires the desktop app
+          </span>
+        )}
       </div>
 
       <div className="flex-1 h-full" data-tauri-drag-region />

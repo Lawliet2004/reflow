@@ -18,7 +18,9 @@ export const HotkeyPicker: React.FC<HotkeyPickerProps> = ({ value, onChange, siz
   const [recording, setRecording] = useState(false);
   const [heldMods, setHeldMods] = useState<string[]>([]);
   const heldRef = useRef<string[]>([]);
-  heldRef.current = heldMods;
+  useEffect(() => {
+    heldRef.current = heldMods;
+  }, [heldMods]);
 
   useEffect(() => {
     if (!recording) return;

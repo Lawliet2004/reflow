@@ -7,16 +7,128 @@ import {
   HistoryEntry,
   DictionaryTerm,
   CustomReplacement,
+  Capabilities,
+  DEFAULT_ASR_SETTINGS,
+  DEFAULT_MEMORY_POLICY,
+  DEFAULT_REFINEMENT_SETTINGS,
+  DEFAULT_STREAMING_SETTINGS,
+  ModelManifest,
+  Preset,
+  ProfileOverrides,
+  ResolvedProfile,
   IntelligenceTierState,
   LatencyMetrics,
+  LatencyPercentiles,
+  LatencyReport,
+  FullBenchmarkReport,
   SystemMetrics,
   ModelStatus,
   FlowStatus,
-  StreamingTranscriptPayload,
   PlatformInfo,
   ApiStatus,
-  RuntimeDownloadEvent,
+  normalizeSettings,
 } from "../types";
+
+/**
+ * Zero-valued metrics for the browser-dev fallback.
+ *
+ * Deliberately a factory rather than a shared constant: callers render these
+ * and a shared mutable object would let one view's edits leak into another.
+ */
+export function emptyLatencyMetrics(): LatencyMetrics {
+  return {
+    hotkey_to_recording_ms: 0,
+    recording_to_first_audio_ms: 0,
+    audio_to_first_partial_ms: 0,
+    speech_end_to_final_ms: 0,
+    final_to_injection_ms: 0,
+    llm_startup_ms: 0,
+    formatting_ms: 0,
+    rewrite_ms: 0,
+    rewrite_applied: false,
+    release_to_inserted_ms: 0,
+    total_duration_ms: 0,
+    audio_duration_ms: 0,
+    rtf: 0,
+    segments: [],
+    last_updated: new Date().toISOString(),
+  };
+}
+
+/**
+ * Browser-dev fallback. Every figure is zero and `gpu_present` is false, so a
+ * caller can never mistake the fallback for a machine that has a usable GPU.
+ */
+export function emptySystemMetrics(): SystemMetrics {
+  return {
+    cpu_usage_pct: 0,
+    app_ram_mb: 0,
+    model_ram_mb: 0,
+    total_ram_mb: 0,
+    used_ram_mb: 0,
+    available_ram_mb: 0,
+    vram_mb: 0,
+    total_vram_mb: 0,
+    used_vram_mb: 0,
+    free_vram_mb: 0,
+    gpu_name: "CPU",
+    gpu_vendor: "unknown",
+    gpu_present: false,
+    cuda_available: false,
+    vulkan_available: false,
+    cpu_model: "unknown",
+    physical_cores: 0,
+    logical_cores: 0,
+    asr_ram_mb: 0,
+    refinement_ram_mb: 0,
+    model_loaded: false,
+    backend_name: "CPU",
+    os_name: "web",
+    session: "unknown",
+  };
+}
+
+export function emptyCapabilities(): Capabilities {
+  return {
+    gpus: [],
+    cuda: {
+      nvidia_gpu_present: false,
+      driver_present: false,
+      driver_cuda_version: null,
+      torch_cuda_available: false,
+      torch_cuda_version: null,
+    },
+    vulkan: { available: false, api_version: null, devices: [] },
+    cpu: { model: "unknown", physical_cores: null, logical_cores: 0, load_pct: 0 },
+    ram: {
+      total_mb: 0,
+      used_mb: 0,
+      available_mb: 0,
+      app_mb: 0,
+      asr_mb: 0,
+      refinement_mb: 0,
+    },
+    os_name: "web",
+    probed_at: new Date().toISOString(),
+  };
+}
+
+export function emptyLatencyPercentiles(): LatencyPercentiles {
+  return {
+    samples: 0,
+    hotkey_to_recording_p50_ms: 0,
+    hotkey_to_recording_p95_ms: 0,
+    speech_end_to_final_p50_ms: 0,
+    speech_end_to_final_p95_ms: 0,
+    rewrite_p50_ms: 0,
+    rewrite_p95_ms: 0,
+    release_to_inserted_p50_ms: 0,
+    release_to_inserted_p95_ms: 0,
+    rtf_p50: 0,
+    rtf_p95: 0,
+    llm_applied_rate: 0,
+  };
+}
 
 // Check if running inside Tauri
 export const isTauri = (): boolean => {
@@ -24,7 +136,11 @@ export const isTauri = (): boolean => {
 };
 
 // Safe invoke wrapper with fallback for web dev
-async function safeInvoke<T>(cmd: string, args?: Record<string, unknown>, fallback?: T): Promise<T> {
+async function safeInvoke<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+  fallback?: T,
+): Promise<T> {
   if (isTauri()) {
     try {
       return await invoke<T>(cmd, args);
@@ -42,7 +158,7 @@ async function safeInvoke<T>(cmd: string, args?: Record<string, unknown>, fallba
 // Safe event listener wrapper
 export async function safeListen<T>(
   event: string,
-  handler: (payload: T) => void
+  handler: (payload: T) => void,
 ): Promise<UnlistenFn> {
   if (isTauri()) {
     return await listen<T>(event, (e) => handler(e.payload));
@@ -65,11 +181,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   vad_sensitivity: 0.5,
   processing_mode: "smart",
   dictation_mode: "normal",
-  compute_backend: "auto",
-  asr_model: "0.6b",
-  asr_precision: "auto",
-  flow_n_gpu_layers: -1,
-  keep_model_loaded: true,
+  preset: "auto",
+  asr: DEFAULT_ASR_SETTINGS,
+  refinement: DEFAULT_REFINEMENT_SETTINGS,
+  streaming: DEFAULT_STREAMING_SETTINGS,
+  memory_policy: DEFAULT_MEMORY_POLICY,
   history_retention: "30_days",
   overlay_position: "bottom_center",
   overlay_theme: "dark",
@@ -84,7 +200,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   intelligence_tier: "smart_flow",
   style: "neutral",
   auto_style_from_app: true,
-  flow_model: "lfm2.5-1.2b",
+  flow_model: "qwen3.5-0.8b",
   active_profile: "Default",
   launch_at_startup: false,
   start_minimized: false,
@@ -101,16 +217,22 @@ const DEFAULT_SETTINGS: AppSettings = {
   api_inject_default: false,
 };
 
+let previewSettings = structuredClone(DEFAULT_SETTINGS);
+
 export const api = {
   // App State
   getAppState: () => safeInvoke<AppState>("get_app_state", undefined, "READY"),
 
   // Settings
-  getSettings: () => safeInvoke<AppSettings>("get_settings", undefined, DEFAULT_SETTINGS),
+  getSettings: () =>
+    safeInvoke<AppSettings>("get_settings", undefined, structuredClone(previewSettings)),
 
   // Rust command argument is named `settings`.
-  updateSettings: (settings: Partial<AppSettings>) =>
-    safeInvoke<AppSettings>("update_settings", { settings }),
+  updateSettings: async (settings: Partial<AppSettings>) => {
+    if (isTauri()) return safeInvoke<AppSettings>("update_settings", { settings });
+    previewSettings = normalizeSettings({ ...previewSettings, ...settings });
+    return structuredClone(previewSettings);
+  },
 
   // Audio & Devices
   getAudioDevices: () =>
@@ -124,40 +246,39 @@ export const api = {
       },
     ]),
 
-  setAudioDevice: (deviceId: string) =>
-    safeInvoke<void>("set_audio_device", { deviceId }),
+  setAudioDevice: (deviceId: string) => safeInvoke<void>("set_audio_device", { deviceId }),
 
   // Recording Control
   startRecording: () => safeInvoke<void>("start_recording"),
-  stopRecording: () => safeInvoke<string>("stop_recording", undefined, "Simulated transcript output."),
+  stopRecording: () => safeInvoke<string>("stop_recording"),
   cancelRecording: () => safeInvoke<void>("cancel_recording"),
 
   // Manual Text Injection & Testing
-  injectText: (text: string) => safeInvoke<boolean>("inject_text", { text }, true),
+  injectText: async (text: string) => {
+    if (isTauri()) return safeInvoke<boolean>("inject_text", { text });
+    await navigator.clipboard.writeText(text);
+    return false;
+  },
   testMicrophoneLevel: () => safeInvoke<number>("get_current_audio_level", undefined, 0.0),
 
   // History CRUD
   getHistory: (limit: number = 50, offset: number = 0) =>
     safeInvoke<HistoryEntry[]>("get_history", { limit, offset }, []),
 
-  searchHistory: (query: string) =>
-    safeInvoke<HistoryEntry[]>("search_history", { query }, []),
+  searchHistory: (query: string) => safeInvoke<HistoryEntry[]>("search_history", { query }, []),
 
-  deleteHistoryItem: (id: string) =>
-    safeInvoke<boolean>("delete_history_item", { id }, true),
+  deleteHistoryItem: (id: string) => safeInvoke<boolean>("delete_history_item", { id }, true),
 
   clearTodayHistory: () => safeInvoke<number>("clear_today_history", undefined, 0),
   clearAllHistory: () => safeInvoke<number>("clear_all_history", undefined, 0),
 
   // Custom Dictionary & Replacements
-  getDictionaryTerms: () =>
-    safeInvoke<DictionaryTerm[]>("get_dictionary_terms", undefined, []),
+  getDictionaryTerms: () => safeInvoke<DictionaryTerm[]>("get_dictionary_terms", undefined, []),
 
   saveDictionaryTerm: (term: Omit<DictionaryTerm, "id"> & { id?: string }) =>
     safeInvoke<DictionaryTerm>("save_dictionary_term", { term }),
 
-  deleteDictionaryTerm: (id: string) =>
-    safeInvoke<boolean>("delete_dictionary_term", { id }, true),
+  deleteDictionaryTerm: (id: string) => safeInvoke<boolean>("delete_dictionary_term", { id }, true),
 
   getCustomReplacements: () =>
     safeInvoke<CustomReplacement[]>("get_custom_replacements", undefined, []),
@@ -171,8 +292,8 @@ export const api = {
   // Model Management
   getModelStatus: () =>
     safeInvoke<ModelStatus>("get_model_status", undefined, {
-      installed: true,
-      loaded: true,
+      installed: false,
+      loaded: false,
       version: "0.6B-v1",
       name: "Qwen/Qwen3-ASR-0.6B",
       size_bytes: 1880000000,
@@ -184,44 +305,68 @@ export const api = {
       error: null,
     }),
 
-  installModel: (modelSize: string = "0.6b") =>
-    safeInvoke<void>("install_model", { modelSize }),
+  installModel: (modelSize: string = "0.6b") => safeInvoke<void>("install_model", { modelSize }),
 
-  removeModel: (modelSize: string = "0.6b") =>
-    safeInvoke<void>("remove_model", { modelSize }),
+  removeModel: (modelSize: string = "0.6b") => safeInvoke<void>("remove_model", { modelSize }),
 
   reloadModel: () => safeInvoke<void>("reload_model"),
 
   // Metrics & Developer Diagnostics
   getLatencyMetrics: () =>
-    safeInvoke<LatencyMetrics>("get_latency_metrics", undefined, {
-      hotkey_to_recording_ms: 0,
-      recording_to_first_audio_ms: 0,
-      audio_to_first_partial_ms: 0,
-      speech_end_to_final_ms: 0,
-      final_to_injection_ms: 0,
-      total_duration_ms: 0,
-      rewrite_ms: 0,
-      last_updated: new Date().toISOString(),
+    safeInvoke<LatencyMetrics>("get_latency_metrics", undefined, emptyLatencyMetrics()),
+
+  getLatencyReport: () =>
+    safeInvoke<LatencyReport>("get_latency_report", undefined, {
+      last: emptyLatencyMetrics(),
+      percentiles: emptyLatencyPercentiles(),
+      recent: [],
+    }),
+
+  resetLatencyHistory: () =>
+    safeInvoke<LatencyReport>("reset_latency_history", undefined, {
+      last: emptyLatencyMetrics(),
+      percentiles: emptyLatencyPercentiles(),
+      recent: [],
     }),
 
   getSystemMetrics: () =>
-    safeInvoke<SystemMetrics>("get_system_metrics", undefined, {
-      cpu_usage_pct: 0,
-      app_ram_mb: 0,
-      model_ram_mb: 0,
-      total_ram_mb: 0,
-      vram_mb: 0,
-      gpu_name: "CPU",
-      model_loaded: false,
-      backend_name: "CPU",
-      os_name: "web",
-      session: "unknown",
+    safeInvoke<SystemMetrics>("get_system_metrics", undefined, emptySystemMetrics()),
+
+  getBenchmarkReport: () =>
+    safeInvoke<FullBenchmarkReport>("get_benchmark_report", undefined, {
+      timestamp: new Date().toISOString(),
+      hardware_summary: "Local Engine",
     }),
+
+  runSystemBenchmark: () =>
+    safeInvoke<FullBenchmarkReport | null>("run_system_benchmark", undefined, null),
+
+  getCapabilities: () =>
+    safeInvoke<Capabilities>("get_capabilities", undefined, emptyCapabilities()),
+
+  /**
+   * Force a fresh hardware probe. Call this before showing a load decision;
+   * a cached free-VRAM reading is worse than no reading.
+   */
+  refreshCapabilities: () =>
+    safeInvoke<Capabilities>("refresh_capabilities", undefined, emptyCapabilities()),
+
+  getModelManifests: () => safeInvoke<ModelManifest[]>("get_model_manifests", undefined, []),
+
+  /**
+   * Resolve a configuration for the current hardware without applying it, so a
+   * preset can be previewed with its reasons before the user commits.
+   */
+  previewProfile: (preset: Preset, overrides?: ProfileOverrides) =>
+    safeInvoke<ResolvedProfile | null>("preview_profile", { preset, overrides }, null),
 
   openLogsFolder: () => safeInvoke<void>("open_logs_folder"),
   getDiagnosticsReport: () =>
-    safeInvoke<string>("get_diagnostics_report", undefined, "Diagnostic report unavailable in web preview."),
+    safeInvoke<string>(
+      "get_diagnostics_report",
+      undefined,
+      "Diagnostic report unavailable in web preview.",
+    ),
   // Convenience: fetch + write to clipboard in one call.
   copyDiagnostics: async (): Promise<boolean> => {
     try {
@@ -264,7 +409,7 @@ export const api = {
   getFlowStatus: () =>
     safeInvoke<FlowStatus>("get_flow_status", undefined, {
       active_tier: "smart_flow",
-      active_model: "lfm2.5-1.2b",
+      active_model: "qwen3.5-0.8b",
       ready: false,
       installed: false,
       runtime_installed: false,
@@ -273,34 +418,74 @@ export const api = {
       is_downloading: false,
       download_progress_pct: 0,
     }),
-  previewCleanup: (text: string, tier: AppSettings["intelligence_tier"] = "smart_flow", style?: string) =>
-    safeInvoke<{ text: string; latency_ms: number; tier_used: AppSettings["intelligence_tier"]; model_used: string }>("preview_tier_cleanup", { text, tier, style }, {
-      text,
-      latency_ms: 0,
-      tier_used: tier,
-      model_used: tier === "deep_context" ? "qwen3.5-2b" : tier === "smart_flow" ? "lfm2.5-1.2b" : "none",
+  previewCleanup: (
+    text: string,
+    tier: AppSettings["intelligence_tier"] = "smart_flow",
+    style?: string,
+  ) =>
+    safeInvoke<{
+      text: string;
+      latency_ms: number;
+      tier_used: AppSettings["intelligence_tier"];
+      model_used: string;
+    }>(
+      "preview_tier_cleanup",
+      { text, tier, style },
+      {
+        text,
+        latency_ms: 0,
+        tier_used: tier,
+        model_used:
+          tier === "deep_context" ? "qwen3.5-2b" : tier === "smart_flow" ? "qwen3.5-0.8b" : "none",
+      },
+    ),
+  getIntelligenceStatus: () =>
+    safeInvoke<FlowStatus>("get_intelligence_status", undefined, {
+      active_tier: "smart_flow",
+      active_model: "qwen3.5-0.8b",
+      ready: false,
+      installed: false,
+      runtime_installed: false,
+      backend: "none",
+      is_loading: false,
+      is_downloading: false,
+      download_progress_pct: 0,
     }),
-  getIntelligenceStatus: () => safeInvoke<FlowStatus>("get_intelligence_status", undefined, {
-    active_tier: "smart_flow",
-    active_model: "lfm2.5-1.2b",
-    ready: false,
-    installed: false,
-    runtime_installed: false,
-    backend: "none",
-    is_loading: false,
-    is_downloading: false,
-    download_progress_pct: 0,
-  }),
-  getIntelligenceTiers: () => safeInvoke<IntelligenceTierState[]>("get_intelligence_tiers", undefined, []),
-  installIntelligenceModel: (tier: AppSettings["intelligence_tier"]) => safeInvoke<void>("install_intelligence_model", { tier }),
-  removeIntelligenceModel: (tier: AppSettings["intelligence_tier"]) => safeInvoke<void>("remove_intelligence_model", { tier }),
-  installLlamaRuntime: (computeBackend: AppSettings["compute_backend"]) => safeInvoke<void>("install_llama_runtime", { computeBackend }),
+  getIntelligenceTiers: () =>
+    safeInvoke<IntelligenceTierState[]>("get_intelligence_tiers", undefined, []),
+  installIntelligenceModel: (tier: AppSettings["intelligence_tier"]) =>
+    safeInvoke<void>("install_intelligence_model", { tier }),
+  removeIntelligenceModel: (tier: AppSettings["intelligence_tier"]) =>
+    safeInvoke<void>("remove_intelligence_model", { tier }),
+  installLlamaRuntime: (computeBackend: AppSettings["refinement"]["device"]) =>
+    safeInvoke<void>("install_llama_runtime", { computeBackend }),
   removeLlamaRuntime: () => safeInvoke<void>("remove_llama_runtime"),
-  setIntelligenceTier: (tier: AppSettings["intelligence_tier"]) => safeInvoke<AppSettings>("set_intelligence_tier", { tier }),
-  previewTierCleanup: (text: string, tier: AppSettings["intelligence_tier"], style?: string) => api.previewCleanup(text, tier, style),
+  setIntelligenceTier: (tier: AppSettings["intelligence_tier"]) =>
+    safeInvoke<AppSettings>("set_intelligence_tier", { tier }),
+  /**
+   * Whether the LLM polish pass is currently on.
+   *
+   * Defaults to `true` when the backend cannot be reached, matching the shipped
+   * default tier, so the HUD badge does not claim Fast mode on a transient IPC
+   * failure.
+   */
+  getPolishEnabled: () => safeInvoke<boolean>("get_polish_enabled", undefined, true),
+  /**
+   * Flip between Fast (ASR only) and Polished (ASR + LLM).
+   *
+   * Persists, and takes effect on the next dictation: the stop path re-reads
+   * settings each time, so no reload is needed. Enabling also starts and warms
+   * the runtime so the first polished dictation is not the one that pays for it.
+   */
+  setPolishEnabled: (enabled: boolean) =>
+    safeInvoke<AppSettings>("set_polish_enabled", { enabled }),
+  previewTierCleanup: (text: string, tier: AppSettings["intelligence_tier"], style?: string) =>
+    api.previewCleanup(text, tier, style),
   // Server-side: re-injects pre-LLM text from the latest history entry.
   undoLastAiEdit: () => safeInvoke<string>("undo_last_ai_edit", undefined, ""),
 
   // App lifecycle
   quit: () => safeInvoke<void>("quit_app", undefined, undefined as unknown as void),
 };
+
+export const tauriApi = api;

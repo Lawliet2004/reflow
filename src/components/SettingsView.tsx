@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
-import { AppSettings, IntelligenceTier, ModelStatus, RuntimeDownloadEvent } from "../types";
-import type { IntelligenceDownloadEvent } from "../App";
+import React, { useState } from "react";
+import { AppSettings, ModelStatus } from "../types";
+import type { IntelligenceHub } from "../hooks/useIntelligenceHub";
 import { PAGES, PAGE_ICONS } from "./settings/ui";
 import { GeneralPage } from "./settings/GeneralPage";
 import { AppearancePage } from "./settings/AppearancePage";
@@ -14,14 +14,11 @@ import { Search } from "lucide-react";
 
 interface SettingsViewProps {
   settings: AppSettings;
-  onUpdateSettings: (settings: Partial<AppSettings>) => void;
+  onUpdateSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
   modelStatus: ModelStatus | null;
   onReloadModel: () => void;
-  intelligenceDownload: IntelligenceDownloadEvent | null;
-  activeDownloadTiers: Set<IntelligenceTier>;
-  runtimeDownload: RuntimeDownloadEvent | null;
-  runtimeDownloadActive: boolean;
-  runtimeDownloadError: string | null;
+  /** Single intelligence hub — replaces five drilled download props. */
+  intelligence: IntelligenceHub;
   onInstallRuntime: () => void;
   onRemoveRuntime: () => void;
 }
@@ -31,36 +28,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onUpdateSettings,
   modelStatus,
   onReloadModel,
-  intelligenceDownload,
-  activeDownloadTiers,
-  runtimeDownload,
-  runtimeDownloadActive,
-  runtimeDownloadError,
+  intelligence,
   onInstallRuntime,
   onRemoveRuntime,
 }) => {
-  const [page, setPage] = useState<string>("general");
+  const {
+    intelligenceDownload,
+    activeDownloadTiers,
+    runtimeDownload,
+    runtimeDownloadActive,
+    runtimeDownloadError,
+  } = intelligence;
+  const [selectedPage, setPage] = useState<string>("general");
   const [query, setQuery] = useState("");
 
   const q = query.trim().toLowerCase();
   const filtered = q
     ? PAGES.filter(
-        (p) =>
-          p.label.toLowerCase().includes(q) ||
-          p.keywords.some((k) => k.includes(q))
+        (p) => p.label.toLowerCase().includes(q) || p.keywords.some((k) => k.includes(q)),
       )
     : PAGES;
 
-  useEffect(() => {
-    // If the search hides the active page, snap back to the first match.
-    if (!filtered.some((p) => p.id === page)) {
-      setPage(filtered[0]?.id ?? "general");
-    }
-  }, [query, filtered, page]);
+  const page = filtered.some((item) => item.id === selectedPage) ? selectedPage : filtered[0]?.id;
 
   return (
-    <div className="flex flex-1 min-h-0 w-full outline-none">
-      <nav className="w-[160px] shrink-0 border-r border-line bg-surface/50 py-4 px-2 space-y-0.5 select-none">
+    <div className="settings-layout">
+      <nav aria-label="Settings categories" className="settings-navigation">
+        <h1 className="text-xl font-semibold tracking-tight px-3 mb-5">Settings</h1>
         <div className="relative mb-2 px-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
           <input
@@ -77,15 +71,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <button
               key={item.id}
               onClick={() => setPage(item.id)}
+              aria-current={active ? "page" : undefined}
               className={`w-full text-left px-3 py-2 rounded-lg text-[12.5px] font-medium cursor-pointer transition-colors flex items-center gap-2 ${
                 active
                   ? "bg-accent-soft text-accent border border-accent-border font-semibold shadow-xs"
                   : "text-muted hover:text-ink hover:bg-base-2 border border-transparent"
               }`}
             >
-              <span className={active ? "text-accent" : "text-muted"}>
-                {PAGE_ICONS[item.id]}
-              </span>
+              <span className={active ? "text-accent" : "text-muted"}>{PAGE_ICONS[item.id]}</span>
               {item.label}
             </button>
           );
@@ -96,21 +89,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </nav>
 
       <div className="flex-1 min-w-0 overflow-y-auto select-text">
-        <div className="max-w-2xl mx-auto px-7 py-8 space-y-6 animate-fade-rise">
+        <div className="settings-content space-y-6 animate-fade-rise">
           <header className="mb-1">
-            <h1 className="font-display text-[22px] font-semibold tracking-tight text-ink">
-              {PAGES.find((p) => p.id === page)?.label}
-            </h1>
-            <p className="text-[12.5px] text-muted mt-0.5">Preferences save automatically</p>
+            <h2 className="font-display text-[28px] font-semibold tracking-tight text-ink">
+              {PAGES.find((p) => p.id === page)?.label ?? "No results"}
+            </h2>
+            <p className="text-sm text-muted mt-2">
+              {page
+                ? "Make Reflow feel like your own. Changes save automatically."
+                : "No settings match your search. Try a different word."}
+            </p>
           </header>
 
-          {page === "general" && <GeneralPage settings={settings} onUpdateSettings={onUpdateSettings} />}
+          {page === "general" && (
+            <GeneralPage settings={settings} onUpdateSettings={onUpdateSettings} />
+          )}
           {page === "appearance" && (
             <AppearancePage settings={settings} onUpdateSettings={onUpdateSettings} />
           )}
-          {page === "audio" && <AudioPage settings={settings} onUpdateSettings={onUpdateSettings} />}
+          {page === "audio" && (
+            <AudioPage settings={settings} onUpdateSettings={onUpdateSettings} />
+          )}
           {page === "model" && (
             <ModelPage
+              intelligence={intelligence}
               settings={settings}
               onUpdateSettings={onUpdateSettings}
               modelStatus={modelStatus}
@@ -126,6 +128,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
           {page === "cleanup" && (
             <CleanupPage
+              intelligence={intelligence}
               settings={settings}
               onUpdateSettings={onUpdateSettings}
               modelStatus={modelStatus}
@@ -141,7 +144,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {page === "dictionary" && (
             <DictionaryPage settings={settings} onUpdateSettings={onUpdateSettings} />
           )}
-          {page === "phone" && <PhonePage settings={settings} onUpdateSettings={onUpdateSettings} />}
+          {page === "phone" && (
+            <PhonePage settings={settings} onUpdateSettings={onUpdateSettings} />
+          )}
           {page === "advanced" && (
             <AdvancedPage settings={settings} onUpdateSettings={onUpdateSettings} />
           )}

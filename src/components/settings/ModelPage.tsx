@@ -1,17 +1,19 @@
 import React, { useState } from "react";
 import {
   AppSettings,
-  ComputeBackend,
-  FlowStatus,
+  AsrSettings,
+  Capabilities,
   IntelligenceTier,
   IntelligenceTierState,
   INTELLIGENCE_TIERS,
   ModelStatus,
   RuntimeDownloadEvent,
+  primaryGpu,
   isModelLoading,
   isModelReady,
 } from "../../types";
 import { api } from "../../services/tauriApi";
+import { ModelNotice } from "../ModelNotice";
 import { Section, Row, Toggle } from "./ui";
 import {
   Check,
@@ -27,8 +29,10 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import type { IntelligenceDownloadEvent } from "../../App";
+import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
 
 interface Props {
+  intelligence: IntelligenceHub;
   settings: AppSettings;
   onUpdateSettings: (s: Partial<AppSettings>) => void;
   modelStatus: ModelStatus | null;
@@ -42,8 +46,7 @@ interface Props {
   onRemoveRuntime: () => void;
 }
 
-const FORMAT_SIZE = (mb: number) =>
-  mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
+const FORMAT_SIZE = (mb: number) => (mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`);
 
 const MODELS: { id: "0.6b" | "1.7b"; title: string; desc: string }[] = [
   { id: "0.6b", title: "0.6B · Realtime", desc: "Instant latency · fits all GPUs & CPU" },
@@ -64,6 +67,7 @@ const PRECISIONS: {
 
 export const ModelPage: React.FC<Props> = ({
   settings,
+  intelligence,
   onUpdateSettings,
   modelStatus,
   onReloadModel,
@@ -73,55 +77,41 @@ export const ModelPage: React.FC<Props> = ({
   runtimeDownloadActive,
   runtimeDownloadError,
   onInstallRuntime,
-  onRemoveRuntime,
+  // Accepted but not wired yet; Task 39 adds the Remove action to this page.
+  onRemoveRuntime: _onRemoveRuntime,
 }) => {
   const [installingModel, setInstallingModel] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [flowStatus, setFlowStatus] = useState<FlowStatus | null>(null);
-  const [intelligenceTiers, setIntelligenceTiers] = useState<
-    IntelligenceTierState[] | null
-  >(null);
-  const [installingIntelligence, setInstallingIntelligence] =
-    useState<IntelligenceTier | null>(null);
-  const [removingIntelligence, setRemovingIntelligence] =
-    useState<IntelligenceTier | null>(null);
+  const { flowStatus, intelligenceTiers } = intelligence;
+  const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
+  const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
+
+  const [installingIntelligence, setInstallingIntelligence] = useState<IntelligenceTier | null>(
+    null,
+  );
+  const [removingIntelligence, setRemovingIntelligence] = useState<IntelligenceTier | null>(null);
   const [confirmRemoveIntelligence, setConfirmRemoveIntelligence] =
     useState<IntelligenceTier | null>(null);
 
   React.useEffect(() => {
-    // While a download is running, the on-disk `installed` flag is always false
-    // and the backend reports `is_downloading: false` until the file is fully
-    // written. Polling during that window would clobber our UI state and keep
-    // the Download button visible. Suspend the poll until every active
-    // download has reached a terminal phase.
-    const anyActive = activeDownloadTiers.size > 0;
     let alive = true;
-    const refresh = async () => {
-      try {
-        const [status, tiers] = await Promise.all([
-          api.getIntelligenceStatus(),
-          api.getIntelligenceTiers(),
-        ]);
+    api
+      .refreshCapabilities()
+      .then((next) => {
         if (!alive) return;
-        setFlowStatus(status);
-        setIntelligenceTiers(tiers);
-      } catch (e) {
-        console.error("intelligence status refresh failed", e);
-      }
-    };
-    if (anyActive) {
-      return () => {
-        alive = false;
-      };
-    }
-    refresh();
-    const interval = setInterval(refresh, 2000);
+        setCapabilities(next);
+        setCapabilitiesError(null);
+      })
+      .catch((error) => {
+        if (!alive) return;
+        console.error("hardware capability refresh failed", error);
+        setCapabilitiesError("Hardware detection failed");
+      });
     return () => {
       alive = false;
-      clearInterval(interval);
     };
-  }, [settings.flow_model, activeDownloadTiers]);
+  }, []);
 
   const tierState = (tier: IntelligenceTier): IntelligenceTierState | null => {
     if (tier === "raw_verbatim") {
@@ -135,11 +125,7 @@ export const ModelPage: React.FC<Props> = ({
     return intelligenceTiers?.find((t) => t.tier === tier) ?? null;
   };
 
-  const isIntelligenceInstalled = (tier: IntelligenceTier) =>
-    tierState(tier)?.installed ?? false;
-
-  const isIntelligenceDownloading = (tier: IntelligenceTier) =>
-    activeDownloadTiers.has(tier);
+  const isIntelligenceDownloading = (tier: IntelligenceTier) => activeDownloadTiers.has(tier);
 
   const handleInstallIntelligence = async (tier: IntelligenceTier) => {
     if (tier === "raw_verbatim") return;
@@ -149,9 +135,13 @@ export const ModelPage: React.FC<Props> = ({
     try {
       await api.installIntelligenceModel(tier);
     } catch (e) {
+      intelligence.notifyToast(
+        "error",
+        "The model operation could not be completed. Please try again or check the logs.",
+      );
       console.error("installIntelligenceModel failed", e);
     } finally {
-      setTimeout(() => setInstallingIntelligence(null), 500);
+      setInstallingIntelligence(null);
     }
   };
 
@@ -161,6 +151,10 @@ export const ModelPage: React.FC<Props> = ({
     try {
       await api.removeIntelligenceModel(tier);
     } catch (e) {
+      intelligence.notifyToast(
+        "error",
+        "The model operation could not be completed. Please try again or check the logs.",
+      );
       console.error("removeIntelligenceModel failed", e);
     } finally {
       setRemovingIntelligence(null);
@@ -168,15 +162,38 @@ export const ModelPage: React.FC<Props> = ({
     }
   };
 
+  const detectedGpu = capabilities ? primaryGpu(capabilities) : null;
+  const refinementGpuAvailable = Boolean(detectedGpu);
+  const refinementDevice =
+    refinementGpuAvailable &&
+    settings.refinement.device !== "cpu" &&
+    settings.memory_policy.allow_gpu_refinement
+      ? "gpu"
+      : "cpu";
+
   const change = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onUpdateSettings({ [key]: value } as Partial<AppSettings>);
 
-  const handleSelectOffload = (value: number) =>
-    onUpdateSettings({ flow_n_gpu_layers: value } as Partial<AppSettings>);
+  const handleSelectRefinementDevice = (device: "cpu" | "gpu") => {
+    if (device === "gpu" && !refinementGpuAvailable) return;
+    onUpdateSettings({
+      refinement: {
+        ...settings.refinement,
+        device: device === "gpu" ? "vulkan" : "cpu",
+        // GPU layer count is intentionally internal. -1 asks the backend to
+        // choose the highest safe full or partial offload for current free VRAM.
+        gpu_layers: device === "gpu" ? -1 : 0,
+      },
+      memory_policy: {
+        ...settings.memory_policy,
+        allow_gpu_refinement: device === "gpu",
+      },
+    });
+  };
 
   const handleSelectModel = async (id: "0.6b" | "1.7b") => {
-    if (settings.asr_model === id) return;
-    await change("asr_model", id);
+    if (settings.asr.model === id) return;
+    await change("asr", { ...settings.asr, model: id });
     try {
       const status = await api.getModelStatus();
       if (!status.installed) {
@@ -186,15 +203,19 @@ export const ModelPage: React.FC<Props> = ({
         await api.reloadModel();
       }
     } catch (e) {
+      intelligence.notifyToast(
+        "error",
+        "The model operation could not be completed. Please try again or check the logs.",
+      );
       console.error("Model select error:", e);
     } finally {
-      setTimeout(() => setInstallingModel(null), 2000);
+      setInstallingModel(null);
     }
   };
 
   const handleSelectPrecision = async (id: Precision) => {
-    if (settings.asr_precision === id) return;
-    await change("asr_precision", id);
+    if (settings.asr.precision === id) return;
+    await change("asr", { ...settings.asr, precision: id });
     // The choice is already persisted to AppSettings, so a future launch
     // will honor it. Reload now so the new precision is live without
     // requiring a restart.
@@ -210,8 +231,12 @@ export const ModelPage: React.FC<Props> = ({
   const removeModel = async () => {
     setRemoving(true);
     try {
-      await api.removeModel(settings.asr_model);
+      await api.removeModel(settings.asr.model);
     } catch (e) {
+      intelligence.notifyToast(
+        "error",
+        "The model operation could not be completed. Please try again or check the logs.",
+      );
       console.error("Remove model error:", e);
     }
     setRemoving(false);
@@ -233,7 +258,10 @@ export const ModelPage: React.FC<Props> = ({
     if (!m) return null;
     const device = m[1].toUpperCase();
     const mode = m[2].toLowerCase();
-    const vram = modelStatus && "vram_mb" in modelStatus ? (modelStatus as { vram_mb?: number }).vram_mb : undefined;
+    const vram =
+      modelStatus && "vram_mb" in modelStatus
+        ? (modelStatus as { vram_mb?: number }).vram_mb
+        : undefined;
     const vramText = vram && vram > 0 ? ` · ${vram.toFixed(0)} MB VRAM` : "";
     return `Currently: ${device} ${mode}${vramText}`;
   })();
@@ -244,10 +272,9 @@ export const ModelPage: React.FC<Props> = ({
     Boolean(modelStatus?.asr_gpu_hint);
 
   return (
-    <Section
-      icon={<Cpu className="w-4 h-4" />}
-      title="Speech model"
-    >
+    <Section icon={<Cpu className="w-4 h-4" />} title="Speech model">
+      {/* Why the running model may not be the one selected below. */}
+      <ModelNotice notice={modelStatus?.asr_selection_notice} />
       {showGpuHint && (
         <div
           className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 space-y-1.5"
@@ -256,13 +283,10 @@ export const ModelPage: React.FC<Props> = ({
           <div className="flex items-start gap-2 text-[12.5px] text-amber-700 dark:text-amber-300">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <div>
-              <p className="font-semibold">
-                GPU detected, but ASR is using CPU.
-              </p>
+              <p className="font-semibold">GPU detected, but ASR is using CPU.</p>
               <p className="mt-1 leading-snug">
-                Your system Python&rsquo;s <code>torch</code> was installed
-                without CUDA support. Run the command below in a terminal, then
-                click <em>Reload speech model</em>:
+                Your system Python&rsquo;s <code>torch</code> was installed without CUDA support.
+                Run the command below in a terminal, then click <em>Reload speech model</em>:
               </p>
             </div>
           </div>
@@ -273,7 +297,7 @@ export const ModelPage: React.FC<Props> = ({
       )}
       <div className="grid grid-cols-2 gap-3">
         {MODELS.map((m) => {
-          const active = settings.asr_model === m.id;
+          const active = settings.asr.model === m.id;
           return (
             <button
               key={m.id}
@@ -285,11 +309,7 @@ export const ModelPage: React.FC<Props> = ({
               }`}
             >
               <div className="flex items-center justify-between">
-                <p
-                  className={`text-[13px] font-semibold ${
-                    active ? "text-accent" : "text-ink"
-                  }`}
-                >
+                <p className={`text-[13px] font-semibold ${active ? "text-accent" : "text-ink"}`}>
                   {m.title}
                 </p>
                 {active && (
@@ -358,14 +378,12 @@ export const ModelPage: React.FC<Props> = ({
                       ? `${
                           backendLabel && !/loading/i.test(backendLabel)
                             ? backendLabel
-                            : `Loading ${settings.asr_model === "1.7b" ? "1.7B" : "0.6B"} model`
+                            : `Loading ${settings.asr.model === "1.7b" ? "1.7B" : "0.6B"} model`
                         }`
-                      : modelStatus?.error ?? "Initializing model…"}
+                      : (modelStatus?.error ?? "Initializing model…")}
               </p>
               {precisionLabel && (
-                <p className="text-[10.5px] text-accent mt-0.5 font-medium">
-                  {precisionLabel}
-                </p>
+                <p className="text-[10.5px] text-accent mt-0.5 font-medium">{precisionLabel}</p>
               )}
             </div>
           </div>
@@ -400,8 +418,10 @@ export const ModelPage: React.FC<Props> = ({
       <Row label="Compute backend" hint="Auto uses CUDA when a compatible GPU is present">
         <select
           className="field"
-          value={settings.compute_backend}
-          onChange={(e) => change("compute_backend", e.target.value as ComputeBackend)}
+          value={settings.asr.device}
+          onChange={(e) =>
+            change("asr", { ...settings.asr, device: e.target.value as AsrSettings["device"] })
+          }
         >
           <option value="auto">Auto (GPU prioritized)</option>
           <option value="gpu">GPU only (CUDA)</option>
@@ -414,14 +434,14 @@ export const ModelPage: React.FC<Props> = ({
           <div className="min-w-0">
             <p className="text-[13px] text-ink font-medium">Model precision</p>
             <p className="text-[11.5px] text-muted mt-0.5 leading-relaxed">
-              Lower precision uses less VRAM; 16-bit is the most accurate. The
-              choice is remembered across launches.
+              Lower precision uses less VRAM; 16-bit is the most accurate. The choice is remembered
+              across launches.
             </p>
           </div>
         </div>
         <div className="grid grid-cols-4 gap-2">
           {PRECISIONS.map((p) => {
-            const active = settings.asr_precision === p.id;
+            const active = settings.asr.precision === p.id;
             return (
               <button
                 key={p.id}
@@ -434,9 +454,7 @@ export const ModelPage: React.FC<Props> = ({
               >
                 <div className="flex items-center justify-between">
                   <p
-                    className={`text-[12.5px] font-semibold ${
-                      active ? "text-accent" : "text-ink"
-                    }`}
+                    className={`text-[12.5px] font-semibold ${active ? "text-accent" : "text-ink"}`}
                   >
                     {p.title}
                   </p>
@@ -446,9 +464,7 @@ export const ModelPage: React.FC<Props> = ({
                     </div>
                   )}
                 </div>
-                <p className="text-[10.5px] text-muted mt-0.5 leading-snug">
-                  {p.desc}
-                </p>
+                <p className="text-[10.5px] text-muted mt-0.5 leading-snug">{p.desc}</p>
               </button>
             );
           })}
@@ -457,17 +473,14 @@ export const ModelPage: React.FC<Props> = ({
 
       <Row label="Keep model loaded" hint="Pre-warms the model in memory at startup">
         <Toggle
-          on={settings.keep_model_loaded}
-          onChange={(v) => change("keep_model_loaded", v)}
+          on={settings.asr.keep_loaded}
+          onChange={(v) => change("asr", { ...settings.asr, keep_loaded: v })}
           ariaLabel="Keep model loaded"
         />
       </Row>
 
       {modelStatus?.installed && !confirmRemove && (
-        <button
-          className="btn btn-danger w-full mt-2"
-          onClick={() => setConfirmRemove(true)}
-        >
+        <button className="btn btn-danger w-full mt-2" onClick={() => setConfirmRemove(true)}>
           <Trash2 className="w-3.5 h-3.5" />
           Remove downloaded model weights
         </button>
@@ -477,7 +490,7 @@ export const ModelPage: React.FC<Props> = ({
           <div className="flex items-start gap-2 text-[12.5px] text-rose-700 dark:text-rose-300">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <p>
-              This deletes the {settings.asr_model.toUpperCase()} weights from your computer. You'll
+              This deletes the {settings.asr.model.toUpperCase()} weights from your computer. You'll
               need to re-download to dictate again.
             </p>
           </div>
@@ -503,13 +516,10 @@ export const ModelPage: React.FC<Props> = ({
       <div className="pt-4 border-t border-line space-y-3">
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-accent" />
-          <h3 className="text-[13.5px] font-semibold text-ink">
-            Intelligence &amp; Flow Engine
-          </h3>
+          <h3 className="text-[13.5px] font-semibold text-ink">Intelligence &amp; Flow Engine</h3>
         </div>
         <p className="text-[12px] text-muted -mt-1">
-          Stage 2 LLM post-processing. Download the GGUF weights for the tier you want to
-          enable.
+          Stage 2 LLM post-processing. Download the GGUF weights for the tier you want to enable.
         </p>
 
         {(["smart_flow", "deep_context"] as IntelligenceTier[]).map((tier) => {
@@ -532,9 +542,7 @@ export const ModelPage: React.FC<Props> = ({
             <div
               key={tier}
               className={`rounded-xl border p-4 space-y-3 ${
-                isActive
-                  ? "border-accent bg-accent-soft"
-                  : "border-line bg-surface"
+                isActive ? "border-accent bg-accent-soft" : "border-line bg-surface"
               }`}
             >
               <div className="flex items-start gap-3">
@@ -547,30 +555,22 @@ export const ModelPage: React.FC<Props> = ({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-[13px] font-semibold text-ink">
-                      {meta.label}
-                    </p>
+                    <p className="text-[13px] font-semibold text-ink">{meta.label}</p>
                     {isActive && (
                       <span className="text-[9.5px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-accent text-white">
                         ACTIVE
                       </span>
                     )}
                   </div>
-                  <p className="text-[11.5px] text-muted mt-0.5 break-all">
-                    {meta.modelFile}
-                  </p>
+                  <p className="text-[11.5px] text-muted mt-0.5 break-all">{meta.modelFile}</p>
                 </div>
               </div>
 
               <div className="flex items-center justify-between gap-3 text-[11.5px] text-muted">
                 <span>
-                  <span className="text-ink font-medium">
-                    {FORMAT_SIZE(meta.downloadSizeMB)}
-                  </span>{" "}
+                  <span className="text-ink font-medium">{FORMAT_SIZE(meta.downloadSizeMB)}</span>{" "}
                   download ·{" "}
-                  <span className="text-ink font-medium">
-                    {FORMAT_SIZE(meta.ramRequiredMB)}
-                  </span>{" "}
+                  <span className="text-ink font-medium">{FORMAT_SIZE(meta.ramRequiredMB)}</span>{" "}
                   RAM
                 </span>
                 {installed && (
@@ -604,7 +604,8 @@ export const ModelPage: React.FC<Props> = ({
                   Loaded on {flowStatus.backend || "runtime"}
                   {flowStatus.n_gpu_layers !== undefined && (
                     <>
-                      {" "}· {flowStatus.n_gpu_layers}
+                      {" "}
+                      · {flowStatus.n_gpu_layers}
                       {flowStatus.mode === "gpu" ? "/99 layers" : " layers"}
                       {flowStatus.mode === "gpu" && flowStatus.vram_used_mb
                         ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB VRAM`
@@ -616,10 +617,9 @@ export const ModelPage: React.FC<Props> = ({
 
               {showRuntimeMissing && (
                 <p className="text-[11px] text-amber-600 dark:text-amber-300 leading-snug">
-                  Weights are downloaded, but the <code>llama-server</code>{" "}
-                  runtime is missing from{" "}
-                  <code>~/AppData/Roaming/reflow/bin/</code>. The tier can&rsquo;t
-                  run until the runtime is installed.
+                  Weights are downloaded, but the <code>llama-server</code> runtime is missing from{" "}
+                  <code>~/AppData/Roaming/reflow/bin/</code>. The tier can&rsquo;t run until the
+                  runtime is installed.
                 </p>
               )}
               {downloading && (
@@ -644,12 +644,9 @@ export const ModelPage: React.FC<Props> = ({
               {runtimeDownloadActive && runtimeDownload && (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between text-[11px] text-muted">
+                    <span>Installing {runtimeDownload.kind_label ?? "runtime"} runtime</span>
                     <span>
-                      Installing {runtimeDownload.kind_label ?? "runtime"} runtime
-                    </span>
-                    <span>
-                      {runtimeDownload.progress_pct}% ·{" "}
-                      {runtimeDownload.speed_mbps.toFixed(1)} MB/s
+                      {runtimeDownload.progress_pct}% · {runtimeDownload.speed_mbps.toFixed(1)} MB/s
                     </span>
                   </div>
                   <div className="h-1.5 rounded-full bg-line overflow-hidden">
@@ -673,8 +670,7 @@ export const ModelPage: React.FC<Props> = ({
               {confirmRemoveIntelligence === tier && (
                 <div className="p-2.5 rounded-lg border border-rose-500/30 bg-rose-500/10 space-y-1.5">
                   <p className="text-[11.5px] text-rose-700 dark:text-rose-300">
-                    Delete the downloaded weights for {meta.label}? You can re-download
-                    later.
+                    Delete the downloaded weights for {meta.label}? You can re-download later.
                   </p>
                   <div className="flex items-center gap-2">
                     <button
@@ -750,54 +746,88 @@ export const ModelPage: React.FC<Props> = ({
         <div className="pt-1 space-y-2">
           <div className="flex items-center gap-2">
             <Cpu className="w-3.5 h-3.5 text-muted" />
-            <p className="text-[12.5px] text-ink font-medium">GPU offload</p>
+            <p className="text-[12.5px] text-ink font-medium">Stage 2 processor</p>
           </div>
           <p className="text-[11.5px] text-muted leading-snug">
-            Choose how many transformer layers of the Stage 2 LLM run on the
-            GPU. Lower this if you see OOMs or want to leave VRAM for the
-            speech model. -1 = auto (binary 0/99 driven by Compute backend).
+            Choose CPU or GPU. GPU offload is tuned automatically for the lowest expected latency
+            while reserving enough VRAM for speech recognition and the desktop.
           </p>
-          <div className="flex items-center gap-2 flex-wrap">
-            <select
-              className="field !py-1.5 !text-[12.5px]"
-              value={offloadPresetValue(settings.flow_n_gpu_layers)}
-              onChange={(e) => handleSelectOffload(Number(e.target.value))}
+          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Stage 2 processor">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={refinementDevice === "cpu"}
+              onClick={() => handleSelectRefinementDevice("cpu")}
+              className={`text-left rounded-lg border p-3 transition-all cursor-pointer ${
+                refinementDevice === "cpu"
+                  ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
+                  : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
+              }`}
             >
-              <option value="-1">Auto (-1)</option>
-              <option value="0">CPU only (0)</option>
-              <option value="30">Half (30)</option>
-              <option value="99">Full GPU (99)</option>
-            </select>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-muted">Custom:</span>
-              <input
-                type="number"
-                min={-1}
-                max={99}
-                step={1}
-                value={settings.flow_n_gpu_layers}
-                onChange={(e) => {
-                  const raw = Number(e.target.value);
-                  if (Number.isNaN(raw)) return;
-                  handleSelectOffload(Math.max(-1, Math.min(99, Math.floor(raw))));
-                }}
-                className="field !py-1.5 !text-[12.5px] w-20 text-center"
-                aria-label="Custom GPU offload layer count"
-              />
-            </div>
-            {settings.flow_n_gpu_layers >= 0 && (
-              <span className="text-[10.5px] text-amber-600 dark:text-amber-300">
-                Runtime will restart on the next dictation.
-              </span>
-            )}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Cpu className="w-4 h-4 text-muted" />
+                  <p className="text-[12.5px] font-semibold text-ink">CPU</p>
+                </div>
+                {refinementDevice === "cpu" && (
+                  <div className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center">
+                    <Check className="w-2.5 h-2.5 stroke-[3]" />
+                  </div>
+                )}
+              </div>
+              <p className="text-[10.5px] text-muted mt-1 leading-snug">
+                Keeps every refinement layer in system memory.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              role="radio"
+              aria-checked={refinementDevice === "gpu"}
+              aria-disabled={!refinementGpuAvailable}
+              disabled={!refinementGpuAvailable}
+              onClick={() => handleSelectRefinementDevice("gpu")}
+              className={`text-left rounded-lg border p-3 transition-all ${
+                refinementDevice === "gpu"
+                  ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
+                  : "border-line bg-surface"
+              } ${
+                refinementGpuAvailable
+                  ? "cursor-pointer hover:border-line-strong hover:bg-base-2"
+                  : "cursor-not-allowed opacity-55"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-muted" />
+                  <p className="text-[12.5px] font-semibold text-ink">GPU</p>
+                </div>
+                {refinementDevice === "gpu" && (
+                  <div className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center">
+                    <Check className="w-2.5 h-2.5 stroke-[3]" />
+                  </div>
+                )}
+              </div>
+              <p className="text-[10.5px] text-muted mt-1 leading-snug">
+                {!capabilities
+                  ? (capabilitiesError ?? "Checking GPU support…")
+                  : refinementGpuAvailable
+                    ? `${detectedGpu?.name ?? "GPU"} · automatic full or partial offload`
+                    : "No compatible GPU detected"}
+              </p>
+            </button>
           </div>
+          {refinementDevice === "gpu" && (
+            <p className="text-[10.5px] text-muted leading-snug">
+              {flowStatus?.ready && flowStatus.mode === "gpu"
+                ? `${flowStatus.n_gpu_layers ?? 0} layers are currently offloaded to the GPU.`
+                : flowStatus?.ready && flowStatus.mode === "cpu"
+                  ? "The GPU runtime fell back to CPU. Reinstall the GPU runtime or free VRAM and try again."
+                  : "The runtime will choose full offload when it fits, otherwise the fastest safe partial offload."}
+            </p>
+          )}
         </div>
       </div>
     </Section>
   );
 };
-
-function offloadPresetValue(v: number): string {
-  if (v === -1 || v === 0 || v === 30 || v === 99) return String(v);
-  return "custom";
-}

@@ -13,10 +13,7 @@ export const AdvancedPage: React.FC<Props> = ({ settings, onUpdateSettings }) =>
   const [diagCopied, setDiagCopied] = useState(false);
 
   return (
-    <Section
-      icon={<ShieldCheck className="w-4 h-4" />}
-      title="Privacy & diagnostics"
-    >
+    <Section icon={<ShieldCheck className="w-4 h-4" />} title="Privacy & diagnostics">
       <Row label="History retention" hint="Older transcripts are purged automatically">
         <select
           className="field"
@@ -34,10 +31,7 @@ export const AdvancedPage: React.FC<Props> = ({ settings, onUpdateSettings }) =>
         </select>
       </Row>
 
-      <Row
-        label="Restore clipboard"
-        hint="Puts the previous clipboard back after inserting text"
-      >
+      <Row label="Restore clipboard" hint="Puts the previous clipboard back after inserting text">
         <Toggle
           on={settings.clipboard_restore_enabled}
           onChange={(v) => onUpdateSettings({ clipboard_restore_enabled: v })}
@@ -45,10 +39,7 @@ export const AdvancedPage: React.FC<Props> = ({ settings, onUpdateSettings }) =>
         />
       </Row>
 
-      <Row
-        label="Developer mode"
-        hint="Shows latency chips on Home and extra diagnostics"
-      >
+      <Row label="Developer mode" hint="Shows latency chips on Home and extra diagnostics">
         <Toggle
           on={settings.developer_mode}
           onChange={(v) => onUpdateSettings({ developer_mode: v })}

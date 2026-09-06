@@ -1,0 +1,15 @@
+dist
+node_modules
+coverage
+src-tauri/target
+# Tauri-generated schemas and bindings.
+src-tauri/gen
+package-lock.json
+
+# Tooling and planning artifacts, not project source.
+.commandcode
+prompt.md
+.agents
+graphify-out
+semantic-review
+.codex-*

@@ -21,10 +21,7 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
       /^(Shift\+)?[A-Z]$/.test(settings.hotkey));
 
   return (
-    <Section
-      icon={<Keyboard className="w-4 h-4" />}
-      title="Dictation & window"
-    >
+    <Section icon={<Keyboard className="w-4 h-4" />} title="Dictation & window">
       <Row
         label="Push-to-talk shortcut"
         hint={
@@ -33,16 +30,13 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
             : "Press once to start, press again to stop"
         }
       >
-        <HotkeyPicker
-          value={settings.hotkey}
-          onChange={(v) => change("hotkey", v)}
-        />
+        <HotkeyPicker value={settings.hotkey} onChange={(v) => change("hotkey", v)} />
       </Row>
 
       {hotkeyRisky && (
         <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11.5px] text-amber-700 dark:text-amber-300 leading-relaxed">
-          Heads-up: <span className="font-semibold">{settings.hotkey}</span> is commonly
-          used while typing. Consider combos with Ctrl, Alt, or Win.
+          Heads-up: <span className="font-semibold">{settings.hotkey}</span> is commonly used while
+          typing. Consider combos with Ctrl, Alt, or Win.
         </div>
       )}
 

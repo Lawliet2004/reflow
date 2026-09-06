@@ -16,7 +16,7 @@ export function applyTheme(
   settings: Pick<
     AppSettings,
     "app_theme" | "accent_color" | "reduce_motion" | "ui_font_scale" | "overlay_theme"
-  >
+  >,
 ): () => void {
   if (typeof document === "undefined") return () => {};
 
