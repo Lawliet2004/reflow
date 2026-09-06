@@ -22,6 +22,6 @@ Reflow 0.2.0 brings a redesigned desktop workspace and fixes reliability problem
 
 ## Validation and availability
 
-The release verification record is in [release verification](release-verification-0.2.0.md), with backend details in [backend review](backend-review-0.2.0.md). Automated checks establish the tested behavior; they do not certify every microphone, GPU, desktop environment, or Android device. Model weights remain separate downloads. Browser preview supports interface review; dictation requires the desktop application.
+The release verification record is in [release verification](https://github.com/Lawliet2004/reflow/blob/v0.2.0/docs/release-verification-0.2.0.md), with backend details in [backend review](https://github.com/Lawliet2004/reflow/blob/v0.2.0/docs/backend-review-0.2.0.md). Automated checks establish the tested behavior; they do not certify every microphone, GPU, desktop environment, or Android device. Model weights remain separate downloads. Browser preview supports interface review; dictation requires the desktop application.
 
 For rollback, reinstall the previous release from GitHub. Back up local settings and history before changing versions; this release retains the existing settings/history formats.
