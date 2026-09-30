@@ -24,6 +24,8 @@ jobs:
         run: npx tsc --noEmit
       - name: Unit tests (vitest)
         run: npm run test
+      - name: Production build
+        run: npm run build
 
   # The ASR sidecar's pure logic: audio preprocessing, the load-attempt ladder,
   # the VRAM spill predicate, shape bucketing and the decode-token cap. None of
@@ -35,7 +37,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install numpy
+      - run: pip install numpy==2.4.4
       - name: Sidecar selftest
         run: python model-runtime/qwen3_asr_runtime.py --selftest
 

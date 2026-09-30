@@ -166,6 +166,8 @@ impl EngineStatus {
     }
 }
 
+pub type InferenceCancellation = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 pub trait ASREngine: Send + Sync {
     fn initialize(&mut self) -> Result<(), String>;
     /// Ask the runtime to compute its CUDA capability snapshot now.
@@ -199,7 +201,7 @@ pub trait ASREngine: Send + Sync {
     fn get_partial_transcript(&mut self) -> Result<String, String>;
     fn stop_stream(&mut self) -> Result<String, String>;
     fn cancel_stream(&mut self) -> Result<(), String>;
-    fn cancellation_signal(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+    fn cancellation_signal(&self) -> Option<InferenceCancellation> {
         None
     }
 

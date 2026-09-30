@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::engine::{ASREngine, EngineStatus};
@@ -92,7 +93,7 @@ fn audio_chunks(samples: &[f32]) -> impl Iterator<Item = &[f32]> {
 
 pub struct Qwen3AsrSidecar {
     child: Option<Child>,
-    stdin: Option<ChildStdin>,
+    stdin: Option<Arc<parking_lot::Mutex<ChildStdin>>>,
     /// Lines produced by a dedicated reader thread. Reading through a channel
     /// rather than blocking on the pipe is what makes a bounded wait possible:
     /// `BufReader::read_line` has no timeout, so a wedged sidecar used to
@@ -293,16 +294,20 @@ impl Qwen3AsrSidecar {
             .to_string();
 
         let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
 
         {
-            let stdin = self.stdin.as_mut().ok_or("Subprocess stdin is not open")?;
+            let mut stdin = self
+                .stdin
+                .as_ref()
+                .ok_or("Subprocess stdin is not open")?
+                .lock();
             let mut payload = payload;
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("id".into(), Value::from(request_id));
             }
             let line = payload.to_string();
-            writeln!(stdin, "{}", line)
+            writeln!(&mut *stdin, "{}", line)
                 .map_err(|e| format!("Failed to write to sidecar stdin: {}", e))?;
             stdin
                 .flush()
@@ -453,7 +458,8 @@ impl Qwen3AsrSidecar {
 
     fn kill_child(&mut self) {
         if let Some(mut child) = self.child.take() {
-            if let Some(mut stdin) = self.stdin.take() {
+            if let Some(stdin) = self.stdin.take() {
+                let mut stdin = stdin.lock();
                 use std::io::Write;
                 let _ = writeln!(stdin, "{{\"cmd\":\"quit\"}}");
                 let _ = stdin.flush();
@@ -588,7 +594,7 @@ impl ASREngine for Qwen3AsrSidecar {
                     let responses = child.stdout.take().map(spawn_response_reader);
 
                     self.child = Some(child);
-                    self.stdin = stdin;
+                    self.stdin = stdin.map(|stdin| Arc::new(parking_lot::Mutex::new(stdin)));
                     self.responses = responses;
 
                     // The sidecar answers ping before importing torch, so
@@ -763,7 +769,11 @@ impl ASREngine for Qwen3AsrSidecar {
         }
 
         self.pushed_samples = self.pushed_samples.saturating_add(samples_16k_mono.len());
-        let stdin = self.stdin.as_mut().ok_or("Subprocess stdin is not open")?;
+        let mut stdin = self
+            .stdin
+            .as_ref()
+            .ok_or("Subprocess stdin is not open")?
+            .lock();
 
         // Keep each binary frame write bounded. This also protects callers that
         // submit a large buffer (for example external audio), while normal
@@ -849,6 +859,18 @@ impl ASREngine for Qwen3AsrSidecar {
                 Err(e)
             }
         }
+    }
+
+    fn cancellation_signal(&self) -> Option<super::engine::InferenceCancellation> {
+        let stdin = Arc::clone(self.stdin.as_ref()?);
+        Some(Arc::new(move || {
+            let mut stdin = stdin.lock();
+            let result = writeln!(&mut *stdin, "{{\"cmd\":\"cancel_stream\",\"id\":0}}")
+                .and_then(|_| stdin.flush());
+            if let Err(error) = result {
+                log::warn!("Could not interrupt ASR inference: {error}");
+            }
+        }))
     }
 
     fn cancel_stream(&mut self) -> Result<(), String> {
@@ -1224,6 +1246,85 @@ mod tests {
             status <= Duration::from_secs(10),
             "status budget {status:?} would park the ASR actor too long"
         );
+    }
+
+    #[test]
+    fn actor_interrupts_python_decode_and_matches_out_of_order_replies() {
+        let Some(python) = Qwen3AsrSidecar::find_python() else {
+            return;
+        };
+        let script = r#"
+import sys,json,struct
+pending=None
+audio_samples=0
+stream=sys.stdin.buffer
+while True:
+    first=stream.read(1)
+    if not first: break
+    if first==b'\x01':
+        _,_,length=struct.unpack('<III',stream.read(12))
+        pcm=stream.read(length)
+        assert len(pcm)==length
+        assert all(v==8191 for v in struct.unpack('<'+'h'*(length//2),pcm))
+        audio_samples+=length//2
+        continue
+    request=json.loads(first+stream.readline())
+    cmd=request['cmd']
+    if cmd=='quit': break
+    if cmd=='stop_stream':
+        assert audio_samples==1000
+        pending=request
+        print('decoding',file=sys.stderr,flush=True)
+    else:
+        print(json.dumps({'id':request['id'],'status':'ok'}),flush=True)
+        if cmd=='cancel_stream' and pending:
+            print(json.dumps({'id':pending['id'],'status':'ok','text':''}),flush=True)
+            pending=None
+"#;
+        let mut command = Command::new(python);
+        command
+            .arg("-u")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = command.spawn().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let stderr = child.stderr.take().unwrap();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(stderr).read_line(&mut line).unwrap();
+            ready_tx.send(line).unwrap();
+        });
+        let mut engine = Qwen3AsrSidecar::new();
+        engine.stdin = child
+            .stdin
+            .take()
+            .map(|stdin| Arc::new(parking_lot::Mutex::new(stdin)));
+        engine.responses = child.stdout.take().map(spawn_response_reader);
+        engine.child = Some(child);
+        let handle = crate::asr::AsrHandle::spawn(Box::new(engine), 8);
+        handle.start_stream_blocking(7, "en", &[]).unwrap();
+        handle.push_audio_blocking(7, 0, &vec![0.25; 1000]).unwrap();
+        let decoding = handle.clone();
+        let stop = std::thread::spawn(move || decoding.stop_stream_blocking(7).unwrap());
+        assert_eq!(
+            ready_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .trim(),
+            "decoding"
+        );
+        handle.cancel_stream_blocking(7).unwrap();
+        assert_eq!(stop.join().unwrap(), "");
+        handle.start_stream_blocking(8, "en", &[]).unwrap();
+        handle.cancel_stream_blocking(8).unwrap();
     }
 
     /// Sending a command with no live subprocess must return an error rather

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -9,7 +9,7 @@ use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
 use super::sidecar::Qwen3AsrSidecar;
 
-type InferenceCancel = Arc<RwLock<Option<(u64, Arc<AtomicBool>)>>>;
+type InferenceCancel = Arc<RwLock<Option<(u64, super::engine::InferenceCancellation)>>>;
 
 pub const DEFAULT_ASR_CHANNEL_CAPACITY: usize = 64;
 
@@ -261,6 +261,7 @@ impl AsrHandle {
                             cancelled_sessions.insert(session_id);
                             active_session_id = None;
                             let res = engine.cancel_stream();
+                            *cancel_c.write() = None;
                             Self::sync_cache(
                                 &mut *engine,
                                 &status_c,
@@ -605,7 +606,7 @@ impl AsrHandle {
     fn signal_cancel(&self, session_id: u64) {
         if let Some((active, signal)) = &*self.inference_cancel.read() {
             if *active == session_id {
-                signal.store(true, Ordering::Release);
+                signal();
             }
         }
     }

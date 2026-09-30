@@ -294,8 +294,9 @@ impl ASREngine for NativeAsrEngine {
         Ok(texts.join(" "))
     }
 
-    fn cancellation_signal(&self) -> Option<Arc<AtomicBool>> {
-        Some(Arc::clone(&self.cancelled))
+    fn cancellation_signal(&self) -> Option<super::engine::InferenceCancellation> {
+        let cancelled = Arc::clone(&self.cancelled);
+        Some(Arc::new(move || cancelled.store(true, Ordering::Release)))
     }
 
     fn cancel_stream(&mut self) -> Result<(), String> {

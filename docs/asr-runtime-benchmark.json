@@ -1,0 +1,78 @@
+{
+  "rows": [
+    {
+      "model": "0.6b",
+      "runtime": "python",
+      "language": "en",
+      "wer_percent": 0.0,
+      "mean_latency_ms": 6727.5722,
+      "resident_vram_mb": 1362.0,
+      "error": null
+    },
+    {
+      "model": "0.6b",
+      "runtime": "python",
+      "language": "hi",
+      "wer_percent": null,
+      "mean_latency_ms": null,
+      "resident_vram_mb": null,
+      "error": "No hi audio references in the corpus"
+    },
+    {
+      "model": "0.6b",
+      "runtime": "native",
+      "language": "en",
+      "wer_percent": null,
+      "mean_latency_ms": null,
+      "resident_vram_mb": null,
+      "error": "Model files for native-0.6b are not installed"
+    },
+    {
+      "model": "0.6b",
+      "runtime": "native",
+      "language": "hi",
+      "wer_percent": null,
+      "mean_latency_ms": null,
+      "resident_vram_mb": null,
+      "error": "No hi audio references in the corpus"
+    },
+    {
+      "model": "1.7b",
+      "runtime": "python",
+      "language": "en",
+      "wer_percent": 0.0,
+      "mean_latency_ms": 6542.4293,
+      "resident_vram_mb": 2666.0,
+      "error": null
+    },
+    {
+      "model": "1.7b",
+      "runtime": "python",
+      "language": "hi",
+      "wer_percent": null,
+      "mean_latency_ms": null,
+      "resident_vram_mb": null,
+      "error": "No hi audio references in the corpus"
+    },
+    {
+      "model": "1.7b",
+      "runtime": "native",
+      "language": "en",
+      "wer_percent": null,
+      "mean_latency_ms": null,
+      "resident_vram_mb": null,
+      "error": "Model files for native-1.7b are not installed"
+    },
+    {
+      "model": "1.7b",
+      "runtime": "native",
+      "language": "hi",
+      "wer_percent": null,
+      "mean_latency_ms": null,
+      "resident_vram_mb": null,
+      "error": "No hi audio references in the corpus"
+    }
+  ],
+  "native_within_gate": false,
+  "default_runtime": "python"
+}
