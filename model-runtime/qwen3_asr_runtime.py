@@ -19,6 +19,7 @@ JSON-lines IPC over stdin/stdout:
 
 import sys
 import json
+import hashlib
 import base64
 import os
 import queue
@@ -1490,7 +1491,28 @@ def start_load(model_dir: str, device: str, precision: str = "auto", model_id=No
     return {"status": "loading"}
 
 
-def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None):
+def verify_weight_files(model_dir: str, weight_files):
+    if not weight_files:
+        raise ValueError("No weight checksums supplied for model download")
+    root = os.path.realpath(model_dir)
+    for weight in weight_files:
+        filename = weight["filename"]
+        path = os.path.realpath(os.path.join(root, filename))
+        if os.path.commonpath([root, path]) != root:
+            raise ValueError("Weight filename escapes model directory")
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        actual = digest.hexdigest()
+        if actual != weight["sha256"].lower():
+            os.remove(path)
+            raise ValueError(f"SHA-256 mismatch for {filename}: expected {weight['sha256']}, got {actual}; bad file deleted")
+
+
+def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None, revision=None, weight_files=None):
+    if not revision or len(revision) != 40 or not weight_files:
+        return {"status": "error", "error": "Pinned revision and weight checksums are required"}
     STATE.download_model_id = model_id
     STATE.download_expected_bytes = expected_bytes
     def run():
@@ -1503,6 +1525,7 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None)
 
             snapshot_download(
                 repo,
+                revision=revision,
                 local_dir=model_dir,
                 max_workers=4,
                 allow_patterns=[
@@ -1516,8 +1539,9 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None)
                     "*.json",
                 ],
             )
+            verify_weight_files(model_dir, weight_files)
             STATE.is_downloading = False
-            log_err("Model download complete")
+            log_err("Model download complete and verified")
             # auto-load right after install, honoring the precision the user
             # asked for when they kicked off the install.
             start_load(model_dir, "auto", STATE.pending_precision, model_id, expected_bytes)
@@ -1603,9 +1627,7 @@ def handle(msg: dict) -> dict:
         # Stash the requested precision so the auto-load that follows a
         # successful install honors the user's choice.
         STATE.pending_precision = precision
-        if os.path.isfile(os.path.join(model_dir, "config.json")):
-            return {"status": "ok", "detail": "already installed"}
-        return start_install(model_dir, repo, msg.get("model_id"), msg.get("expected_bytes"))
+        return start_install(model_dir, repo, msg.get("model_id"), msg.get("expected_bytes"), msg.get("revision"), msg.get("weight_files"))
 
     if cmd == "unload_model":
         _unload_model_blocking()
@@ -2035,6 +2057,22 @@ def _selftest() -> bool:
     # ---------------------------------------------------------------
     # Task 16: the decode cap must scale with speech, not truncate it.
     # ---------------------------------------------------------------
+    import tempfile
+    with tempfile.TemporaryDirectory() as test_dir:
+        test_path = os.path.join(test_dir, "model.safetensors")
+        with open(test_path, "wb") as f:
+            f.write(b"verified weights")
+        weights = [{"filename": "model.safetensors", "sha256": hashlib.sha256(b"verified weights").hexdigest()}]
+        verify_weight_files(test_dir, weights)
+        check("weights-verified", os.path.isfile(test_path))
+        with open(test_path, "r+b") as f:
+            f.write(b"X")
+        try:
+            verify_weight_files(test_dir, weights)
+            check("corrupt-weights-rejected", False)
+        except ValueError as e:
+            check("corrupt-weights-rejected", "SHA-256 mismatch" in str(e) and not os.path.exists(test_path))
+    check("unpinned-install-rejected", start_install("unused", "unused")["status"] == "error")
     check("explicit-model-label", _model_label("/parent/1.7/wrong", "0.6b") == "0.6B")
     check("explicit-model-bytes", expected_bytes_for("/1.7", "0.6b", 123) == 123)
     check("fallback-model-label", _model_label("/models/1.7b") == "1.7B")

@@ -234,7 +234,10 @@ impl ModelManifest {
     /// Reported rather than assumed so Task 44 can require it before release
     /// instead of silently accepting whatever bytes arrive.
     pub fn is_verifiable(&self) -> bool {
-        !self.sha256.is_empty() && self.revision != "main"
+        self.sha256.len() == 64
+            && self.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            && self.revision.len() == 40
+            && self.revision.bytes().all(|b| b.is_ascii_hexdigit())
     }
 }
 
@@ -248,11 +251,11 @@ pub const ASR_MODELS: &[ModelManifest] = &[
         label: "Qwen3-ASR 0.6B",
         runtime: RuntimeKind::PythonAsr,
         repo: "Qwen/Qwen3-ASR-0.6B-hf",
-        revision: "v1.0",
+        revision: "7f1569a48a89f3e3f4dc3a5c9d28bddd903bc76c",
         filename: "model.safetensors",
         dir_name: "qwen3-asr-0.6b",
-        sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-        download_bytes: 1_565_000_000,
+        sha256: "d3f212dd20abecd315d830bc54ae3865e56ebfc3276484e57b771288ba27fd35",
+        download_bytes: 1_564_928_088,
         params: 600_000_000,
         // INT8 is offered but is not expected to help at batch size 1: the
         // dequantization overhead outweighs the bandwidth saving when BF16
@@ -267,11 +270,11 @@ pub const ASR_MODELS: &[ModelManifest] = &[
         label: "Qwen3-ASR 1.7B",
         runtime: RuntimeKind::PythonAsr,
         repo: "Qwen/Qwen3-ASR-1.7B-hf",
-        revision: "v1.0",
+        revision: "bcd2b5b7f32b480ab5790554cfa8347f246a14f3",
         filename: "model.safetensors",
         dir_name: "qwen3-asr-1.7b",
-        sha256: "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
-        download_bytes: 4_076_000_000,
+        sha256: "2db53c7d81bd9b8cbc6a074e89be2c968a0d373fb4ee68bb1b1e14f7042dfee1",
+        download_bytes: 4_076_193_080,
         params: 1_700_000_000,
         precisions: &[
             Precision::Int8,
@@ -292,13 +295,10 @@ pub const REFINEMENT_MODELS: &[ModelManifest] = &[
         label: "Qwen3.5 0.8B",
         runtime: RuntimeKind::LlamaServer,
         repo: "unsloth/Qwen3.5-0.8B-GGUF",
-        revision: "v1.0",
+        revision: "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0",
         filename: "Qwen3.5-0.8B-Q4_K_M.gguf",
         dir_name: "flow",
-        // The real digest of the shipped file, verified locally. The other
-        // entries here carry placeholders; model GGUFs are not currently
-        // checksum-gated (only the llama-server archive is), but recording the
-        // true hash costs nothing and makes the entry auditable.
+        // The digest of the pinned file, verified against the Hugging Face API.
         sha256: "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517",
         download_bytes: 532_517_120,
         params: 800_000_000,
@@ -317,11 +317,11 @@ pub const REFINEMENT_MODELS: &[ModelManifest] = &[
         // `Qwen/Qwen3.5-2B-GGUF` does not exist; this is the real repo, and its
         // files carry no `-Instruct` infix.
         repo: "unsloth/Qwen3.5-2B-GGUF",
-        revision: "v1.0",
+        revision: "f6d5376be1edb4d416d56da11e5397a961aca8ae",
         filename: "Qwen3.5-2B-Q4_K_M.gguf",
         dir_name: "flow",
-        sha256: "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
-        download_bytes: 1_290_000_000,
+        sha256: "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
+        download_bytes: 1_280_835_840,
         params: 2_000_000_000,
         precisions: &[Precision::Int4],
         devices: &[Device::Cpu, Device::Cuda, Device::Vulkan],

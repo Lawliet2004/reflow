@@ -7,7 +7,9 @@
 // pure-function code paths: spec selection, archive-kind detection,
 // SHA-256 verification, and the env-var override.
 
-use reflow_lib::rewrite::runtime_install::{pick_runtime_spec, ArchiveKind, RUNTIME_LOCK_KEY};
+use reflow_lib::rewrite::runtime_install::{
+    pick_runtime_spec, ArchiveKind, PINNED_LLAMA_TAG, RUNTIME_LOCK_KEY,
+};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
@@ -71,7 +73,7 @@ fn run_basic_tests(failures: &mut u32) {
         pass(
             failures,
             "CPU spec URL points at the pinned tag",
-            spec.url.contains("b10621"),
+            spec.url.contains(PINNED_LLAMA_TAG),
         );
         pass(
             failures,

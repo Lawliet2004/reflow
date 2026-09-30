@@ -1018,13 +1018,16 @@ pub fn install_intelligence_model(
         "deep_context" => crate::rewrite::server::flow_model_spec("qwen3.5-2b"),
         _ => return Err(format!("Tier '{tier}' has no model to install")),
     };
-    let dest = crate::rewrite::flow_gguf_path(spec.id);
+    let manifest = crate::profile::manifest::refinement_manifest(spec.id)
+        .ok_or("Refinement manifest missing")?;
+    let final_dest = crate::rewrite::flow_gguf_path(spec.id);
+    let dest = final_dest.with_extension("gguf.part");
     if let Some(parent) = dest.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let url = format!(
-        "https://huggingface.co/{}/resolve/main/{}",
-        spec.repo, spec.filename
+        "https://huggingface.co/{}/resolve/{}/{}",
+        manifest.repo, manifest.revision, manifest.filename
     );
 
     // Re-entry guard: refuse to start a second concurrent download for the same tier.
@@ -1207,7 +1210,33 @@ pub fn install_intelligence_model(
                 }
             }
         }
-        let _ = dest_file.flush();
+        let verification = dest_file
+            .flush()
+            .map_err(|e| e.to_string())
+            .and_then(|_| crate::rewrite::runtime_install::verify_sha256(&dest, manifest.sha256));
+        drop(dest_file);
+        if let Err(err) = verification {
+            let _ = std::fs::remove_file(&dest);
+            emit_error(
+                &app_handle,
+                &tier_label,
+                100,
+                format!("Model SHA-256 verification failed: {err}"),
+            );
+            clear_active(&ctx_for_thread, &tier_label);
+            return;
+        }
+        let finalize = if final_dest.exists() {
+            std::fs::remove_file(&final_dest)
+        } else {
+            Ok(())
+        }
+        .and_then(|_| std::fs::rename(&dest, &final_dest));
+        if let Err(err) = finalize {
+            emit_error(&app_handle, &tier_label, 100, err.to_string());
+            clear_active(&ctx_for_thread, &tier_label);
+            return;
+        }
         let _ = app_handle.emit(
             "intelligence:download-progress",
             serde_json::json!({

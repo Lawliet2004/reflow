@@ -25,8 +25,8 @@ use crate::capability::capabilities;
 use crate::context::AppContext;
 use crate::platform::PlatformSys;
 
-/// The pinned llama.cpp release tag. Bumping this is a one-line change.
-pub const PINNED_LLAMA_TAG: &str = "b10621";
+/// The pinned llama.cpp build corresponding to the stable v0.5.0 release.
+pub const PINNED_LLAMA_TAG: &str = "b11146";
 
 /// Single key under which we lock the re-entry guard. There is only one
 /// runtime binary, so a single key is enough.
@@ -98,7 +98,7 @@ pub enum RuntimePhase {
 /// Payload pushed via the `runtime:download-progress` event.
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeDownloadEvent {
-    /// Pinned llama.cpp release tag, e.g. "b10621".
+    /// Pinned llama.cpp release tag, e.g. "b11146".
     pub version: String,
     /// 0..=100.
     pub progress_pct: u32,
@@ -299,66 +299,66 @@ impl LlamaRuntimeSpec {
 
     fn win_vulkan_x64() -> Self {
         Self::build(
-            "llama-b10621-bin-win-vulkan-x64.zip",
-            "2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163",
+            "llama-b11146-bin-win-vulkan-x64.zip",
+            "55a378aa095b466979d85075234f66d7655c7a7483222af0c006c0e55b4d7bd6",
             "Vulkan",
-            34_403_304,
+            32_127_004,
         )
     }
     fn win_cpu_x64() -> Self {
         Self::build(
-            "llama-b10621-bin-win-cpu-x64.zip",
-            "0e8b65e650e369f70f8307d890508886f171ef4fb00facccddd4a1b7ffdaca51",
+            "llama-b11146-bin-win-cpu-x64.zip",
+            "14cf1303ca9ac3abd94816850532f9f9a69ac66fbaca3776fc6f9061c2fac1d1",
             "CPU",
-            18_068_018,
+            18_560_055,
         )
     }
     fn linux_vulkan_x64() -> Self {
         Self::build(
-            "llama-b10621-bin-ubuntu-vulkan-x64.tar.gz",
-            "3db8e4411033ef4531072be43377e859bcdbf9640c7bb36f9656e538eabd0978",
+            "llama-b11146-bin-ubuntu-vulkan-x64.tar.gz",
+            "d3ce40fce7403cc93bcf5718fc46c6efb61ed9709f8e5d9f10c86bf0e30e8fb3",
             "Vulkan",
-            32_914_916,
+            30_598_492,
         )
     }
     fn linux_cpu_x64() -> Self {
         Self::build(
-            "llama-b10621-bin-ubuntu-x64.tar.gz",
-            "91d7b03ddae498a39f28fdb85d84d2b4a0fd3838d10b4f897e0ef8975bb9b583",
+            "llama-b11146-bin-ubuntu-x64.tar.gz",
+            "c150306eb16b5ab696f76a8bdf810c35fd98a24e82158742e6fa28f420ff8410",
             "CPU",
-            16_291_771,
+            16_998_357,
         )
     }
     fn linux_vulkan_arm64() -> Self {
         Self::build(
-            "llama-b10621-bin-ubuntu-vulkan-arm64.tar.gz",
-            "1267a0e918c37be5ef568b37f9a5de377e47cbe1ea77d4d42e38a20dfff1b358",
+            "llama-b11146-bin-ubuntu-vulkan-arm64.tar.gz",
+            "5dcebe3ecbcb43a1ed85e3284453f9edf54dcca833e1cb1f54b4022b753c1da5",
             "Vulkan",
-            26_774_470,
+            24_410_274,
         )
     }
     fn linux_cpu_arm64() -> Self {
         Self::build(
-            "llama-b10621-bin-ubuntu-arm64.tar.gz",
-            "95940151be63492f70f659da420b268244cc83a6ee70e310d2600ccdb7ea4deb",
+            "llama-b11146-bin-ubuntu-arm64.tar.gz",
+            "4aeda6fe68831547e49b7fa87607383ca5352b3d72ca5f70d52ed265f58c131f",
             "CPU",
-            13_043_001,
+            13_598_346,
         )
     }
     fn macos_arm64() -> Self {
         Self::build(
-            "llama-b10621-bin-macos-arm64.tar.gz",
-            "429c8270608600188035e5e92f7d78dffb7900904fe7dd7e6a84f48068cd13cf",
+            "llama-b11146-bin-macos-arm64.tar.gz",
+            "1ad3f9eff80edb9dbef4259ad564d1720612ef7eea48fa4afed0e54f5f3d5711",
             "CPU",
-            10_954_823,
+            11_189_714,
         )
     }
     fn macos_x64() -> Self {
         Self::build(
-            "llama-b10621-bin-macos-x64.tar.gz",
-            "33c44e036e0e223f71a29fc74a0ab3e130ca9eadeb032ecc1c7af25985b8b91b",
+            "llama-b11146-bin-macos-x64.tar.gz",
+            "305f0e3a17d2c01eb205cd0a62128357f1ec3b55329cb084d94e5ec0115d7a3b",
             "CPU",
-            11_034_240,
+            11_237_237,
         )
     }
 }
@@ -702,7 +702,7 @@ fn download_with_resume(
     Ok(())
 }
 
-fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
+pub fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("Open archive: {e}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
@@ -998,11 +998,11 @@ mod tests {
     #[test]
     fn archive_kind_detects_zip_vs_targz() {
         assert_eq!(
-            ArchiveKind::from_extension("llama-b10621-bin-win-cpu-x64.zip"),
+            ArchiveKind::from_extension("llama-b11146-bin-win-cpu-x64.zip"),
             ArchiveKind::Zip
         );
         assert_eq!(
-            ArchiveKind::from_extension("llama-b10621-bin-ubuntu-x64.tar.gz"),
+            ArchiveKind::from_extension("llama-b11146-bin-ubuntu-x64.tar.gz"),
             ArchiveKind::TarGz
         );
     }

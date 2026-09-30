@@ -675,6 +675,8 @@ impl ASREngine for Qwen3AsrSidecar {
         let manifest = ASR_MODELS.iter().find(|m| m.repo == repo);
         let cmd = json!({
             "cmd": "install_model",
+            "revision": manifest.map(|m| m.revision),
+            "weight_files": manifest.map(|m| vec![json!({"filename": m.filename, "sha256": m.sha256})]),
             "model_id": manifest.map(|m| m.id),
             "expected_bytes": manifest.map(|m| m.download_bytes),
             "model_dir": model_dir,
