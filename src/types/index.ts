@@ -145,6 +145,7 @@ export type UIFontScale = "compact" | "normal" | "roomy";
  * impossible to express.
  */
 export interface AsrSettings {
+  runtime: "python" | "native";
   /** Manifest id, e.g. `"0.6b"`. */
   model: string;
   device: "auto" | "cpu" | "cuda";
@@ -692,6 +693,7 @@ export function processingModeForCleanup(level: CleanupLevel): ProcessingMode {
 }
 
 export const DEFAULT_ASR_SETTINGS: AsrSettings = {
+  runtime: "python",
   model: "0.6b",
   device: "auto",
   precision: "auto",

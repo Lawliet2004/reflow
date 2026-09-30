@@ -415,7 +415,42 @@ export const ModelPage: React.FC<Props> = ({
         )}
       </div>
 
-      <Row label="Compute backend" hint="Auto uses CUDA when a compatible GPU is present">
+      <Row
+        label="Speech runtime"
+        hint="Native is an experimental Python-free runtime; download its model files separately."
+      >
+        <select
+          className="field"
+          value={settings.asr.runtime}
+          disabled={modelStatus?.is_downloading}
+          onChange={async (e) => {
+            const runtime = e.target.value as AsrSettings["runtime"];
+            await change("asr", { ...settings.asr, runtime });
+            try {
+              const status = await api.getModelStatus();
+              if (status.installed) await api.reloadModel();
+            } catch (error) {
+              intelligence.notifyToast(
+                "error",
+                "Could not switch speech runtime. Check the model and runtime downloads.",
+              );
+              console.error("Runtime switch error:", error);
+            }
+          }}
+        >
+          <option value="python">Python (default)</option>
+          <option value="native">Native (experimental)</option>
+        </select>
+      </Row>
+
+      <Row
+        label="Compute backend"
+        hint={
+          settings.asr.runtime === "native"
+            ? "Native uses Vulkan when a compatible GPU is present"
+            : "Auto uses CUDA when a compatible GPU is present"
+        }
+      >
         <select
           className="field"
           value={settings.asr.device}
@@ -424,52 +459,56 @@ export const ModelPage: React.FC<Props> = ({
           }
         >
           <option value="auto">Auto (GPU prioritized)</option>
-          <option value="gpu">GPU only (CUDA)</option>
+          <option value="gpu">
+            GPU only ({settings.asr.runtime === "native" ? "Vulkan" : "CUDA"})
+          </option>
           <option value="cpu">CPU only</option>
         </select>
       </Row>
 
-      <div>
-        <div className="flex items-center justify-between gap-6 mb-1.5">
-          <div className="min-w-0">
-            <p className="text-[13px] text-ink font-medium">Model precision</p>
-            <p className="text-[11.5px] text-muted mt-0.5 leading-relaxed">
-              Lower precision uses less VRAM; 16-bit is the most accurate. The choice is remembered
-              across launches.
-            </p>
+      {settings.asr.runtime === "python" && (
+        <div>
+          <div className="flex items-center justify-between gap-6 mb-1.5">
+            <div className="min-w-0">
+              <p className="text-[13px] text-ink font-medium">Model precision</p>
+              <p className="text-[11.5px] text-muted mt-0.5 leading-relaxed">
+                Lower precision uses less VRAM; 16-bit is the most accurate. The choice is
+                remembered across launches.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {PRECISIONS.map((p) => {
+              const active = settings.asr.precision === p.id;
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => handleSelectPrecision(p.id)}
+                  className={`text-left rounded-lg border p-2.5 transition-all cursor-pointer ${
+                    active
+                      ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
+                      : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <p
+                      className={`text-[12.5px] font-semibold ${active ? "text-accent" : "text-ink"}`}
+                    >
+                      {p.title}
+                    </p>
+                    {active && (
+                      <div className="w-3.5 h-3.5 rounded-full bg-accent text-white flex items-center justify-center">
+                        <Check className="w-2 h-2 stroke-[3]" />
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[10.5px] text-muted mt-0.5 leading-snug">{p.desc}</p>
+                </button>
+              );
+            })}
           </div>
         </div>
-        <div className="grid grid-cols-4 gap-2">
-          {PRECISIONS.map((p) => {
-            const active = settings.asr.precision === p.id;
-            return (
-              <button
-                key={p.id}
-                onClick={() => handleSelectPrecision(p.id)}
-                className={`text-left rounded-lg border p-2.5 transition-all cursor-pointer ${
-                  active
-                    ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
-                    : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <p
-                    className={`text-[12.5px] font-semibold ${active ? "text-accent" : "text-ink"}`}
-                  >
-                    {p.title}
-                  </p>
-                  {active && (
-                    <div className="w-3.5 h-3.5 rounded-full bg-accent text-white flex items-center justify-center">
-                      <Check className="w-2 h-2 stroke-[3]" />
-                    </div>
-                  )}
-                </div>
-                <p className="text-[10.5px] text-muted mt-0.5 leading-snug">{p.desc}</p>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      )}
 
       <Row label="Keep model loaded" hint="Pre-warms the model in memory at startup">
         <Toggle

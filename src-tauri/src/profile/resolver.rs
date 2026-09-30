@@ -567,6 +567,66 @@ pub struct AsrSelection {
 ///
 /// Only ever steps *down* from the ceiling, and only among models that are
 /// actually installed. Every deviation is reported in `downgrade`.
+#[allow(clippy::too_many_arguments)]
+pub fn select_asr_load_for_runtime(
+    runtime: &str,
+    preset: Preset,
+    requested_model: &str,
+    requested_device: &str,
+    requested_precision: &str,
+    installed: &dyn Fn(&str) -> bool,
+    caps: &Capabilities,
+    measured: MeasuredLookup<'_>,
+) -> AsrSelection {
+    if runtime != "native" {
+        return select_asr_load(
+            preset,
+            requested_model,
+            requested_device,
+            requested_precision,
+            installed,
+            caps,
+            measured,
+        );
+    }
+    let models = super::manifest::NATIVE_ASR_MODELS;
+    let requested = super::manifest::native_asr_manifest(requested_model).unwrap_or(&models[0]);
+    let device = if requested_device == "cpu" || caps.primary_gpu().is_none() {
+        Device::Cpu
+    } else {
+        Device::Vulkan
+    };
+    let ceiling = match preset {
+        Preset::Fast => models[0].params,
+        Preset::Accurate => models[1].params,
+        _ => requested.params,
+    };
+    let budget = (caps.free_vram_mb() - vram_reserve_mb(caps) - TRANSIENT_MARGIN_MB).max(0.0);
+    let chosen = models.iter().rev().find(|m| {
+        m.params <= ceiling
+            && installed(m.id)
+            && (device == Device::Cpu || m.estimated_vram_mb(Precision::Int8) <= budget)
+    });
+    let (chosen, device) = match chosen {
+        Some(model) => (model, device),
+        None => (
+            models.iter().find(|m| installed(m.id)).unwrap_or(requested),
+            Device::Cpu,
+        ),
+    };
+    AsrSelection {
+        model_id: chosen.id,
+        device,
+        precision: Precision::Int8,
+        downgrade: (chosen.id != requested.id).then(|| {
+            format!(
+                "Running {} instead of {} to fit the native ASR memory budget.",
+                chosen.label, requested.label
+            )
+        }),
+    }
+}
+
 pub fn select_asr_load(
     preset: Preset,
     requested_model: &str,

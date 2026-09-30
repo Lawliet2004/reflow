@@ -208,6 +208,9 @@ pub fn update_settings(
 
     let previous = ctx.settings_store.get();
     let updated = ctx.settings_store.merge_update(patch)?;
+    if updated.asr.runtime != previous.asr.runtime {
+        prepare_asr_runtime(ctx.inner(), &app)?;
+    }
     let _ = app.emit("settings:changed", &updated);
 
     if updated.hotkey != previous.hotkey {
@@ -429,7 +432,9 @@ pub fn delete_custom_replacement(id: String, ctx: State<'_, AppContext>) -> Resu
 
 #[tauri::command]
 pub fn get_model_status(ctx: State<'_, AppContext>) -> ModelStatus {
-    let active = ctx.settings_store.get().asr.model;
+    let settings = ctx.settings_store.get();
+    let active =
+        crate::model::manager::runtime_model_id(&settings.asr.model, &settings.asr.runtime);
     let engine_status = ctx.asr_handle.engine_status();
     let mut status = ctx.model_manager.get_status(&engine_status, &active);
     status.asr_selection_notice = ctx.asr_selection_notice.read().clone();
@@ -455,7 +460,8 @@ pub fn resolve_asr_load(ctx: &AppContext) -> (String, String, String) {
     // what the preview said and nothing else.
     let preset = crate::profile::Preset::parse(&settings.preset);
 
-    let selection = crate::profile::select_asr_load(
+    let selection = crate::profile::select_asr_load_for_runtime(
+        &settings.asr.runtime,
         preset,
         &requested,
         &settings.asr.device,
@@ -484,13 +490,37 @@ pub fn resolve_asr_load(ctx: &AppContext) -> (String, String, String) {
     )
 }
 
+fn prepare_asr_runtime(ctx: &AppContext, app: &AppHandle) -> Result<(), String> {
+    let requested = ctx.settings_store.get().asr.runtime;
+    let mut active = ctx.asr_runtime.lock();
+    if *active == requested {
+        return Ok(());
+    }
+    let mut engine: Box<dyn crate::asr::ASREngine> = if requested == "native" {
+        Box::new(crate::asr::native::NativeAsrEngine::default())
+    } else {
+        Box::new(crate::asr::Qwen3AsrSidecar::new())
+    };
+    if let Ok(dir) = app.path().resource_dir() {
+        engine.set_resource_dir(dir);
+    }
+    ctx.asr_handle.swap_engine_blocking(engine)?;
+    *active = requested;
+    ctx.asr_handle.initialize_blocking()
+}
+
 #[tauri::command]
 pub fn install_model(
     app: AppHandle,
     model_size: Option<String>,
     ctx: State<'_, AppContext>,
 ) -> Result<(), String> {
-    let active = model_size.unwrap_or_else(|| ctx.settings_store.get().asr.model);
+    let settings = ctx.settings_store.get();
+    let active = crate::model::manager::runtime_model_id(
+        &model_size.unwrap_or(settings.asr.model),
+        &settings.asr.runtime,
+    );
+    prepare_asr_runtime(ctx.inner(), &app)?;
     let model_dir = ctx.model_manager.get_model_dir(&active);
     let repo = ctx.model_manager.repo_for(&active);
     ctx.asr_handle
@@ -501,13 +531,18 @@ pub fn install_model(
 
 #[tauri::command]
 pub fn remove_model(model_size: Option<String>, ctx: State<'_, AppContext>) -> Result<(), String> {
-    let active = model_size.unwrap_or_else(|| ctx.settings_store.get().asr.model);
+    let settings = ctx.settings_store.get();
+    let active = crate::model::manager::runtime_model_id(
+        &model_size.unwrap_or(settings.asr.model),
+        &settings.asr.runtime,
+    );
     let _ = ctx.asr_handle.unload_model_blocking();
     ctx.model_manager.remove_model(&active)
 }
 
 #[tauri::command]
 pub fn reload_model(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
+    prepare_asr_runtime(ctx.inner(), &app)?;
     // Same resolution as the startup load, so a manual reload cannot end up
     // running a different model than a launch would.
     let (model_id, device, precision) = resolve_asr_load(ctx.inner());
@@ -559,7 +594,11 @@ pub fn spawn_model_status_watch(app: AppHandle, ctx: AppContext) {
         let mut last: Option<ModelStatus> = None;
         loop {
             let status = {
-                let active = ctx.settings_store.get().asr.model;
+                let settings = ctx.settings_store.get();
+                let active = crate::model::manager::runtime_model_id(
+                    &settings.asr.model,
+                    &settings.asr.runtime,
+                );
                 // Model loading happens on the Python sidecar's background
                 // thread. The actor cache only changes when a command reaches
                 // the engine, so merely reading it here leaves the UI stuck on
@@ -1317,6 +1356,9 @@ pub fn install_llama_runtime(
 /// error path.
 #[tauri::command]
 pub fn remove_llama_runtime(ctx: State<'_, AppContext>) -> Result<(), String> {
+    if ctx.asr_runtime.lock().as_str() == "native" {
+        ctx.asr_handle.unload_model_blocking()?;
+    }
     ctx.flow_runtime.shutdown();
     let bin = crate::rewrite::llama_server_bin();
     if bin.exists() {

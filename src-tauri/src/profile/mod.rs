@@ -12,7 +12,7 @@ pub use manifest::{
     Precision, RuntimeKind, ASR_MODELS, REFINEMENT_MODELS,
 };
 pub use resolver::{
-    build_attempts, no_measurements, resolve_profile, select_asr_load, vram_reserve_mb,
-    AsrSelection, LoadAttempt, Preset, ProfileOverrides, ProfileReason, ResolvedProfile,
-    STREAMING_RTF_CEILING,
+    build_attempts, no_measurements, resolve_profile, select_asr_load, select_asr_load_for_runtime,
+    vram_reserve_mb, AsrSelection, LoadAttempt, Preset, ProfileOverrides, ProfileReason,
+    ResolvedProfile, STREAMING_RTF_CEILING,
 };

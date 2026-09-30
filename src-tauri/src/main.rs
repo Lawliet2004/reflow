@@ -51,6 +51,21 @@ fn main() {
                 }
                 return;
             }
+            "--benchmark" if args.len() > 2 => {
+                match reflow_lib::benchmark::runtime::run_runtime_benchmark(std::path::Path::new(
+                    &args[2],
+                )) {
+                    Ok(report) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).expect("benchmark serializes")
+                    ),
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
             "--latency" | "--benchmark" | "benchmark" => {
                 let metrics = PlatformSys::get_system_metrics();
                 println!("=== Reflow latency report ===");

@@ -1,6 +1,7 @@
 pub mod actor;
 pub mod engine;
 pub mod mock;
+pub mod native;
 pub mod sidecar;
 pub mod stabilizer;
 

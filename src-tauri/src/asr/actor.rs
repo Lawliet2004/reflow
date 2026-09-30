@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -8,6 +8,8 @@ use tokio::sync::{mpsc, oneshot};
 use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
 use super::sidecar::Qwen3AsrSidecar;
+
+type InferenceCancel = Arc<RwLock<Option<(u64, Arc<AtomicBool>)>>>;
 
 pub const DEFAULT_ASR_CHANNEL_CAPACITY: usize = 64;
 
@@ -109,6 +111,7 @@ pub struct AsrHandle {
     backend_name: Arc<RwLock<String>>,
     last_warning: Arc<RwLock<Option<String>>>,
     session_counter: Arc<AtomicU64>,
+    inference_cancel: InferenceCancel,
 }
 
 impl AsrHandle {
@@ -120,6 +123,8 @@ impl AsrHandle {
         let backend_name = Arc::new(RwLock::new(engine.get_backend_name()));
         let last_warning = Arc::new(RwLock::new(engine.take_last_warning()));
         let session_counter = Arc::new(AtomicU64::new(1));
+        let inference_cancel: InferenceCancel = Arc::new(RwLock::new(None));
+        let cancel_c = Arc::clone(&inference_cancel);
 
         let status_c = Arc::clone(&status_cache);
         let lang_c = Arc::clone(&detected_language);
@@ -186,6 +191,13 @@ impl AsrHandle {
                             cancelled_sessions.remove(&session_id);
                             active_session_id = Some(session_id);
                             let res = engine.start_stream(&language, &vocabulary);
+                            *cancel_c.write() = if res.is_ok() {
+                                engine
+                                    .cancellation_signal()
+                                    .map(|signal| (session_id, signal))
+                            } else {
+                                None
+                            };
                             Self::sync_cache(
                                 &mut *engine,
                                 &status_c,
@@ -230,6 +242,7 @@ impl AsrHandle {
                             }
                             active_session_id = None;
                             let res = engine.stop_stream();
+                            *cancel_c.write() = None;
                             Self::sync_cache(
                                 &mut *engine,
                                 &status_c,
@@ -285,6 +298,7 @@ impl AsrHandle {
                             engine: new_engine,
                             reply,
                         } => {
+                            *cancel_c.write() = None;
                             engine = new_engine;
                             active_session_id = None;
                             Self::sync_cache(
@@ -308,6 +322,7 @@ impl AsrHandle {
             backend_name,
             last_warning,
             session_counter,
+            inference_cancel,
         }
     }
 
@@ -323,6 +338,17 @@ impl AsrHandle {
         *backend_name.write() = engine.get_backend_name();
         if let Some(w) = engine.take_last_warning() {
             *last_warning.write() = Some(w);
+        }
+    }
+
+    pub fn new_runtime(runtime: &str) -> Self {
+        if runtime == "native" {
+            Self::spawn(
+                Box::new(super::native::NativeAsrEngine::default()),
+                DEFAULT_ASR_CHANNEL_CAPACITY,
+            )
+        } else {
+            Self::new_sidecar()
         }
     }
 
@@ -576,7 +602,16 @@ impl AsrHandle {
             .map_err(|e| format!("ASR actor dropped reply: {e}"))?
     }
 
+    fn signal_cancel(&self, session_id: u64) {
+        if let Some((active, signal)) = &*self.inference_cancel.read() {
+            if *active == session_id {
+                signal.store(true, Ordering::Release);
+            }
+        }
+    }
+
     pub async fn cancel_stream(&self, session_id: u64) -> Result<(), String> {
+        self.signal_cancel(session_id);
         let (reply, rx) = oneshot::channel();
         self.sender
             .send(AsrCommand::CancelStream {
@@ -590,6 +625,7 @@ impl AsrHandle {
     }
 
     pub fn cancel_stream_blocking(&self, session_id: u64) -> Result<(), String> {
+        self.signal_cancel(session_id);
         let (tx, rx) = std::sync::mpsc::channel();
         self.sender
             .try_send(AsrCommand::CancelStream {

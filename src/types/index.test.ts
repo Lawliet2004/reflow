@@ -63,6 +63,7 @@ describe("normalizeSettings", () => {
     const normalized = normalizeSettings(custom);
 
     expect(normalized.asr).toEqual({
+      runtime: "python",
       model: "1.7b",
       device: DEFAULT_ASR_SETTINGS.device,
       precision: DEFAULT_ASR_SETTINGS.precision,

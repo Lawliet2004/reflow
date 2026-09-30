@@ -110,7 +110,10 @@ pub fn run() {
             if initial_settings.asr.keep_loaded
                 && context
                     .model_manager
-                    .is_installed(&initial_settings.asr.model)
+                    .is_installed(&model::manager::runtime_model_id(
+                        &initial_settings.asr.model,
+                        &initial_settings.asr.runtime,
+                    ))
             {
                 let ctx_load = context.clone();
                 tauri::async_runtime::spawn(async move {
@@ -168,7 +171,10 @@ pub fn run() {
                 });
             } else if !context
                 .model_manager
-                .is_installed(&initial_settings.asr.model)
+                .is_installed(&model::manager::runtime_model_id(
+                    &initial_settings.asr.model,
+                    &initial_settings.asr.runtime,
+                ))
             {
                 log::warn!(
                     "Qwen3-ASR ({}) weights not found; install from Settings → Model.",
@@ -558,7 +564,14 @@ pub async fn run_api_standalone(bind: Option<String>) -> Result<(), String> {
     // the API was reachable but useless. Load the model the same way the
     // GUI does: probe CUDA first (see the startup-load comment in `run`),
     // then resolve and load.
-    if settings.asr.keep_loaded && ctx.model_manager.is_installed(&settings.asr.model) {
+    if settings.asr.keep_loaded
+        && ctx
+            .model_manager
+            .is_installed(&model::manager::runtime_model_id(
+                &settings.asr.model,
+                &settings.asr.runtime,
+            ))
+    {
         if let Err(err) = ctx.asr_handle.probe_cuda().await {
             log::warn!("Could not start the sidecar CUDA probe: {err}");
         }

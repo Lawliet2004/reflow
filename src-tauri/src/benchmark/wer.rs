@@ -37,15 +37,15 @@ pub struct CorpusEvalResult {
 }
 
 pub fn normalize_for_eval(text: &str) -> String {
-    let mut clean = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if ch.is_alphanumeric() {
-            clean.push(ch.to_ascii_lowercase());
-        } else if ch.is_whitespace() {
-            clean.push(' ');
-        }
-    }
-    clean.split_whitespace().collect::<Vec<&str>>().join(" ")
+    static INVALID: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let invalid = INVALID
+        .get_or_init(|| regex::Regex::new(r"[^\p{L}\p{M}\p{N}\s]").expect("valid Unicode pattern"));
+    let lower = text.to_lowercase();
+    invalid
+        .replace_all(&lower, "")
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ")
 }
 
 pub fn calculate_wer(reference: &str, hypothesis: &str) -> WerResult {
@@ -200,6 +200,11 @@ pub fn evaluate_corpus(samples: &[EvalSample], hypotheses: &[&str]) -> CorpusEva
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hindi_vowel_marks_are_significant() {
+        assert!(super::calculate_wer("\u{915}\u{932}\u{93e}", "\u{915}\u{932}\u{940}").wer > 0.0);
+    }
+
     use super::*;
 
     #[test]

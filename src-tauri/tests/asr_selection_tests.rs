@@ -384,3 +384,49 @@ mod preset_drives_selection {
         assert_eq!(selection.model_id, "0.6b");
     }
 }
+
+#[test]
+fn native_runtime_uses_vulkan_without_python_cuda() {
+    let mut caps = caps_with_free_vram(3962.0);
+    caps.cuda.torch_cuda_available = false;
+    let chosen = reflow_lib::profile::select_asr_load_for_runtime(
+        "native",
+        Preset::Auto,
+        "1.7b",
+        "auto",
+        "auto",
+        &both_installed,
+        &caps,
+        &no_measurements,
+    );
+    assert_eq!(chosen.model_id, "native-1.7b");
+    assert_eq!(chosen.device, Device::Vulkan);
+    assert_eq!(chosen.precision, Precision::Int8);
+    let cpu = reflow_lib::profile::select_asr_load_for_runtime(
+        "native",
+        Preset::Auto,
+        "0.6b",
+        "cpu",
+        "auto",
+        &both_installed,
+        &caps,
+        &no_measurements,
+    );
+    assert_eq!(cpu.device, Device::Cpu);
+    assert_eq!(cpu.model_id, "native-0.6b");
+}
+
+#[test]
+fn native_selection_only_considers_native_installs() {
+    let chosen = reflow_lib::profile::select_asr_load_for_runtime(
+        "native",
+        Preset::Accurate,
+        "0.6b",
+        "auto",
+        "auto",
+        &|id| id == "native-0.6b",
+        &caps_with_free_vram(3962.0),
+        &no_measurements,
+    );
+    assert_eq!(chosen.model_id, "native-0.6b");
+}

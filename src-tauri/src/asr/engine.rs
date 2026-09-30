@@ -199,6 +199,9 @@ pub trait ASREngine: Send + Sync {
     fn get_partial_transcript(&mut self) -> Result<String, String>;
     fn stop_stream(&mut self) -> Result<String, String>;
     fn cancel_stream(&mut self) -> Result<(), String>;
+    fn cancellation_signal(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
 
     fn get_detected_language(&self) -> String;
     fn get_backend_name(&self) -> String;

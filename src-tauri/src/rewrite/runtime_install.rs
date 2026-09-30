@@ -531,6 +531,9 @@ fn run_install_worker(
     );
 
     ctx.flow_runtime.shutdown();
+    if ctx.asr_runtime.lock().as_str() == "native" {
+        ctx.asr_handle.unload_model_blocking()?;
+    }
 
     // Touch the Arc to make the borrow checker happy on shutdown.
     let _ = Arc::strong_count(&ctx.active_runtime_downloads);

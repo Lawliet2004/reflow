@@ -354,10 +354,11 @@ pub struct FlowRuntime {
     /// can show a transient "loading" state between user action and
     /// either a successful launch or a failure.
     is_starting: AtomicBool,
-    /// Last `ensure()` error. Cleared on every successful launch and on
+    /// Last `ensure()` failure or GPU fallback warning. Cleared on a full success and on
     /// `shutdown()`. Surfaces in `FlowStatus.last_error` so the UI can
     /// show a one-line "LLM runtime error" hint with a Reinstall button.
     pub last_error: RwLock<Option<String>>,
+    model_paths: Option<(PathBuf, PathBuf)>,
 }
 
 impl Default for FlowRuntime {
@@ -372,6 +373,7 @@ impl Default for FlowRuntime {
             active_n_gpu_layers: RwLock::new(None),
             is_starting: AtomicBool::new(false),
             last_error: RwLock::new(None),
+            model_paths: None,
         }
     }
 }
@@ -383,6 +385,19 @@ impl Drop for FlowRuntime {
 }
 
 impl FlowRuntime {
+    pub fn for_audio_model(model: PathBuf, mmproj: PathBuf) -> Self {
+        let mut runtime = Self::default();
+        runtime.model_paths = Some((model, mmproj));
+        runtime
+    }
+
+    fn model_path(&self, model_id: &str) -> PathBuf {
+        self.model_paths
+            .as_ref()
+            .map(|(model, _)| model.clone())
+            .unwrap_or_else(|| flow_gguf_path(model_id))
+    }
+
     pub fn status_ready(&self) -> bool {
         self.client.read().base_url.is_some()
     }
@@ -499,11 +514,16 @@ impl FlowRuntime {
         self.is_starting.store(true, Ordering::Release);
 
         let bin = llama_server_bin();
-        let gguf = flow_gguf_path(flow_model);
+        let gguf = self.model_path(flow_model);
         if !bin.is_file() {
             return Err(self.fail_ensure(FlowLaunchFailure::BinaryMissing));
         }
-        if !gguf.is_file() {
+        if !gguf.is_file()
+            || self
+                .model_paths
+                .as_ref()
+                .is_some_and(|(_, mmproj)| !mmproj.is_file())
+        {
             return Err(self.fail_ensure(FlowLaunchFailure::ModelMissing));
         }
 
@@ -665,7 +685,7 @@ impl FlowRuntime {
         port: u16,
     ) -> Result<(), FlowLaunchFailure> {
         let bin = llama_server_bin();
-        let gguf = flow_gguf_path(flow_model);
+        let gguf = self.model_path(flow_model);
         self.stderr_ring.lock().clear();
 
         let n_layers = mode.n_gpu_layers(override_layers);
@@ -701,6 +721,12 @@ impl FlowRuntime {
             // signal on failure was "exited before becoming ready", with no
             // llama.cpp output at all.
             .stderr(Stdio::piped());
+        if let Some((_, mmproj)) = &self.model_paths {
+            cmd.arg("--mmproj").arg(mmproj);
+            if !mode.is_gpu() {
+                cmd.arg("--no-mmproj-offload");
+            }
+        }
         // On a multi-GPU host, pin llama-server to GPU 0 by default. The user
         // can layer-offload around this with `--n-gpu-layers`; explicit
         // `--tensor-split` is intentionally out of scope for v1.

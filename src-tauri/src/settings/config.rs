@@ -26,6 +26,8 @@ pub struct DictionaryTerm {
 /// Where and how the speech model runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AsrSettings {
+    #[serde(default = "default_asr_runtime")]
+    pub runtime: String,
     /// Manifest id, e.g. `"0.6b"`.
     #[serde(default = "default_asr_model")]
     pub model: String,
@@ -43,6 +45,7 @@ pub struct AsrSettings {
 impl Default for AsrSettings {
     fn default() -> Self {
         Self {
+            runtime: default_asr_runtime(),
             model: default_asr_model(),
             device: default_device_auto(),
             precision: default_asr_precision(),
@@ -567,6 +570,10 @@ fn default_api_bind() -> String {
     "lan".into()
 }
 
+fn default_asr_runtime() -> String {
+    "python".into()
+}
+
 fn default_asr_model() -> String {
     "1.7b".into()
 }
@@ -855,6 +862,9 @@ impl AppSettings {
     /// [`Self::resolve_intent`] would compute, and stamp the current schema
     /// version. Idempotent.
     pub fn normalized(mut self) -> Self {
+        if !matches!(self.asr.runtime.as_str(), "python" | "native") {
+            self.asr.runtime = default_asr_runtime();
+        }
         let intent = self.resolve_intent();
         self.intelligence_tier = intent.tier;
         self.cleanup_level = intent.cleanup_level;
@@ -1264,6 +1274,29 @@ mod tests {
         assert_eq!(loaded.streaming, StreamingSettings::default());
         assert_eq!(loaded.memory_policy, MemoryPolicySettings::default());
         assert_eq!(loaded.preset, "auto");
+    }
+
+    #[test]
+    fn asr_runtime_migrates_and_round_trips() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["asr"].as_object_mut().unwrap().remove("runtime");
+        let loaded: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.asr.runtime, "python");
+
+        let dir = std::env::temp_dir().join(format!("reflow_runtime_{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        for runtime in ["native", "python"] {
+            store
+                .merge_update(serde_json::json!({"asr": {"runtime": runtime}}))
+                .unwrap();
+            assert_eq!(SettingsStore::new(path.clone()).get().asr.runtime, runtime);
+        }
+        store
+            .merge_update(serde_json::json!({"asr": {"runtime": "unknown"}}))
+            .unwrap();
+        assert_eq!(store.get().asr.runtime, "python");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -131,6 +131,12 @@ impl MeasuredPeaks {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WeightFile {
+    pub filename: &'static str,
+    pub sha256: &'static str,
+}
+
 /// A downloadable, loadable artifact.
 ///
 /// `Serialize` only: these are compile-time constants sent to the UI, never
@@ -153,6 +159,7 @@ pub struct ModelManifest {
     /// SHA-256 of `filename`. Empty until the pinned revision is recorded;
     /// [`ModelManifest::is_verifiable`] reports which state a manifest is in.
     pub sha256: &'static str,
+    pub auxiliary_files: &'static [WeightFile],
     /// On-disk size, for the download UI and the free-space check.
     pub download_bytes: u64,
     /// Parameter count, used for the resource estimate.
@@ -238,6 +245,10 @@ impl ModelManifest {
             && self.sha256.bytes().all(|b| b.is_ascii_hexdigit())
             && self.revision.len() == 40
             && self.revision.bytes().all(|b| b.is_ascii_hexdigit())
+            && self
+                .auxiliary_files
+                .iter()
+                .all(|f| f.sha256.len() == 64 && f.sha256.bytes().all(|b| b.is_ascii_hexdigit()))
     }
 }
 
@@ -255,6 +266,7 @@ pub const ASR_MODELS: &[ModelManifest] = &[
         filename: "model.safetensors",
         dir_name: "qwen3-asr-0.6b",
         sha256: "d3f212dd20abecd315d830bc54ae3865e56ebfc3276484e57b771288ba27fd35",
+        auxiliary_files: &[],
         download_bytes: 1_564_928_088,
         params: 600_000_000,
         // INT8 is offered but is not expected to help at batch size 1: the
@@ -274,6 +286,7 @@ pub const ASR_MODELS: &[ModelManifest] = &[
         filename: "model.safetensors",
         dir_name: "qwen3-asr-1.7b",
         sha256: "2db53c7d81bd9b8cbc6a074e89be2c968a0d373fb4ee68bb1b1e14f7042dfee1",
+        auxiliary_files: &[],
         download_bytes: 4_076_193_080,
         params: 1_700_000_000,
         precisions: &[
@@ -300,6 +313,7 @@ pub const REFINEMENT_MODELS: &[ModelManifest] = &[
         dir_name: "flow",
         // The digest of the pinned file, verified against the Hugging Face API.
         sha256: "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517",
+        auxiliary_files: &[],
         download_bytes: 532_517_120,
         params: 800_000_000,
         // A GGUF is already quantized; the precision here describes the file.
@@ -321,6 +335,7 @@ pub const REFINEMENT_MODELS: &[ModelManifest] = &[
         filename: "Qwen3.5-2B-Q4_K_M.gguf",
         dir_name: "flow",
         sha256: "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
+        auxiliary_files: &[],
         download_bytes: 1_280_835_840,
         params: 2_000_000_000,
         precisions: &[Precision::Int4],
@@ -329,6 +344,55 @@ pub const REFINEMENT_MODELS: &[ModelManifest] = &[
         overhead_mb: 320.0,
     },
 ];
+
+pub const NATIVE_ASR_MODELS: &[ModelManifest] = &[
+    ModelManifest {
+        id: "native-0.6b",
+        label: "Qwen3-ASR 0.6B (native)",
+        runtime: RuntimeKind::NativeAsr,
+        repo: "ggml-org/Qwen3-ASR-0.6B-GGUF",
+        revision: "928ab958557df9aa2ef1c93e0e83c7ad0933fae2",
+        filename: "Qwen3-ASR-0.6B-Q8_0.gguf",
+        dir_name: "qwen3-asr-0.6b-native",
+        sha256: "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+        auxiliary_files: &[WeightFile {
+            filename: "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+            sha256: "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
+        }],
+        download_bytes: 1_019_141_728,
+        params: 600_000_000,
+        precisions: &[Precision::Int8],
+        devices: &[Device::Cpu, Device::Vulkan, Device::Cuda],
+        languages: &[],
+        overhead_mb: 600.0,
+    },
+    ModelManifest {
+        id: "native-1.7b",
+        label: "Qwen3-ASR 1.7B (native)",
+        runtime: RuntimeKind::NativeAsr,
+        repo: "ggml-org/Qwen3-ASR-1.7B-GGUF",
+        revision: "36a678687ba7d07a74ca70ccb0e36902e005fb80",
+        filename: "Qwen3-ASR-1.7B-Q8_0.gguf",
+        dir_name: "qwen3-asr-1.7b-native",
+        sha256: "58e22d0532d4eacaf034cfac17a6fed159f37c41390c710186783be439d1fc57",
+        auxiliary_files: &[WeightFile {
+            filename: "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+            sha256: "46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d",
+        }],
+        download_bytes: 2_520_744_288,
+        params: 1_700_000_000,
+        precisions: &[Precision::Int8],
+        devices: &[Device::Cpu, Device::Vulkan, Device::Cuda],
+        languages: &[],
+        overhead_mb: 600.0,
+    },
+];
+
+pub fn native_asr_manifest(id: &str) -> Option<&'static ModelManifest> {
+    NATIVE_ASR_MODELS
+        .iter()
+        .find(|m| m.id == id || m.id.strip_prefix("native-") == Some(id))
+}
 
 pub fn asr_manifest(id: &str) -> Option<&'static ModelManifest> {
     ASR_MODELS.iter().find(|m| m.id == id)
@@ -340,7 +404,10 @@ pub fn refinement_manifest(id: &str) -> Option<&'static ModelManifest> {
 
 /// Every manifest, for the installer and the diagnostics panel.
 pub fn all_manifests() -> impl Iterator<Item = &'static ModelManifest> {
-    ASR_MODELS.iter().chain(REFINEMENT_MODELS.iter())
+    ASR_MODELS
+        .iter()
+        .chain(REFINEMENT_MODELS.iter())
+        .chain(NATIVE_ASR_MODELS.iter())
 }
 
 #[cfg(test)]
@@ -374,11 +441,18 @@ mod tests {
                 "{} supports no device",
                 manifest.id
             );
-            assert!(
-                !manifest.languages.is_empty(),
-                "{} claims no validated language",
-                manifest.id
-            );
+            if manifest.runtime == RuntimeKind::NativeAsr {
+                assert!(
+                    manifest.languages.is_empty(),
+                    "Native prototype must not claim language validation before benchmarking"
+                );
+            } else {
+                assert!(
+                    !manifest.languages.is_empty(),
+                    "{} claims no validated language",
+                    manifest.id
+                );
+            }
         }
     }
 

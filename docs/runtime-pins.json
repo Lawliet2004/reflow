@@ -47,6 +47,40 @@
           "size": 1280835840
         }
       ]
+    },
+    {
+      "repo": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+      "api_url": "https://huggingface.co/api/models/ggml-org/Qwen3-ASR-0.6B-GGUF?blobs=true",
+      "revision": "928ab958557df9aa2ef1c93e0e83c7ad0933fae2",
+      "files": [
+        {
+          "filename": "Qwen3-ASR-0.6B-Q8_0.gguf",
+          "sha256": "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+          "size": 804749248
+        },
+        {
+          "filename": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+          "sha256": "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
+          "size": 214392480
+        }
+      ]
+    },
+    {
+      "repo": "ggml-org/Qwen3-ASR-1.7B-GGUF",
+      "api_url": "https://huggingface.co/api/models/ggml-org/Qwen3-ASR-1.7B-GGUF?blobs=true",
+      "revision": "36a678687ba7d07a74ca70ccb0e36902e005fb80",
+      "files": [
+        {
+          "filename": "Qwen3-ASR-1.7B-Q8_0.gguf",
+          "sha256": "58e22d0532d4eacaf034cfac17a6fed159f37c41390c710186783be439d1fc57",
+          "size": 2165034944
+        },
+        {
+          "filename": "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+          "sha256": "46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d",
+          "size": 355709344
+        }
+      ]
     }
   ],
   "llama_cpp": {

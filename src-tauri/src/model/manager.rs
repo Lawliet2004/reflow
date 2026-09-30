@@ -26,7 +26,29 @@ pub const MODELS: &[ModelSpec] = &[
         label: "1.7B",
         approx_bytes: 4_076_000_000,
     },
+    ModelSpec {
+        id: "native-0.6b",
+        dir_name: "qwen3-asr-0.6b-native",
+        repo: "ggml-org/Qwen3-ASR-0.6B-GGUF",
+        label: "0.6B (native)",
+        approx_bytes: 1_019_141_728,
+    },
+    ModelSpec {
+        id: "native-1.7b",
+        dir_name: "qwen3-asr-1.7b-native",
+        repo: "ggml-org/Qwen3-ASR-1.7B-GGUF",
+        label: "1.7B (native)",
+        approx_bytes: 2_520_744_288,
+    },
 ];
+
+pub fn runtime_model_id(model: &str, runtime: &str) -> String {
+    if runtime == "native" {
+        format!("native-{model}")
+    } else {
+        model.to_string()
+    }
+}
 
 pub fn spec_for(id: &str) -> &'static ModelSpec {
     MODELS.iter().find(|m| m.id == id).unwrap_or(&MODELS[0])
@@ -61,7 +83,18 @@ impl ModelManager {
 
     /// Weights are considered installed when a real HF model directory is there.
     pub fn is_installed(&self, id: &str) -> bool {
-        weights_present(&self.get_model_dir(id))
+        let dir = self.get_model_dir(id);
+        if let Some(manifest) =
+            crate::profile::manifest::native_asr_manifest(id).filter(|m| m.id == id)
+        {
+            dir.join(manifest.filename).is_file()
+                && manifest
+                    .auxiliary_files
+                    .iter()
+                    .all(|f| dir.join(f.filename).is_file())
+        } else {
+            weights_present(&dir)
+        }
     }
 
     pub fn get_status(&self, engine: &EngineStatus, active_id: &str) -> ModelStatus {
