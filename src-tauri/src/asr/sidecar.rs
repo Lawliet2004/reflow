@@ -8,6 +8,7 @@ use std::time::Duration;
 use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
 use crate::audio::resampler::AudioResampler;
+use crate::profile::manifest::ASR_MODELS;
 
 const ASR_PUSH_CHUNK_SAMPLES: usize = 16_000;
 
@@ -628,8 +629,13 @@ impl ASREngine for Qwen3AsrSidecar {
             return self.fallback_mock.load_model(model_dir, backend);
         }
 
+        let manifest = ASR_MODELS.iter().find(|m| {
+            Path::new(model_dir).file_name().and_then(|n| n.to_str()) == Some(m.dir_name)
+        });
         let cmd = json!({
             "cmd": "load_model",
+            "model_id": manifest.map(|m| m.id),
+            "expected_bytes": manifest.map(|m| m.download_bytes),
             "model_dir": model_dir,
             "device": backend,
             "precision": precision,
@@ -666,8 +672,11 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return Err("ASR runtime unavailable".into());
         }
+        let manifest = ASR_MODELS.iter().find(|m| m.repo == repo);
         let cmd = json!({
             "cmd": "install_model",
+            "model_id": manifest.map(|m| m.id),
+            "expected_bytes": manifest.map(|m| m.download_bytes),
             "model_dir": model_dir,
             "repo": repo
         });

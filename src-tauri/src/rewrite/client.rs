@@ -80,7 +80,7 @@ impl CircuitBreaker {
 /// expects; mismatched names cause 4xx errors or routing to a non-existent
 /// model slot.
 const MODEL_NAME_TABLE: &[(&str, &str)] = &[
-    ("qwen3.5-2b", "Qwen3.5-2B-Instruct"),
+    ("qwen3.5-2b", "Qwen3.5-2B"),
     ("qwen3.5-0.8b", "Qwen3.5-0.8B"),
 ];
 
@@ -192,7 +192,7 @@ impl FlowClient {
             "model": model_name,
             "temperature": 0.0,
             "top_p": 1.0,
-            "repeat_penalty": 1.1,
+            "repeat_penalty": 1.0,
             "max_tokens": max_tokens,
             "stop": [
                 "<|im_end|>",
@@ -305,10 +305,12 @@ fn extract_content(payload: &Value) -> Result<String, String> {
 
 fn strip_think(text: &str) -> String {
     let mut out = text.to_string();
-    if let Some(start) = out.find("<think>") {
+    while let Some(start) = out.find("<think>") {
         if let Some(rel_end) = out[start..].find("</think>") {
             let end = start + rel_end + "</think>".len();
             out.replace_range(start..end, "");
+        } else {
+            out.truncate(start);
         }
     }
     out.trim().to_string()
@@ -532,8 +534,21 @@ mod tests {
     }
 
     #[test]
+    fn strip_think_removes_multiple_blocks() {
+        assert_eq!(
+            strip_think("<think>a</think>Hello<think>b</think> world"),
+            "Hello world"
+        );
+    }
+
+    #[test]
+    fn strip_think_drops_unclosed_block() {
+        assert_eq!(strip_think("Hello<think>unfinished"), "Hello");
+    }
+
+    #[test]
     fn model_name_table_maps_known_ids() {
-        assert_eq!(model_name_for("qwen3.5-2b"), "Qwen3.5-2B-Instruct");
+        assert_eq!(model_name_for("qwen3.5-2b"), "Qwen3.5-2B");
         assert_eq!(model_name_for("qwen3.5-0.8b"), "Qwen3.5-0.8B");
         // Unknown IDs are passed through unchanged so the user sees the
         // raw id in any error message instead of getting silently

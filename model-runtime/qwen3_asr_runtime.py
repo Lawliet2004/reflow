@@ -101,7 +101,11 @@ WARMUP_BUCKET_SECONDS_CUDA = (0.5, 2.0, 4.0, 8.0, 16.0)
 # in and JIT any lazily-initialised code.
 WARMUP_BUCKET_SECONDS_CPU = (0.5,)
 
-def expected_bytes_for(model_dir: str) -> int:
+def expected_bytes_for(model_dir: str, model_id=None, expected_bytes=None) -> int:
+    if expected_bytes is not None:
+        return int(expected_bytes)
+    if model_id is not None:
+        return 4_076_000_000 if model_id == "1.7b" else 1_565_000_000
     return 4_076_000_000 if "1.7" in model_dir else 1_565_000_000
 
 
@@ -1003,6 +1007,7 @@ def load_model_blocking(
     model_dir: str,
     requested_device: str = "auto",
     precision: str = "auto",
+    model_id=None,
 ):
     global _MODEL
     t0 = time.time()
@@ -1096,7 +1101,7 @@ def load_model_blocking(
                 STATE.device = target
                 STATE.precision = label
                 STATE.backend = (
-                    f"Qwen3-ASR {_model_label(model_dir)} · {target.upper()} {label}"
+                    f"Qwen3-ASR {_model_label(model_dir, model_id)} · {target.upper()} {label}"
                 )
                 STATE.vram_mb = 0.0
                 STATE.warmup_rtf = warmup_rtf
@@ -1160,7 +1165,9 @@ def looks_like_vocab_echo(text: str, prompt) -> bool:
     return bool(words) and all(w in term_words for w in words)
 
 
-def _model_label(model_dir: str) -> str:
+def _model_label(model_dir: str, model_id=None) -> str:
+    if model_id is not None:
+        return model_id.upper()
     return "1.7B" if "1.7" in model_dir else "0.6B"
 
 
@@ -1459,7 +1466,7 @@ def _warm_imports():
         )
 
 
-def start_load(model_dir: str, device: str, precision: str = "auto"):
+def start_load(model_dir: str, device: str, precision: str = "auto", model_id=None, expected_bytes=None):
     if any(t.name == "model-loader" and t.is_alive() for t in threading.enumerate()):
         STATE.load_pending = False
         return {"status": "already-loading"}
@@ -1470,9 +1477,9 @@ def start_load(model_dir: str, device: str, precision: str = "auto"):
     # the subtitle still says "loading…".
     STATE.loaded = False
     STATE.device = "none"
-    STATE.backend = f"loading {_model_label(model_dir)}…"
+    STATE.backend = f"loading {_model_label(model_dir, model_id)}…"
     t = threading.Thread(
-        target=lambda: load_model_blocking(model_dir, device, precision),
+        target=lambda: load_model_blocking(model_dir, device, precision, model_id),
         name="model-loader",
         daemon=True,
     )
@@ -1483,7 +1490,9 @@ def start_load(model_dir: str, device: str, precision: str = "auto"):
     return {"status": "loading"}
 
 
-def start_install(model_dir: str, repo: str):
+def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None):
+    STATE.download_model_id = model_id
+    STATE.download_expected_bytes = expected_bytes
     def run():
         try:
             STATE.is_downloading = True
@@ -1511,7 +1520,7 @@ def start_install(model_dir: str, repo: str):
             log_err("Model download complete")
             # auto-load right after install, honoring the precision the user
             # asked for when they kicked off the install.
-            start_load(model_dir, "auto", STATE.pending_precision)
+            start_load(model_dir, "auto", STATE.pending_precision, model_id, expected_bytes)
         except Exception as e:
             STATE.is_downloading = False
             STATE.download_error = str(e)
@@ -1568,7 +1577,7 @@ def handle(msg: dict) -> dict:
         }
         if STATE.is_downloading:
             done = dir_size_bytes_cached(STATE.download_dir) if STATE.download_dir else 0
-            expected = expected_bytes_for(STATE.download_dir or "")
+            expected = expected_bytes_for(STATE.download_dir or "", getattr(STATE, "download_model_id", None), getattr(STATE, "download_expected_bytes", None))
             resp["download_progress_pct"] = min(100, int(done * 100 / expected))
         return resp
 
@@ -1584,7 +1593,7 @@ def handle(msg: dict) -> dict:
                 "status": "error",
                 "error": "Model not installed. Open Settings → Model to download it.",
             }
-        return start_load(model_dir, device, precision)
+        return start_load(model_dir, device, precision, msg.get("model_id"), msg.get("expected_bytes"))
 
     if cmd == "install_model":
         model_dir = msg.get("model_dir", "")
@@ -1596,7 +1605,7 @@ def handle(msg: dict) -> dict:
         STATE.pending_precision = precision
         if os.path.isfile(os.path.join(model_dir, "config.json")):
             return {"status": "ok", "detail": "already installed"}
-        return start_install(model_dir, repo)
+        return start_install(model_dir, repo, msg.get("model_id"), msg.get("expected_bytes"))
 
     if cmd == "unload_model":
         _unload_model_blocking()
@@ -2026,6 +2035,9 @@ def _selftest() -> bool:
     # ---------------------------------------------------------------
     # Task 16: the decode cap must scale with speech, not truncate it.
     # ---------------------------------------------------------------
+    check("explicit-model-label", _model_label("/parent/1.7/wrong", "0.6b") == "0.6B")
+    check("explicit-model-bytes", expected_bytes_for("/1.7", "0.6b", 123) == 123)
+    check("fallback-model-label", _model_label("/models/1.7b") == "1.7B")
     check("max-new-floor", max_new_tokens_for(0.0) == 32)
     check("max-new-scales", max_new_tokens_for(30.0) > max_new_tokens_for(5.0))
     check("max-new-ceiling", max_new_tokens_for(600.0) <= 384)

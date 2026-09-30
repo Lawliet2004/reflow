@@ -544,7 +544,15 @@ impl FlowRuntime {
                     *self.active_n_gpu_layers.write() = layers_for_attempt;
                     *self.active_request.write() = Some(request);
                     self.is_starting.store(false, Ordering::Release);
-                    *self.last_error.write() = None;
+                    *self.last_error.write() = last_err.as_ref().map(|failure| {
+                        let warning = format!(
+                            "GPU launch failed [{}]: {}; using CPU",
+                            failure.kind(),
+                            failure
+                        );
+                        log::warn!("{warning}");
+                        warning
+                    });
                     return Ok(());
                 }
                 Err(failure) => {
@@ -733,10 +741,9 @@ impl FlowRuntime {
         let client =
             FlowClient::new_url(url.clone(), flow_http_timeout()).with_context_size(context_size);
         let health = format!("{url}/health");
-        // CPU llama-server can take noticeably longer to load weights than
-        // the GPU build; give the slower path a wider window before we declare
-        // the launch a failure and fall back.
-        let timeout_secs: u64 = if mode.is_gpu() { 8 } else { 30 };
+        // Cold GPU shader compilation and CPU weight loading both need time
+        // before we declare the launch a failure and fall back.
+        let timeout_secs: u64 = 30;
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
         let http = reqwest::blocking::Client::builder()
             .timeout(Duration::from_millis(300))
@@ -887,7 +894,7 @@ pub fn flow_gguf_path(flow_model: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rewrite::runtime_install::runtime_flavor_conflicts;
+    use crate::rewrite::runtime_install::runtime_flavors_conflict;
 
     /// An install writes the binary and *then* its flavor marker. Interrupted
     /// in between, the result is a working llama-server with no marker — which
@@ -897,14 +904,12 @@ mod tests {
     /// positively-known wrong flavor may block a launch.
     #[test]
     fn an_unlabelled_runtime_is_not_treated_as_a_conflict() {
-        // No marker is written in the test environment, so this exercises the
-        // "cannot tell" branch regardless of whether a binary happens to exist.
-        assert!(
-            !runtime_flavor_conflicts("vulkan"),
-            "a runtime of unknown flavor must be left for the launch to validate"
-        );
-        assert!(!runtime_flavor_conflicts("cpu"));
-        assert!(!runtime_flavor_conflicts("auto"));
+        for expected in ["Vulkan", "CPU"] {
+            assert!(!runtime_flavors_conflict(Some(expected), None));
+            assert!(!runtime_flavors_conflict(Some(expected), Some(expected)));
+        }
+        assert!(runtime_flavors_conflict(Some("CPU"), Some("Vulkan")));
+        assert!(!runtime_flavors_conflict(None, Some("Vulkan")));
     }
 
     #[test]

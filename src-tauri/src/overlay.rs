@@ -31,32 +31,6 @@ fn overlay_dims(_kind: &str) -> (f64, f64) {
     (208.0, 48.0)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::overlay_dims;
-
-    #[test]
-    fn capsule_geometry_is_stable_and_matches_the_initial_window() {
-        let config: serde_json::Value =
-            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        let window = config["app"]["windows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|window| window["label"] == "overlay")
-            .unwrap();
-        let initial = (
-            window["width"].as_f64().unwrap(),
-            window["height"].as_f64().unwrap(),
-        );
-        for phase in ["listening", "processing", "polishing", "preview"] {
-            assert_eq!(overlay_dims(phase), initial);
-        }
-        assert!(initial.0 <= 208.0 && initial.1 <= 48.0);
-        assert_eq!(window["focusable"], false);
-    }
-}
-
 fn position_overlay_sized(app: &tauri::AppHandle, position: &str, kind: &str) {
     let Some(window) = app.get_webview_window("overlay") else {
         return;
@@ -201,4 +175,30 @@ pub fn hide_overlay_later(app: tauri::AppHandle, delay_ms: u64) {
             hide_overlay(&app);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overlay_dims;
+
+    #[test]
+    fn capsule_geometry_is_stable_and_matches_the_initial_window() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let window = config["app"]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|window| window["label"] == "overlay")
+            .unwrap();
+        let initial = (
+            window["width"].as_f64().unwrap(),
+            window["height"].as_f64().unwrap(),
+        );
+        for phase in ["listening", "processing", "polishing", "preview"] {
+            assert_eq!(overlay_dims(phase), initial);
+        }
+        assert!(initial.0 <= 208.0 && initial.1 <= 48.0);
+        assert_eq!(window["focusable"], false);
+    }
 }

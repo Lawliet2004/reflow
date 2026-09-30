@@ -183,7 +183,14 @@ pub fn runtime_flavor_conflicts(compute_backend: &str) -> bool {
         // Unknown either way: let the launch decide.
         return false;
     };
-    !installed.eq_ignore_ascii_case(&expected.kind_label)
+    runtime_flavors_conflict(Some(&expected.kind_label), Some(&installed))
+}
+
+pub(crate) fn runtime_flavors_conflict(expected: Option<&str>, installed: Option<&str>) -> bool {
+    match (expected, installed) {
+        (Some(expected), Some(installed)) => !installed.eq_ignore_ascii_case(expected),
+        _ => false,
+    }
 }
 
 /// Resolve a [`LlamaRuntimeSpec`] for the current platform + GPU
