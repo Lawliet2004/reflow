@@ -65,7 +65,7 @@ SAMPLE_RATE = 16000
 LIVE_PARTIALS = False
 PARTIAL_MIN_NEW_AUDIO_S = 1.2
 PARTIAL_TAIL_S = 20.0
-# Ceiling on the audio handed to a single `generate()` call.
+# Ceiling on the total audio handed to segmented transcription.
 #
 # One hour. Raised from 120s, which silently discarded everything past two
 # minutes — a ten minute dictation came back as its first fifth.
@@ -77,10 +77,8 @@ PARTIAL_TAIL_S = 20.0
 # crash strike. A bigger cap without a bigger budget would have turned a
 # truncated transcript into no transcript at all.
 #
-# Still bounded on purpose. A single pass over an hour of audio is ~24 minutes of
-# compute at the measured 0.4x realtime, and longer on CPU. Long-form dictation
-# really wants segmented transcription on silence boundaries; this only stops the
-# audio being thrown away, and any overflow is reported rather than hidden.
+# Still bounded on purpose. Long-form dictation is segmented on silence
+# boundaries, and any overflow is reported rather than hidden.
 FINAL_MAX_AUDIO_S = 3600.0
 MIN_VOICED_S = 0.18
 MIN_PAD_S = 0.5
@@ -1275,7 +1273,6 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
     input_len = inputs.get("input_ids").shape[1] if "input_ids" in inputs else 0
     max_new = max_new_tokens_for(stats["voiced_s"])
 
-    _CANCEL_EVENT.clear()
     stopping_criteria = [CancelStoppingCriteria(_CANCEL_EVENT)]
     try:
         from transformers.generation.stopping_criteria import StoppingCriteriaList
@@ -1309,10 +1306,11 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
     if new_tokens >= max_new:
         # The cap, not an end-of-sequence token, ended generation. The
         # transcript is very likely truncated mid-sentence.
-        log_err(
-            f"WARNING: generation hit the {max_new}-token cap for "
-            f"{stats['voiced_s']:.1f}s of audio; the transcript may be cut off"
+        STATE.decode_warning = (
+            f"Generation hit the {max_new}-token cap for "
+            f"{stats['voiced_s']:.1f}s of audio; the transcript may be cut off."
         )
+        log_err(f"WARNING: {STATE.decode_warning}")
 
     generated = output_ids[:, input_len:]
     text, lang = _parse_transcript(model.processor, generated)
@@ -1320,6 +1318,55 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
         log_err(f"Model echoed the vocabulary prompt ({text!r}); treating as no speech")
         return "", lang
     return text, lang
+
+
+def segment_audio(samples: np.ndarray, max_seconds=30.0, search_seconds=5.0):
+    max_samples = int(max_seconds * SAMPLE_RATE)
+    if max_samples <= 0:
+        raise ValueError("Segment duration must be positive")
+    segments = []
+    start = 0
+    while samples.size - start > max_samples:
+        target = start + max_samples
+        window_start = max(start + 1, target - int(search_seconds * SAMPLE_RATE))
+        energies = frame_energies(samples[window_start:target])
+        if energies.size:
+            cut = window_start + int(np.argmin(energies)) * FRAME_HOP + FRAME_WIN // 2
+        else:
+            cut = target
+        segments.append(samples[start:cut])
+        start = cut
+    if start < samples.size:
+        segments.append(samples[start:])
+    return segments
+
+
+def transcribe_segmented(pcm16: bytes, language_name, prompt):
+    STATE.decode_warning = None
+    if len(pcm16) <= int(AUDIO_BUCKET_SECONDS[-1] * SAMPLE_RATE * 2):
+        text, language = transcribe_blocking(pcm16, language_name, prompt)
+        warning = STATE.decode_warning
+        return text, language, [warning] if warning else []
+    samples, stats = preprocess_waveform(pcm16_to_float32(pcm16))
+    if not stats["voiced"]:
+        return "", "", []
+    texts, warnings = [], []
+    language = ""
+    for index, segment in enumerate(segment_audio(samples), 1):
+        if _CANCEL_EVENT.is_set():
+            return "", "", []
+        STATE.decode_warning = None
+        pcm = np.clip(segment * 32768.0, -32768, 32767).astype("<i2").tobytes()
+        text, detected = transcribe_blocking(pcm, language_name, prompt)
+        if _CANCEL_EVENT.is_set():
+            return "", "", []
+        if text.strip():
+            texts.append(text.strip())
+        if detected:
+            language = detected
+        if STATE.decode_warning:
+            warnings.append(f"Segment {index}: {STATE.decode_warning}")
+    return " ".join(texts), language, warnings
 
 
 def _inference_worker():
@@ -1637,6 +1684,7 @@ def handle(msg: dict) -> dict:
         return {"status": "ok"}
 
     if cmd == "start_stream":
+        _CANCEL_EVENT.clear()
         STATE.stream_audio = bytearray()
         STATE.unprocessed = 0
         STATE.partial_text = ""
@@ -1676,7 +1724,7 @@ def handle(msg: dict) -> dict:
                 "error": STATE.load_error or "Model not ready",
                 "text": "",
             }
-        # Cap the audio handed to a single generate() call, but never silently.
+        # Cap the total audio handed to segmented transcription, but never silently.
         # Dropping the end of what someone said and returning a confident-looking
         # transcript is worse than telling them it was cut.
         limit_bytes = int(FINAL_MAX_AUDIO_S * 2 * SAMPLE_RATE)
@@ -1686,12 +1734,12 @@ def handle(msg: dict) -> dict:
             truncated_s = captured_s - FINAL_MAX_AUDIO_S
             log_err(
                 f"WARNING: dictation was {captured_s:.1f}s, longer than the "
-                f"{FINAL_MAX_AUDIO_S:.0f}s single-pass limit; the last "
+                f"{FINAL_MAX_AUDIO_S:.0f}s dictation limit; the last "
                 f"{truncated_s:.1f}s will not be transcribed"
             )
         audio = bytes(STATE.stream_audio[:limit_bytes])
         try:
-            text, lang = transcribe_blocking(
+            text, lang, warnings = transcribe_segmented(
                 audio, getattr(STATE, "stream_language", None), STATE.vocabulary_prompt
             )
             if lang:
@@ -1701,12 +1749,14 @@ def handle(msg: dict) -> dict:
             if truncated_s > 0.0:
                 # Surfaced to the user by the Rust side rather than buried in a
                 # log nobody reads.
-                response["warning"] = (
+                warnings.append(
                     f"Only the first {FINAL_MAX_AUDIO_S:.0f}s of this "
                     f"{captured_s:.0f}s dictation was transcribed."
                 )
                 response["truncated_seconds"] = round(truncated_s, 1)
                 response["captured_seconds"] = round(captured_s, 1)
+            if warnings:
+                response["warning"] = " ".join(warnings)
             return response
         except Exception as e:
             log_err(f"final transcription failed: {e}")
@@ -1825,6 +1875,42 @@ def _selftest() -> bool:
             STATE.stream_language,
             STATE.vocabulary_prompt,
         ) = saved_stream_state
+
+    signal = np.ones(SAMPLE_RATE * 95, dtype=np.float32) * 0.2
+    for seconds in (27, 54, 81):
+        signal[seconds * SAMPLE_RATE:(seconds + 1) * SAMPLE_RATE] = 0.0
+    segments = segment_audio(signal)
+    cuts = np.cumsum([segment.size for segment in segments])[:-1]
+    check("segments-cut-in-silence", all(signal[cut] == 0.0 for cut in cuts))
+    check("segments-bounded", all(segment.size <= 30 * SAMPLE_RATE for segment in segments))
+    check("segments-cover-audio", np.array_equal(np.concatenate(segments), signal))
+    check("segments-empty", segment_audio(np.zeros(0, dtype=np.float32)) == [])
+    continuous = np.ones(SAMPLE_RATE * 61, dtype=np.float32)
+    check("continuous-speech-bounded", all(part.size <= 30 * SAMPLE_RATE for part in segment_audio(continuous)))
+    saved_transcriber = transcribe_blocking
+    calls = []
+    try:
+        def fake_segment(audio, _language, _prompt):
+            calls.append(len(audio))
+            STATE.decode_warning = "Token cap reached."
+            return "part", "en"
+        globals()["transcribe_blocking"] = fake_segment
+        _CANCEL_EVENT.clear()
+        pcm = (signal * 32767).astype("<i2").tobytes()
+        text, _, warnings = transcribe_segmented(pcm, None, None)
+        check("segmented-joins-all-parts", text == " ".join(["part"] * len(calls)) and len(calls) > 1)
+        check("segmented-surfaces-token-cap", len(warnings) == len(calls))
+        calls.clear()
+        def cancelling_segment(audio, _language, _prompt):
+            calls.append(len(audio))
+            _CANCEL_EVENT.set()
+            return "discard", "en"
+        globals()["transcribe_blocking"] = cancelling_segment
+        text, _, _ = transcribe_segmented(pcm, None, None)
+        check("segmented-cancel-discards-result", text == "" and len(calls) == 1)
+    finally:
+        globals()["transcribe_blocking"] = saved_transcriber
+        _CANCEL_EVENT.clear()
 
     # build_attempts — pure function that decides the load ladder for each
     # precision. We don't need torch or weights on disk to verify the

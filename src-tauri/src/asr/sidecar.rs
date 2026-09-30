@@ -70,7 +70,7 @@ const WORST_CASE_RTF: f32 = 3.0;
 
 /// Upper bound regardless of audio length, so a genuinely wedged sidecar is
 /// still noticed eventually.
-const TIMEOUT_TRANSCRIBE_MAX: Duration = Duration::from_secs(45 * 60);
+const TIMEOUT_TRANSCRIBE_MAX: Duration = Duration::from_secs(3 * 60 * 60);
 
 /// How long to allow for transcribing `samples` of 16 kHz audio.
 ///
@@ -1147,6 +1147,7 @@ mod tests {
         // An hour is admitted by the Python side, so it must be budgeted for.
         let one_hour = transcribe_timeout(one_second * 3600);
         assert!(one_hour > ten_minutes);
+        assert!(one_hour.as_secs_f32() >= 3600.0 * WORST_CASE_RTF);
 
         // Still bounded, so a wedged sidecar is eventually noticed.
         assert!(transcribe_timeout(one_second * 100_000) <= TIMEOUT_TRANSCRIBE_MAX);
