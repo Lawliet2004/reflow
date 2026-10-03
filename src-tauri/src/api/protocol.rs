@@ -78,6 +78,8 @@ pub struct HealthResponse {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ApiStatus {
+    pub certificate_sha256: Option<String>,
+    pub transport: String,
     pub enabled: bool,
     pub running: bool,
     pub bind: String,

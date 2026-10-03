@@ -4,6 +4,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val prepareDictationLanguages by tasks.registering(Copy::class) {
+    from(rootProject.layout.projectDirectory.file("../model-runtime/languages.json"))
+    into(layout.buildDirectory.dir("generated/dictationLanguages"))
+}
+
 android {
     namespace = "com.reflow.android"
     compileSdk = 35
@@ -29,7 +34,12 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    // AudioRecord is mocked at the hardware boundary in local lifecycle tests.
+    testOptions { unitTests.isReturnDefaultValues = true }
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/dictationLanguages"))
 }
+
+tasks.named("preBuild") { dependsOn(prepareDictationLanguages) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
@@ -44,4 +54,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.json:json:20240303")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.14.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
 }

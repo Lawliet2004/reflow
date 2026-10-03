@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import {
   AppSettings,
   IntelligenceTier,
@@ -9,6 +9,7 @@ import {
   TranscriptStyle,
 } from "../../types";
 import { api } from "../../services/tauriApi";
+import { ApplicationProfiles } from "./ApplicationProfiles";
 import { Section, Row, Toggle } from "./ui";
 import {
   Cpu,
@@ -29,7 +30,7 @@ import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
 interface Props {
   intelligence: IntelligenceHub;
   settings: AppSettings;
-  onUpdateSettings: (s: Partial<AppSettings>) => void;
+  onUpdateSettings: (s: Partial<AppSettings>) => Promise<boolean>;
   modelStatus: ModelStatus | null;
   intelligenceDownload: IntelligenceDownloadEvent | null;
   activeDownloadTiers: Set<IntelligenceTier>;
@@ -65,9 +66,7 @@ export const CleanupPage: React.FC<Props> = ({
   activeDownloadTiers,
   runtimeDownload,
   runtimeDownloadActive,
-  // Accepted but not rendered yet. Task 38 surfaces runtime errors with a
-  // remediation action, and Task 39 adds the Remove action to this page.
-  runtimeDownloadError: _runtimeDownloadError,
+  runtimeDownloadError,
   onInstallRuntime,
   onRemoveRuntime: _onRemoveRuntime,
 }) => {
@@ -83,21 +82,9 @@ export const CleanupPage: React.FC<Props> = ({
 
   const tier: IntelligenceTier = settings.intelligence_tier ?? "smart_flow";
 
-  const gpu = (modelStatus?.backend ?? systemMetrics?.gpu_name ?? "").toLowerCase();
-  const hasGpu = /cuda|gpu|nvidia|metal|radeon/.test(gpu);
+  const hasGpu = Boolean(systemMetrics?.gpu_present || modelStatus?.gpu_available);
   const totalRamMb = systemMetrics?.total_ram_mb ?? 0;
-  const vramMb = systemMetrics?.vram_mb ?? 0;
   const lowSpecPc = !hasGpu || totalRamMb < 8 * 1024;
-
-  const recommendedTier: IntelligenceTier = useMemo(() => {
-    if (vramMb >= 8 * 1024 || (hasGpu && totalRamMb >= 16 * 1024)) {
-      return "deep_context";
-    }
-    if (totalRamMb < 8 * 1024 && !hasGpu) {
-      return "raw_verbatim";
-    }
-    return "smart_flow";
-  }, [vramMb, hasGpu, totalRamMb]);
 
   const tierState = (t: IntelligenceTier): IntelligenceTierState | null => {
     if (t === "raw_verbatim") {
@@ -115,7 +102,7 @@ export const CleanupPage: React.FC<Props> = ({
   const runtimeInstalled = flowStatus?.runtime_installed ?? false;
   const isWeightsOnly = (t: IntelligenceTier) => {
     if (t === "raw_verbatim") return false;
-    const ggufInstalled = tierState(t)?.installed ?? false;
+    const ggufInstalled = tierState(t)?.weights_installed ?? tierState(t)?.installed ?? false;
     if (!ggufInstalled) return false;
     return !runtimeInstalled;
   };
@@ -128,7 +115,17 @@ export const CleanupPage: React.FC<Props> = ({
   const downloadSpeed = (t: IntelligenceTier) =>
     isDownloading(t) && intelligenceDownload?.tier === t ? intelligenceDownload.speed_mbps : 0;
 
-  const handleSelectTier = (t: IntelligenceTier) => onUpdateSettings({ intelligence_tier: t });
+  const handleSelectTier = (t: IntelligenceTier) =>
+    onUpdateSettings({
+      intelligence_tier: t,
+      cleanup_level:
+        t === "raw_verbatim"
+          ? "raw"
+          : settings.cleanup_level === "raw"
+            ? "medium"
+            : settings.cleanup_level,
+      ...(t !== "raw_verbatim" && settings.preset === "fast" ? { preset: "auto" as const } : {}),
+    });
 
   const handleInstall = async (t: IntelligenceTier) => {
     if (t === "raw_verbatim") return;
@@ -194,6 +191,11 @@ export const CleanupPage: React.FC<Props> = ({
       title="Intelligence & Cleanup Engine"
       description="Choose how Reflow polishes your dictation. Stage 1 rules always run. Stage 2 (optional) uses a small on-device LLM."
     >
+      {runtimeDownloadError && (
+        <p role="alert" className="text-sm text-danger">
+          Runtime installation failed: {runtimeDownloadError}
+        </p>
+      )}
       <div className="grid grid-cols-1 gap-3">
         {(Object.keys(INTELLIGENCE_TIERS) as IntelligenceTier[]).map((id) => {
           const meta = INTELLIGENCE_TIERS[id];
@@ -203,7 +205,6 @@ export const CleanupPage: React.FC<Props> = ({
           const progress = downloadProgress(id);
           const speed = downloadSpeed(id);
           const isRemoving = removing === id;
-          const isRecommended = id === recommendedTier && tier !== id;
           const isDeepContext = id === "deep_context";
           const needsGpu = isDeepContext && !hasGpu;
           return (
@@ -219,6 +220,7 @@ export const CleanupPage: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={() => handleSelectTier(id)}
+                  aria-pressed={active}
                   className="flex items-start gap-3 text-left flex-1 min-w-0"
                 >
                   <div
@@ -231,70 +233,61 @@ export const CleanupPage: React.FC<Props> = ({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p
-                        className={`text-[14px] font-semibold ${
-                          active ? "text-accent" : "text-ink"
-                        }`}
+                        className={`text-base font-semibold ${active ? "text-accent" : "text-ink"}`}
                       >
                         {meta.label}
                       </p>
                       <span
-                        className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-wider ${
+                        className={`px-1.5 py-0.5 rounded text-2xs font-bold tracking-wider ${
                           id === "smart_flow"
-                            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300"
+                            ? "bg-success/15 text-success"
                             : id === "deep_context"
                               ? "bg-violet-500/15 text-violet-600 dark:text-violet-300"
-                              : "bg-slate-500/15 text-slate-600 dark:text-slate-300"
+                              : "bg-muted/15 text-ink-2"
                         }`}
                       >
                         {meta.badgeText}
                       </span>
-                      {isRecommended && (
-                        <span className="px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-wider bg-amber-500/15 text-amber-700 dark:text-amber-300">
-                          BEST FOR YOUR PC
-                        </span>
-                      )}
                     </div>
-                    <p className="text-[11.5px] text-muted mt-0.5 leading-snug">{meta.tagline}</p>
-                    <p className="text-[12.5px] text-ink-2 mt-2 leading-relaxed">
-                      {meta.description}
-                    </p>
+                    <p className="text-xs text-muted mt-0.5 leading-snug">{meta.tagline}</p>
+                    <p className="text-sm text-ink-2 mt-2 leading-relaxed">{meta.description}</p>
                     <div className="flex flex-wrap gap-1.5 mt-2.5">
-                      <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-[10.5px] text-ink-2 font-medium">
+                      <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
                         {meta.latencyEstimate}
                       </span>
                       {meta.downloadSizeMB > 0 && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-[10.5px] text-ink-2 font-medium">
+                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
                           {formatSize(meta.downloadSizeMB)}
                         </span>
                       )}
                       {meta.ramRequiredMB > 0 && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-[10.5px] text-ink-2 font-medium">
+                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
                           {formatSize(meta.ramRequiredMB)} RAM
                         </span>
                       )}
                       {meta.vramRequiredMB > 0 && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-[10.5px] text-ink-2 font-medium">
+                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
                           {formatSize(meta.vramRequiredMB)} VRAM
                         </span>
                       )}
                       {id === "raw_verbatim" && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-[10.5px] text-ink-2 font-medium">
+                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
                           0 MB extra
                         </span>
                       )}
                       {id === "smart_flow" && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-[10.5px] text-ink-2 font-medium">
+                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
                           86% IFEval
                         </span>
                       )}
                       {id === "deep_context" && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-[10.5px] text-ink-2 font-medium">
+                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
                           201 Languages
                         </span>
                       )}
                     </div>
                     {needsGpu && (
-                      <div className="mt-2.5 flex items-start gap-1.5 text-[11.5px] text-amber-700 dark:text-amber-300">
+                      <div className="mt-2.5 flex items-start gap-1.5 text-xs text-warning">
                         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
                         <span>
                           {lowSpecPc
@@ -303,7 +296,7 @@ export const CleanupPage: React.FC<Props> = ({
                         </span>
                       </div>
                     )}
-                    <p className="text-[10.5px] text-muted mt-2 italic">
+                    <p className="text-2xs text-muted mt-2 italic">
                       Powered by {id === "raw_verbatim" ? "Stage 1 rules only" : meta.modelFile}
                     </p>
                   </div>
@@ -319,14 +312,14 @@ export const CleanupPage: React.FC<Props> = ({
                 <div className="mt-3 pt-3 border-t border-line/60 flex items-center gap-2 flex-wrap">
                   {installed ? (
                     <>
-                      <span className="inline-flex items-center gap-1.5 text-[11.5px] text-emerald-600 dark:text-emerald-300 font-medium">
+                      <span className="inline-flex items-center gap-1.5 text-xs text-success font-medium">
                         <ShieldCheck className="w-3.5 h-3.5" />
                         Installed
                       </span>
                       <div className="flex-1" />
                       <button
                         type="button"
-                        className="btn btn-ghost !py-1.5 !px-3 !text-[12px]"
+                        className="btn btn-ghost !py-1.5 !px-3 !text-xs"
                         onClick={() => handleRemove(id)}
                         disabled={isRemoving}
                       >
@@ -340,7 +333,7 @@ export const CleanupPage: React.FC<Props> = ({
                     </>
                   ) : downloading ? (
                     <div className="w-full space-y-1.5">
-                      <div className="flex items-center justify-between text-[11.5px]">
+                      <div className="flex items-center justify-between text-xs">
                         <span className="inline-flex items-center gap-1.5 text-accent font-medium">
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           Downloading {meta.modelFile}
@@ -358,20 +351,20 @@ export const CleanupPage: React.FC<Props> = ({
                     </div>
                   ) : isWeightsOnly(id) ? (
                     <>
-                      <span className="inline-flex items-center gap-1.5 text-[11.5px] text-amber-600 dark:text-amber-300 font-medium">
+                      <span className="inline-flex items-center gap-1.5 text-xs text-warning font-medium">
                         <AlertTriangle className="w-3.5 h-3.5" />
                         Weights only — runtime missing
                       </span>
                       <div className="flex-1" />
                       {runtimeDownloadActive ? (
-                        <span className="inline-flex items-center gap-1.5 text-[11px] text-accent font-medium">
+                        <span className="inline-flex items-center gap-1.5 text-2xs text-accent font-medium">
                           <Loader2 className="w-3 h-3 animate-spin" />
                           Installing runtime… {runtimeDownload?.progress_pct ?? 0}%
                         </span>
                       ) : (
                         <button
                           type="button"
-                          className="btn btn-primary !py-1.5 !px-3 !text-[12px]"
+                          className="btn btn-primary !py-1.5 !px-3 !text-xs"
                           onClick={onInstallRuntime}
                         >
                           <Cpu className="w-3.5 h-3.5" />
@@ -381,13 +374,13 @@ export const CleanupPage: React.FC<Props> = ({
                     </>
                   ) : (
                     <>
-                      <span className="text-[11.5px] text-muted">
+                      <span className="text-xs text-muted">
                         Download the GGUF weights to use this tier.
                       </span>
                       <div className="flex-1" />
                       <button
                         type="button"
-                        className="btn btn-primary !py-1.5 !px-3 !text-[12px]"
+                        className="btn btn-primary !py-1.5 !px-3 !text-xs"
                         onClick={() => handleInstall(id)}
                         disabled={installing === id}
                       >
@@ -411,12 +404,12 @@ export const CleanupPage: React.FC<Props> = ({
         <div className="mt-5 space-y-3">
           <div className="rounded-xl border border-line bg-surface overflow-hidden">
             <details className="group" open>
-              <summary className="cursor-pointer px-3.5 py-2.5 flex items-center justify-between text-[12.5px] font-semibold text-ink select-none">
+              <summary className="cursor-pointer px-3.5 py-2.5 flex items-center justify-between text-sm font-semibold text-ink select-none">
                 <span>Voice tone &amp; style</span>
-                <span className="text-[11px] text-muted font-normal group-open:hidden">
+                <span className="text-2xs text-muted font-normal group-open:hidden">
                   Show options
                 </span>
-                <span className="text-[11px] text-muted font-normal hidden group-open:inline">
+                <span className="text-2xs text-muted font-normal hidden group-open:inline">
                   Hide
                 </span>
               </summary>
@@ -452,8 +445,8 @@ export const CleanupPage: React.FC<Props> = ({
 
       <div className="rounded-xl border border-line bg-surface p-3.5 space-y-2.5">
         <div className="flex items-center justify-between gap-2">
-          <p className="text-[12.5px] font-semibold text-ink">Live playground</p>
-          <span className="text-[10.5px] text-muted">
+          <p className="text-sm font-semibold text-ink">Live playground</p>
+          <span className="text-2xs text-muted">
             Tests {activeMeta.label}
             {flowStatus?.ready && flowStatus.backend
               ? ` · ${flowStatus.backend} ready`
@@ -471,7 +464,7 @@ export const CleanupPage: React.FC<Props> = ({
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
-            className="btn btn-primary !py-1.5 !px-3 !text-[12.5px]"
+            className="btn btn-primary !py-1.5 !px-3 !text-sm"
             onClick={runPreview}
             disabled={previewing || !sample.trim()}
           >
@@ -483,15 +476,15 @@ export const CleanupPage: React.FC<Props> = ({
             Test
           </button>
           {previewLatency !== null && (
-            <span className="text-[11.5px] text-muted">
+            <span className="text-xs text-muted">
               {previewLatency < 5 ? "Stage 1 only" : `Cleaned in ${previewLatency}ms`}
               {previewModel && previewModel !== "none" && ` with ${previewModel}`}
             </span>
           )}
         </div>
         <div className="rounded-lg bg-surface-2 border border-line px-3 py-2.5">
-          <p className="text-[11px] text-muted mb-1">Output</p>
-          <p className="text-[13px] text-ink leading-6">
+          <p className="text-2xs text-muted mb-1">Output</p>
+          <p className="text-sm text-ink leading-6">
             {previewOut || "Click Test to see the cleaned result."}
           </p>
         </div>
@@ -511,6 +504,7 @@ export const CleanupPage: React.FC<Props> = ({
           ariaLabel="Spoken punctuation"
         />
       </Row>
+      <ApplicationProfiles settings={settings} onUpdateSettings={onUpdateSettings} />
     </Section>
   );
 };

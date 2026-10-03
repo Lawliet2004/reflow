@@ -9,7 +9,11 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
   publish-tauri:
+    needs: validate
     name: Build ${{ matrix.name }} installer
     runs-on: ${{ matrix.platform }}
     strategy:
@@ -19,23 +23,11 @@ jobs:
           - name: Linux
             platform: ubuntu-22.04
             bundles: deb,appimage
-            rust_target: ""
-            args: ""
           - name: Windows
             platform: windows-latest
             bundles: nsis,msi
-            rust_target: ""
-            args: ""
-          - name: macOS Intel
-            platform: macos-15-intel
-            bundles: dmg
-            rust_target: x86_64-apple-darwin
-            args: "--target x86_64-apple-darwin"
-          - name: macOS Apple Silicon
-            platform: macos-latest
-            bundles: dmg
-            rust_target: aarch64-apple-darwin
-            args: "--target aarch64-apple-darwin"
+          # macOS remains a compile/test target in ci.yml. Public installers are
+          # gated until native dictation/hotkey/startup parity is verified.
 
     steps:
       - name: Check out source
@@ -49,8 +41,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
 
       - name: Install Linux bundle dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -75,6 +65,15 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Frontend lint
+        run: npm run lint
+      - name: Frontend regressions
+        run: npm run test
+      - name: Packaging and scoped shutdown regressions
+        run: node --test scripts/package.test.cjs scripts/kill-running.test.cjs
+      - name: Rust regressions before creating draft installers
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests
+
       - name: Build and publish installers
         uses: tauri-apps/tauri-action@v0.6.2
         env:
@@ -87,9 +86,10 @@ jobs:
 
             - Linux: `.deb` or `.AppImage`
             - Windows: `.msi` or NSIS `.exe`
-            - macOS: `.dmg` for Intel or Apple Silicon
+            Linux X11 supports clipboard injection. On Wayland, compositor permissions/tools can require manual paste.
+            macOS development builds currently offer clipboard/manual-copy fallback and are not included as supported dictation installers.
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
           releaseAssetNamePattern: Reflow-[platform]-[arch][ext]
-          args: --bundles ${{ matrix.bundles }} ${{ matrix.args }}
+          args: --bundles ${{ matrix.bundles }}

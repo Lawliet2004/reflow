@@ -1,10 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import {
+  UsageStats,
+  FileProgress,
   AppState,
+  Mode,
+  SessionIntent,
   AppSettings,
   AudioDevice,
+  MicrophoneHealth,
+  RecognitionTest,
   HistoryEntry,
+  HistoryQuery,
+  HistoryPage,
+  RuntimeEntry,
   DictionaryTerm,
   CustomReplacement,
   Capabilities,
@@ -16,6 +25,7 @@ import {
   Preset,
   ProfileOverrides,
   ResolvedProfile,
+  RuntimePlan,
   IntelligenceTierState,
   LatencyMetrics,
   LatencyPercentiles,
@@ -26,6 +36,7 @@ import {
   FlowStatus,
   PlatformInfo,
   ApiStatus,
+  CalibrationStatus,
   normalizeSettings,
 } from "../types";
 
@@ -169,7 +180,7 @@ export async function safeListen<T>(
   };
 }
 
-const DEFAULT_SETTINGS: AppSettings = {
+const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   hotkey: "Shift+Win",
   push_to_talk: true,
   auto_stop_silence_ms: 1500,
@@ -187,6 +198,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   streaming: DEFAULT_STREAMING_SETTINGS,
   memory_policy: DEFAULT_MEMORY_POLICY,
   history_retention: "30_days",
+  audio_retention: "disabled",
   overlay_position: "bottom_center",
   overlay_theme: "dark",
   app_theme: "system",
@@ -213,9 +225,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   api_enabled: false,
   api_bind: "lan",
   api_port: 7840,
-  api_mdns: true,
   api_inject_default: false,
-};
+});
 
 let previewSettings = structuredClone(DEFAULT_SETTINGS);
 
@@ -230,7 +241,18 @@ export const api = {
   // Rust command argument is named `settings`.
   updateSettings: async (settings: Partial<AppSettings>) => {
     if (isTauri()) return safeInvoke<AppSettings>("update_settings", { settings });
-    previewSettings = normalizeSettings({ ...previewSettings, ...settings });
+    previewSettings = normalizeSettings({
+      ...previewSettings,
+      ...settings,
+      hotkey: settings.hotkeys?.dictation ?? settings.hotkey ?? previewSettings.hotkey,
+      hotkeys: {
+        ...previewSettings.hotkeys!,
+        ...settings.hotkeys,
+        ...(settings.hotkey ? { dictation: settings.hotkey } : {}),
+      },
+      asr: { ...previewSettings.asr, ...settings.asr },
+      refinement: { ...previewSettings.refinement, ...settings.refinement },
+    });
     return structuredClone(previewSettings);
   },
 
@@ -249,7 +271,12 @@ export const api = {
   setAudioDevice: (deviceId: string) => safeInvoke<void>("set_audio_device", { deviceId }),
 
   // Recording Control
-  startRecording: () => safeInvoke<void>("start_recording"),
+  startRecording: (intent?: SessionIntent, modeId?: string) =>
+    safeInvoke<void>("start_recording", { intent, modeId }),
+  startMeeting: () => safeInvoke<void>("start_meeting"),
+  summarizeHistory: (id: string) => safeInvoke<string>("summarize_history", { id }),
+  executeAssistantTool: (response: string) =>
+    safeInvoke<string>("execute_assistant_tool", { response }),
   stopRecording: () => safeInvoke<string>("stop_recording"),
   cancelRecording: () => safeInvoke<void>("cancel_recording"),
 
@@ -260,14 +287,86 @@ export const api = {
     return false;
   },
   testMicrophoneLevel: () => safeInvoke<number>("get_current_audio_level", undefined, 0.0),
+  testMicrophone: () => safeInvoke<MicrophoneHealth>("test_microphone"),
+  testRecognition: () => safeInvoke<RecognitionTest>("test_recognition"),
+  getAsrProgress: () =>
+    safeInvoke<{ completed: number; total: number }>("get_asr_progress", undefined, {
+      completed: 0,
+      total: 0,
+    }),
+  retryClipboardRestore: () => safeInvoke<boolean>("retry_clipboard_restore"),
 
+  getStats: () =>
+    safeInvoke<UsageStats>("get_stats", undefined, {
+      total_words: 0,
+      total_characters: 0,
+      dictations: 0,
+      minutes_spoken: 0,
+      time_saved_minutes: 0,
+      streak_days: 0,
+      per_app: [],
+      per_day: [],
+    }),
+  repasteLast: () => safeInvoke<boolean>("repaste_last"),
+  getAppVersion: () => safeInvoke<string>("get_app_version", undefined, "0.2.0"),
+  openReleases: () => safeInvoke<void>("open_releases"),
+  getNetworkJournal: () =>
+    safeInvoke<{ timestamp: string; host: string; bytes: number }[]>(
+      "get_network_journal",
+      { limit: 100 },
+      [],
+    ),
+  exportConfig: (path: string) => safeInvoke<string>("export_config", { path }),
+  importConfig: (path: string, replace: boolean) =>
+    safeInvoke<AppSettings>("import_config", { path, replace }),
+  importModelFile: (path: string) =>
+    safeInvoke<{ id: string; path: string; bytes: number }>("import_model_file", { path }),
+  getAutomationTokenStatus: () =>
+    safeInvoke<{ id: string; name: string } | null>("get_automation_token_status", undefined, null),
+  createAutomationToken: () =>
+    safeInvoke<{ token: string; device: { id: string; name: string } }>("create_automation_token"),
+  revokeAutomationToken: () => safeInvoke<boolean>("revoke_automation_token"),
+  dismissAssistant: () => safeInvoke<void>("dismiss_assistant"),
+  selectAudioFile: () => safeInvoke<string | null>("select_audio_file", undefined, null),
+  transcribeFile: (path: string, allowLarge: boolean) =>
+    safeInvoke<{ job_id: string }>("transcribe_file", { path, allowLarge }),
+  getFileJob: (jobId: string) => safeInvoke<FileProgress>("get_file_job", { jobId }),
+  cancelFileTranscription: (jobId: string) =>
+    safeInvoke<void>("cancel_file_transcription", { jobId }),
+  exportFileTranscript: (id: string, format: string) =>
+    safeInvoke<string>("export_file_transcript", { id, format }),
+  addNote: (text: string) => safeInvoke<HistoryEntry>("add_note", { text }),
+  exportNotes: () => safeInvoke<string>("export_notes"),
+  updateHistoryMetadata: (id: string, pinned: boolean, tags: string) =>
+    safeInvoke<void>("update_history_metadata", { id, pinned, tags }),
+  editHistoryTranscript: (id: string, text: string) =>
+    safeInvoke<HistoryEntry>("edit_history_transcript", { id, text }),
   // History CRUD
+  queryHistory: (query: HistoryQuery) =>
+    safeInvoke<HistoryPage>(
+      "query_history",
+      { query },
+      { entries: [], total: 0, next_offset: null, recovery_notice: null },
+    ),
+  exportHistory: (query: HistoryQuery) => safeInvoke<string>("export_history", { query }),
+  getRuntimeInventory: () => safeInvoke<RuntimeEntry[]>("get_runtime_inventory", undefined, []),
+  rollbackRuntime: () => safeInvoke<RuntimeEntry[]>("rollback_runtime"),
+  repairRuntime: () => safeInvoke<void>("repair_runtime"),
   getHistory: (limit: number = 50, offset: number = 0) =>
     safeInvoke<HistoryEntry[]>("get_history", { limit, offset }, []),
 
   searchHistory: (query: string) => safeInvoke<HistoryEntry[]>("search_history", { query }, []),
 
   deleteHistoryItem: (id: string) => safeInvoke<boolean>("delete_history_item", { id }, true),
+
+  // Returns the updated entry, or null when the id is gone.
+  undoHistoryAiEdit: (id: string) =>
+    safeInvoke<HistoryEntry | null>("undo_history_ai_edit", { id }, null),
+  retryHistoryTranscript: (
+    id: string,
+    options?: { tier?: string; mode?: string; language?: string },
+  ) => safeInvoke<HistoryEntry | null>("retry_history_transcript", { id, options }, null),
+  extractHistoryAudio: (id: string) => safeInvoke<string>("extract_history_audio", { id }),
 
   clearTodayHistory: () => safeInvoke<number>("clear_today_history", undefined, 0),
   clearAllHistory: () => safeInvoke<number>("clear_all_history", undefined, 0),
@@ -359,6 +458,7 @@ export const api = {
    */
   previewProfile: (preset: Preset, overrides?: ProfileOverrides) =>
     safeInvoke<ResolvedProfile | null>("preview_profile", { preset, overrides }, null),
+  getRuntimePlan: () => safeInvoke<RuntimePlan | null>("get_runtime_plan", undefined, null),
 
   openLogsFolder: () => safeInvoke<void>("open_logs_folder"),
   getDiagnosticsReport: () =>
@@ -405,7 +505,25 @@ export const api = {
     }),
   rotatePairingCode: () => safeInvoke<ApiStatus>("rotate_pairing_code"),
   listApiDevices: () => safeInvoke<ApiStatus["devices"]>("list_api_devices", undefined, []),
+  getCalibrationStatus: () =>
+    safeInvoke<CalibrationStatus>("get_calibration_status", undefined, {
+      running: false,
+      phase: "idle",
+      candidates: [],
+      winner_id: null,
+      error: null,
+      language: "en",
+      reference: "",
+    }),
+  runCalibration: (args: { reference: string; language: string; seconds: number }) =>
+    safeInvoke<CalibrationStatus>("run_calibration", args),
+  cancelCalibration: () => safeInvoke<void>("cancel_calibration"),
+  applyCalibration: (id: string) => safeInvoke<boolean>("apply_calibration", { id }),
   revokeApiDevice: (id: string) => safeInvoke<boolean>("revoke_api_device", { id }, true),
+  setApiDevicePermissions: (
+    id: string,
+    permissions: { stream: boolean; history: boolean; injection: boolean },
+  ) => safeInvoke<boolean>("set_api_device_permissions", { id, permissions }, true),
   getFlowStatus: () =>
     safeInvoke<FlowStatus>("get_flow_status", undefined, {
       active_tier: "smart_flow",
@@ -422,6 +540,7 @@ export const api = {
     text: string,
     tier: AppSettings["intelligence_tier"] = "smart_flow",
     style?: string,
+    mode?: Mode,
   ) =>
     safeInvoke<{
       text: string;
@@ -430,7 +549,7 @@ export const api = {
       model_used: string;
     }>(
       "preview_tier_cleanup",
-      { text, tier, style },
+      { text, tier, style, mode },
       {
         text,
         latency_ms: 0,
@@ -481,7 +600,7 @@ export const api = {
     safeInvoke<AppSettings>("set_polish_enabled", { enabled }),
   previewTierCleanup: (text: string, tier: AppSettings["intelligence_tier"], style?: string) =>
     api.previewCleanup(text, tier, style),
-  // Server-side: re-injects pre-LLM text from the latest history entry.
+  // Returns pre-edit text for recovery; never pastes into the foreground app.
   undoLastAiEdit: () => safeInvoke<string>("undo_last_ai_edit", undefined, ""),
 
   // App lifecycle

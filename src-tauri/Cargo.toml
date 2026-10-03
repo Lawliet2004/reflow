@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Local Wispr Flow-Style Desktop Dictation Application"
 authors = ["Reflow Team"]
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88"
 default-run = "reflow"
 
 [lib]
@@ -14,11 +14,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "runtime_install_smoke"
 path = "src/bin/runtime_install_smoke.rs"
+required-features = ["runtime-install-smoke"]
+
+[features]
+runtime-install-smoke = []
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
+aes-gcm = "0.10.3"
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native", "apple-native", "linux-native-sync-persistent", "crypto-rust", "vendored"] }
 tauri = { version = "2.11.3", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
@@ -31,19 +37,24 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 arboard = "3.4"
-enigo = { version = "0.2", default-features = true, features = ["x11rb", "wayland"] }
+enigo = { version = "0.3", default-features = true, features = ["x11rb", "wayland"] }
 regex = "1.10"
 log = "0.4"
 env_logger = "0.11"
 sysinfo = "0.33"
 dirs = "5.0"
 hound = "3.5"
+# Offline audio imports need MP3/AAC/FLAC/Ogg decoders; hound only decodes WAV.
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp3", "isomp4", "flac", "ogg", "vorbis", "pcm", "wav"] }
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "blocking"] }
 futures-util = "0.3"
 parking_lot = "0.12"
 base64 = "0.22"
 axum = { version = "0.7", features = ["ws", "macros", "multipart"] }
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
 tower-http = { version = "0.5", features = ["trace"] }
 if-addrs = "0.13"
 rand = "0.8"
@@ -62,12 +73,21 @@ http-body-util = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Power",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_Devices_FunctionDiscovery",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_System_ProcessStatus",
     "Win32_System_LibraryLoader",
-    "Win32_UI_Input_KeyboardAndMouse"
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Controls_Dialogs"
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

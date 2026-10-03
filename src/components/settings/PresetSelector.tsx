@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { tauriApi } from "../../services/tauriApi";
-import { Capabilities, Preset, ResolvedProfile } from "../../types";
+import { Capabilities, Preset, RuntimePlan } from "../../types";
 import { Badge } from "../ui/Badge";
 import { cn } from "../../utils/cn";
 import { Zap, Cpu, Sparkles, Sliders, ShieldCheck } from "lucide-react";
@@ -28,31 +28,30 @@ const PRESET_OPTIONS: PresetOption[] = [
     title: "Auto (Adaptive)",
     badge: "Recommended",
     description:
-      "Dynamically selects optimal models based on live VRAM, RAM, and hardware capabilities.",
-    icon: <Sparkles className="w-5 h-5 text-sky-500" />,
+      "Prioritizes throughput using hardware, memory headroom and measured ASR performance.",
+    icon: <Sparkles className="w-5 h-5 text-accent" />,
   },
   {
     id: "fast",
     shortcut: "2",
     title: "Fast",
     description:
-      "Ultra-low latency ASR-only mode (~200ms). Runs lightweight 0.6B on CPU or GPU without LLM delay.",
-    icon: <Zap className="w-5 h-5 text-amber-500" />,
+      "Uses the smallest installed speech model and deterministic cleanup without the LLM wait.",
+    icon: <Zap className="w-5 h-5 text-warning" />,
   },
   {
     id: "balanced",
     shortcut: "3",
     title: "Balanced",
-    description:
-      "Fast ASR paired with efficient Qwen3.5-0.8B refinement for natural punctuation and phrasing.",
-    icon: <ShieldCheck className="w-5 h-5 text-emerald-500" />,
+    description: "Balances speech accuracy and memory use while keeping your chosen cleanup level.",
+    icon: <ShieldCheck className="w-5 h-5 text-success" />,
   },
   {
     id: "accurate",
     shortcut: "4",
     title: "Accurate",
     description:
-      "Highest quality transcription with full Qwen3.5-2B LLM polish. Best for complex dictation.",
+      "Prefers the larger installed speech model when memory allows. Keeps your chosen cleanup level.",
     icon: <Cpu className="w-5 h-5 text-indigo-500" />,
   },
   {
@@ -61,7 +60,7 @@ const PRESET_OPTIONS: PresetOption[] = [
     title: "Custom",
     description:
       "Fine-grained manual control over models, compute devices, precision, and GPU layer offload.",
-    icon: <Sliders className="w-5 h-5 text-slate-500" />,
+    icon: <Sliders className="w-5 h-5 text-muted" />,
   },
 ];
 
@@ -71,20 +70,31 @@ export function PresetSelector({
   capabilities,
   className,
 }: PresetSelectorProps) {
-  const [profilePreview, setProfilePreview] = useState<ResolvedProfile | null>(null);
+  const [profilePreview, setProfilePreview] = useState<RuntimePlan | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    tauriApi.previewProfile(selectedPreset).then((res: ResolvedProfile | null) => {
-      if (active) {
-        setProfilePreview(res);
-        setLoading(false);
-      }
+    queueMicrotask(() => {
+      if (active) setLoading(true);
     });
+    const refresh = async () => {
+      try {
+        const res = await tauriApi.getRuntimePlan();
+        if (active) setProfilePreview(res);
+      } catch {
+        if (active) setProfilePreview(null);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => {
+      void refresh();
+    }, 5000);
     return () => {
       active = false;
+      clearInterval(timer);
     };
   }, [selectedPreset, capabilities]);
 
@@ -93,10 +103,14 @@ export function PresetSelector({
     if (e.key === "ArrowRight" || e.key === "ArrowDown") {
       e.preventDefault();
       const nextIndex = (index + 1) % total;
+      const radios = e.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="radio"]');
+      radios?.item(nextIndex).focus();
       onSelectPreset(PRESET_OPTIONS[nextIndex].id);
     } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
       e.preventDefault();
       const prevIndex = (index - 1 + total) % total;
+      const radios = e.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="radio"]');
+      radios?.item(prevIndex).focus();
       onSelectPreset(PRESET_OPTIONS[prevIndex].id);
     } else if (e.key === " " || e.key === "Enter") {
       e.preventDefault();
@@ -130,19 +144,19 @@ export function PresetSelector({
               onClick={() => onSelectPreset(opt.id)}
               onKeyDown={(e) => handleKeyDown(e, index)}
               className={cn(
-                "relative flex flex-col p-4 rounded-xl border transition-all cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900",
+                "relative flex flex-col p-4 rounded-xl border transition-all cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900",
                 isSelected
-                  ? "bg-sky-50/50 dark:bg-sky-950/20 border-sky-500 dark:border-sky-500 shadow-sm ring-1 ring-sky-500"
-                  : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700",
+                  ? "bg-accent-soft border-accent shadow-sm ring-1 ring-accent"
+                  : "bg-surface border-line hover:border-line-strong",
               )}
             >
               <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2 font-medium text-slate-900 dark:text-slate-100">
+                <div className="flex items-center gap-2 font-medium text-ink">
                   {opt.icon}
                   <span>{opt.title}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <kbd className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700">
+                  <kbd className="px-1.5 py-0.5 text-2xs font-mono rounded bg-base-2 text-muted border border-line">
                     {opt.shortcut}
                   </kbd>
                   {opt.badge ? (
@@ -152,10 +166,7 @@ export function PresetSelector({
                   ) : null}
                 </div>
               </div>
-              <p
-                id={descId}
-                className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed flex-1"
-              >
+              <p id={descId} className="text-xs text-ink-2 leading-relaxed flex-1">
                 {opt.description}
               </p>
             </div>
@@ -166,47 +177,59 @@ export function PresetSelector({
       {profilePreview ? (
         <div
           aria-live="polite"
-          className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 text-xs space-y-2"
+          className="p-4 rounded-xl bg-surface-2 border border-line text-xs space-y-2"
         >
-          <div className="flex items-center justify-between font-medium text-slate-700 dark:text-slate-300">
-            <span>Resolved Hardware Plan:</span>
+          <div className="flex items-center justify-between font-medium text-ink-2">
+            <span>Current hardware plan</span>
             {loading ? (
-              <span className="text-slate-400 animate-pulse">Resolving...</span>
+              <span className="text-muted animate-pulse">Resolving...</span>
             ) : (
               <Badge variant="outline">
-                {profilePreview.asr_device.toUpperCase()} ASR ?{" "}
+                {profilePreview.asr_device.toUpperCase()} ASR ·{" "}
                 {profilePreview.refinement_model
                   ? `${profilePreview.refinement_device.toUpperCase()} Polish`
                   : "ASR Only"}
               </Badge>
             )}
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1 text-slate-600 dark:text-slate-400">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1 text-ink-2">
             <div>
-              <span className="text-slate-400 block">ASR Model:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
-                {profilePreview.asr_model}
-              </span>
+              <span className="text-muted block">ASR Model:</span>
+              <span className="font-medium text-ink">{profilePreview.asr_model}</span>
             </div>
             <div>
-              <span className="text-slate-400 block">Precision:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
+              <span className="text-muted block">Precision:</span>
+              <span className="font-medium text-ink">
                 {profilePreview.asr_precision.toUpperCase()}
               </span>
             </div>
             <div>
-              <span className="text-slate-400 block">Refinement:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
+              <span className="text-muted block">Refinement:</span>
+              <span className="font-medium text-ink">
                 {profilePreview.refinement_model || "None (ASR-only)"}
               </span>
             </div>
             <div>
-              <span className="text-slate-400 block">Streaming:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
-                {profilePreview.streaming_enabled ? "Enabled" : "Off (Batch)"}
+              <span className="text-muted block">Context / CPU threads:</span>
+              <span className="font-medium text-ink">
+                {profilePreview.context_size} tokens / {profilePreview.inference_threads}
               </span>
             </div>
           </div>
+          {profilePreview.error && (
+            <ul className="pt-2 space-y-1 border-t border-danger/30">
+              <li className="text-danger font-medium">{profilePreview.error}</li>
+            </ul>
+          )}
+          {profilePreview.reasons.length > 0 && (
+            <ul className="pt-2 space-y-1 border-t border-line">
+              {profilePreview.reasons.map((r) => (
+                <li key={r.code} className="text-muted leading-snug">
+                  {r.detail}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       ) : null}
     </div>

@@ -9,6 +9,8 @@ import {
   DEFAULT_STREAMING_SETTINGS,
   DEFAULT_MEMORY_POLICY,
   AppSettings,
+  isModelLoading,
+  ModelStatus,
 } from "./index";
 
 describe("normalizeSettings", () => {
@@ -40,6 +42,7 @@ describe("normalizeSettings", () => {
     expect(normalized.streaming).toEqual(DEFAULT_STREAMING_SETTINGS);
     expect(normalized.memory_policy).toEqual(DEFAULT_MEMORY_POLICY);
     expect(normalized.preset).toBe("auto");
+    expect(normalized.audio_retention).toBe("disabled");
   });
 
   it("preserves partial nested configuration while backfilling missing fields", () => {
@@ -125,6 +128,17 @@ describe("normalizeSettings", () => {
     expect(normalized.overlay_theme).toBe("dark");
     expect(normalized.overlay_position).toBe("bottom_center");
   });
+});
+
+it("does not describe absent model weights as an active load", () => {
+  const status = {
+    installed: false,
+    loaded: false,
+    is_downloading: false,
+    error: null,
+  } as ModelStatus;
+  expect(isModelLoading(status)).toBe(false);
+  expect(isModelLoading({ ...status, installed: true })).toBe(true);
 });
 
 describe("cleanup and tier helpers", () => {

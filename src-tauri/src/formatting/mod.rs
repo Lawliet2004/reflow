@@ -141,6 +141,14 @@ pub fn format_transcript(
 }
 
 pub fn format_transcript_ex(raw: &str, req: FormatRequest<'_>) -> String {
+    format_transcript_with_capitalization(raw, req, true)
+}
+
+pub fn format_transcript_with_capitalization(
+    raw: &str,
+    req: FormatRequest<'_>,
+    capitalize_first: bool,
+) -> String {
     if req.cleanup_level == CleanupLevel::Raw {
         return raw.trim().to_string();
     }
@@ -156,7 +164,7 @@ pub fn format_transcript_ex(raw: &str, req: FormatRequest<'_>) -> String {
     text = apply_backtrack(&text);
     text = req.custom_replacements.apply(&text);
     text = apply_normalizers(&text, req.dictation_mode);
-    text = PunctuationInferer::capitalize_sentences(&text);
+    text = PunctuationInferer::capitalize_sentences_with_first(&text, capitalize_first);
 
     let d_mode = DictationMode::from_str(req.dictation_mode);
     let coding = matches!(d_mode, DictationMode::Coding);
@@ -174,7 +182,7 @@ pub fn format_transcript_ex(raw: &str, req: FormatRequest<'_>) -> String {
     if !coding {
         text = apply_hedge(&text, req.cleanup_level, req.style, req.dictation_mode);
         if req.cleanup_level == CleanupLevel::High && req.style == VoiceStyle::Decisive {
-            text = PunctuationInferer::capitalize_sentences(&text);
+            text = PunctuationInferer::capitalize_sentences_with_first(&text, capitalize_first);
         }
     }
 
@@ -512,3 +520,4 @@ mod tests {
         assert!(!out.ends_with('.'));
     }
 }
+pub mod snippets;

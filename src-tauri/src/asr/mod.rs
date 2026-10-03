@@ -1,5 +1,6 @@
 pub mod actor;
 pub mod engine;
+pub mod languages;
 pub mod mock;
 pub mod native;
 pub mod sidecar;

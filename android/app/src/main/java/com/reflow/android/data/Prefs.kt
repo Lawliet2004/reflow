@@ -3,6 +3,7 @@ package com.reflow.android.data
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.reflow.android.net.isSecureConnection
 
 class Prefs(context: Context) {
     private val master = MasterKey.Builder(context)
@@ -23,20 +24,26 @@ class Prefs(context: Context) {
             val token = prefs.getString("token", null) ?: return null
             val port = prefs.getInt("port", 7840)
             val name = prefs.getString("server", "Reflow") ?: "Reflow"
-            return ServerConnection(host, port, token, name)
+            val pin = prefs.getString("certificate_sha256", "") ?: ""
+            return ServerConnection(host, port, token, name, pin).takeIf { isSecureConnection(it) }
         }
         set(value) {
             if (value == null) {
                 prefs.edit().clear().apply()
             } else {
+                require(isSecureConnection(value)) { "Secure pairing is required" }
                 prefs.edit()
                     .putString("host", value.host)
                     .putInt("port", value.port)
                     .putString("token", value.token)
                     .putString("server", value.serverName)
+                    .putString("certificate_sha256", value.certificateSha256)
                     .apply()
             }
         }
+
+    val needsSecurePairing: Boolean
+        get() = prefs.getString("token", null) != null && connection == null
 
     var injectOnDesktop: Boolean
         get() = prefs.getBoolean("inject", false)

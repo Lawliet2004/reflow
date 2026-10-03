@@ -38,6 +38,26 @@ fn both_installed(_id: &str) -> bool {
     true
 }
 
+#[test]
+fn both_python_models_accept_explicit_int4_without_substitution() {
+    for model in ["0.6b", "1.7b"] {
+        let chosen = select_asr_load(
+            Preset::Custom,
+            model,
+            "cuda",
+            "int4",
+            &both_installed,
+            &caps_with_free_vram(3962.0),
+            &no_measurements,
+        );
+        assert!(chosen.error.is_none(), "{model}: {:?}", chosen.error);
+        assert_eq!(chosen.model_id, model);
+        assert_eq!(chosen.device, Device::Cuda);
+        assert_eq!(chosen.precision, Precision::Int4);
+        assert!(chosen.downgrade.is_none());
+    }
+}
+
 fn only_small_installed(id: &str) -> bool {
     id == "0.6b"
 }
@@ -47,7 +67,7 @@ fn only_small_installed(id: &str) -> bool {
 fn a_model_that_fits_is_loaded_as_requested() {
     let caps = caps_with_free_vram(3962.0);
     let selection = select_asr_load(
-        Preset::Auto,
+        Preset::Balanced,
         "1.7b",
         "auto",
         "int8",
@@ -399,7 +419,7 @@ fn native_runtime_uses_vulkan_without_python_cuda() {
         &caps,
         &no_measurements,
     );
-    assert_eq!(chosen.model_id, "native-1.7b");
+    assert_eq!(chosen.model_id, "native-0.6b");
     assert_eq!(chosen.device, Device::Vulkan);
     assert_eq!(chosen.precision, Precision::Int8);
     let cpu = reflow_lib::profile::select_asr_load_for_runtime(

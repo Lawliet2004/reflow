@@ -34,7 +34,7 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
       </Row>
 
       {hotkeyRisky && (
-        <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11.5px] text-amber-700 dark:text-amber-300 leading-relaxed">
+        <div className="p-2.5 rounded-lg bg-warning/10 border border-warning/30 text-xs text-warning leading-relaxed">
           Heads-up: <span className="font-semibold">{settings.hotkey}</span> is commonly used while
           typing. Consider combos with Ctrl, Alt, or Win.
         </div>
@@ -45,6 +45,73 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
           on={settings.push_to_talk}
           onChange={(v) => change("push_to_talk", v)}
           ariaLabel="Push to talk"
+        />
+      </Row>
+
+      {(["command", "assistant", "note"] as const).map((action) => (
+        <Row
+          key={action}
+          label={`${action[0].toUpperCase()}${action.slice(1)} shortcut`}
+          hint={
+            action === "command"
+              ? "Edit selected text. With no selection, your words are dictated normally."
+              : "Optional shortcut"
+          }
+        >
+          <div className="flex items-center gap-2">
+            <HotkeyPicker
+              value={settings.hotkeys?.[action] ?? ""}
+              onChange={(value) =>
+                onUpdateSettings({
+                  hotkeys: {
+                    dictation: settings.hotkey,
+                    command: null,
+                    assistant: null,
+                    note: null,
+                    cancel: "Escape",
+                    ...settings.hotkeys,
+                    [action]: value,
+                  },
+                })
+              }
+            />
+            <button
+              className="btn btn-ghost"
+              onClick={() =>
+                onUpdateSettings({
+                  hotkeys: {
+                    dictation: settings.hotkey,
+                    command: null,
+                    assistant: null,
+                    note: null,
+                    cancel: "Escape",
+                    ...settings.hotkeys,
+                    [action]: null,
+                  },
+                })
+              }
+            >
+              Clear
+            </button>
+          </div>
+        </Row>
+      ))}
+      <Row label="Escape to cancel">
+        <Toggle
+          on={settings.hotkeys?.cancel !== null}
+          ariaLabel="Escape to cancel"
+          onChange={(enabled) =>
+            onUpdateSettings({
+              hotkeys: {
+                dictation: settings.hotkey,
+                command: null,
+                assistant: null,
+                note: null,
+                ...settings.hotkeys,
+                cancel: enabled ? "Escape" : null,
+              },
+            })
+          }
         />
       </Row>
 
@@ -64,7 +131,7 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
         />
       </Row>
 
-      <p className="text-[12px] text-muted pt-1">
+      <p className="text-xs text-muted pt-1">
         Close hides to tray · Customize themes and HUD display in the Appearance tab
       </p>
     </Section>

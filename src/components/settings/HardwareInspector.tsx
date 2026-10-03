@@ -23,12 +23,18 @@ export function HardwareInspector({ className }: { className?: string }) {
   };
 
   useEffect(() => {
-    fetchCapabilities(false);
+    let alive = true;
+    queueMicrotask(() => {
+      if (alive) fetchCapabilities(false);
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   if (!caps) {
     return (
-      <div className="p-6 text-center text-slate-400 text-sm animate-pulse">
+      <div className="p-6 text-center text-muted text-sm animate-pulse">
         Probing hardware environment...
       </div>
     );
@@ -49,10 +55,8 @@ export function HardwareInspector({ className }: { className?: string }) {
     <div className={cn("space-y-4", className)}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Cpu className="w-5 h-5 text-sky-500" />
-          <h3 className="font-semibold text-slate-900 dark:text-slate-100">
-            Hardware & Acceleration
-          </h3>
+          <Cpu className="w-5 h-5 text-accent" />
+          <h3 className="font-semibold text-ink">Hardware & Acceleration</h3>
         </div>
         <Button
           size="sm"
@@ -67,8 +71,8 @@ export function HardwareInspector({ className }: { className?: string }) {
       </div>
 
       {cudaIssue ? (
-        <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 flex items-start gap-3 text-amber-800 dark:text-amber-200 text-xs leading-relaxed">
-          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+        <div className="p-3.5 rounded-xl bg-warning-soft border border-warning/30 flex items-start gap-3 text-warning text-xs leading-relaxed">
+          <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
           <div>
             <span className="font-semibold block mb-0.5">
               NVIDIA GPU Detected without PyTorch CUDA Support
@@ -81,9 +85,9 @@ export function HardwareInspector({ className }: { className?: string }) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {/* GPU & VRAM Card */}
-        <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+        <div className="p-4 rounded-xl bg-surface border border-line space-y-3">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 font-medium text-xs text-slate-800 dark:text-slate-200">
+            <div className="flex items-center gap-2 font-medium text-xs text-ink">
               <Monitor className="w-4 h-4 text-indigo-500" />
               <span>Graphics & Acceleration</span>
             </div>
@@ -92,42 +96,42 @@ export function HardwareInspector({ className }: { className?: string }) {
             </Badge>
           </div>
 
-          <div className="text-xs space-y-1.5 text-slate-600 dark:text-slate-400">
+          <div className="text-xs space-y-1.5 text-ink-2">
             <div className="flex justify-between">
-              <span className="text-slate-400">Primary GPU:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
+              <span className="text-muted">Primary GPU:</span>
+              <span className="font-medium text-ink">
                 {gpu?.name || "None (Software Renderer)"}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Driver / CUDA:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
+              <span className="text-muted">Driver / CUDA:</span>
+              <span className="font-medium text-ink">
                 {caps.cuda.driver_cuda_version
                   ? `v${caps.cuda.driver_cuda_version}`
                   : "Unavailable"}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Vulkan API:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
+              <span className="text-muted">Vulkan API:</span>
+              <span className="font-medium text-ink">
                 {caps.vulkan.available ? "Supported" : "Not detected"}
               </span>
             </div>
           </div>
 
           {vramTotal > 0 ? (
-            <div className="space-y-1 pt-1 border-t border-slate-100 dark:border-slate-800">
+            <div className="space-y-1 pt-1 border-t border-line-soft">
               <div className="flex justify-between text-xs">
-                <span className="text-slate-500">VRAM Allocation ({vramPct}%)</span>
-                <span className="font-medium text-slate-800 dark:text-slate-200">
+                <span className="text-muted">VRAM Allocation ({vramPct}%)</span>
+                <span className="font-medium text-ink">
                   {vramUsed} / {vramTotal} MB ({vramFree} MB free)
                 </span>
               </div>
-              <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
+              <div className="w-full bg-base-2 h-2 rounded-full overflow-hidden">
                 <div
                   className={cn(
                     "h-full rounded-full transition-all duration-300",
-                    vramPct > 85 ? "bg-rose-500" : vramPct > 65 ? "bg-amber-500" : "bg-indigo-500",
+                    vramPct > 85 ? "bg-danger" : vramPct > 65 ? "bg-warning" : "bg-indigo-500",
                   )}
                   style={{ width: `${Math.max(4, vramPct)}%` }}
                 />
@@ -137,10 +141,10 @@ export function HardwareInspector({ className }: { className?: string }) {
         </div>
 
         {/* CPU & RAM Card */}
-        <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+        <div className="p-4 rounded-xl bg-surface border border-line space-y-3">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 font-medium text-xs text-slate-800 dark:text-slate-200">
-              <HardDrive className="w-4 h-4 text-emerald-500" />
+            <div className="flex items-center gap-2 font-medium text-xs text-ink">
+              <HardDrive className="w-4 h-4 text-success" />
               <span>CPU & System Memory</span>
             </div>
             <Badge variant="outline" size="sm">
@@ -148,40 +152,37 @@ export function HardwareInspector({ className }: { className?: string }) {
             </Badge>
           </div>
 
-          <div className="text-xs space-y-1.5 text-slate-600 dark:text-slate-400">
+          <div className="text-xs space-y-1.5 text-ink-2">
             <div className="flex justify-between">
-              <span className="text-slate-400">Processor:</span>
-              <span
-                className="font-medium text-slate-800 dark:text-slate-200 truncate max-w-[200px]"
-                title={caps.cpu.model}
-              >
+              <span className="text-muted">Processor:</span>
+              <span className="font-medium text-ink truncate max-w-[200px]" title={caps.cpu.model}>
                 {caps.cpu.model}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Topology:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
+              <span className="text-muted">Topology:</span>
+              <span className="font-medium text-ink">
                 {caps.cpu.physical_cores ?? "?"} Physical Cores / {caps.cpu.logical_cores} Logical
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">OS Platform:</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">{caps.os_name}</span>
+              <span className="text-muted">OS Platform:</span>
+              <span className="font-medium text-ink">{caps.os_name}</span>
             </div>
           </div>
 
-          <div className="space-y-1 pt-1 border-t border-slate-100 dark:border-slate-800">
+          <div className="space-y-1 pt-1 border-t border-line-soft">
             <div className="flex justify-between text-xs">
-              <span className="text-slate-500">System RAM ({ramPct}%)</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200">
+              <span className="text-muted">System RAM ({ramPct}%)</span>
+              <span className="font-medium text-ink">
                 {ramUsed} / {ramTotal} MB ({caps.ram.available_mb} MB available)
               </span>
             </div>
-            <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
+            <div className="w-full bg-base-2 h-2 rounded-full overflow-hidden">
               <div
                 className={cn(
                   "h-full rounded-full transition-all duration-300",
-                  ramPct > 85 ? "bg-rose-500" : ramPct > 65 ? "bg-amber-500" : "bg-emerald-500",
+                  ramPct > 85 ? "bg-danger" : ramPct > 65 ? "bg-warning" : "bg-success",
                 )}
                 style={{ width: `${Math.max(4, ramPct)}%` }}
               />

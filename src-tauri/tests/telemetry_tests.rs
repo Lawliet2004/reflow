@@ -123,6 +123,10 @@ fn synthetic_timer() -> LatencyTimer {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     LatencyTimer {
+        dropped_audio_chunks: 0,
+        failed_audio_pushes: 0,
+        peak_audio_queue_chunks: 0,
+        llm_was_warm: true,
         hotkey_pressed_at: Some(at(0)),
         recording_started_at: Some(at(120)),
         first_audio_at: Some(at(150)),

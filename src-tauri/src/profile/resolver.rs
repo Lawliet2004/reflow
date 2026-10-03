@@ -116,6 +116,42 @@ impl ProfileReason {
     }
 }
 
+/// A resolver verdict that must be shown to the user rather than worked around.
+///
+/// Distinct from [`ProfileReason`]: a reason explains a choice the resolver
+/// made, while an error names a requested configuration that cannot be loaded
+/// at all. `Custom` produces these instead of a corrected answer, because
+/// silently rewriting an explicit choice is what the settings page must never
+/// do — a substitution it cannot see is the CPU-fallback bug all over again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileError {
+    /// Stable machine-readable code, so UI copy and tests never depend on the
+    /// wording of `detail`.
+    pub code: String,
+    pub detail: String,
+    /// The value the user asked for, e.g. `"int4"`.
+    pub requested: String,
+    /// The values that would be accepted, so the UI can offer a real fix
+    /// instead of parroting the rejection.
+    pub supported: Vec<String>,
+}
+
+impl ProfileError {
+    fn new(
+        code: &'static str,
+        detail: impl Into<String>,
+        requested: impl Into<String>,
+        supported: Vec<String>,
+    ) -> Self {
+        Self {
+            code: code.to_string(),
+            detail: detail.into(),
+            requested: requested.into(),
+            supported,
+        }
+    }
+}
+
 /// The resolved configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedProfile {
@@ -139,6 +175,12 @@ pub struct ResolvedProfile {
     pub inference_threads: usize,
     /// Explanations, in the order they were decided.
     pub reasons: Vec<ProfileReason>,
+    /// Requests the resolver could not honour at all — e.g. a `Custom`
+    /// precision the model does not support. These are errors, not reasons:
+    /// the configuration was left as asked, and loading it will fail, so the
+    /// UI must show them rather than treat the profile as ready.
+    #[serde(default)]
+    pub errors: Vec<ProfileError>,
 }
 
 impl ResolvedProfile {
@@ -153,6 +195,10 @@ impl ResolvedProfile {
     pub fn has_reason(&self, code: &str) -> bool {
         self.reasons.iter().any(|r| r.code == code)
     }
+
+    pub fn has_error(&self, code: &str) -> bool {
+        self.errors.iter().any(|e| e.code == code)
+    }
 }
 
 /// Lookup for peaks already measured on this machine.
@@ -164,6 +210,33 @@ pub type MeasuredLookup<'a> = &'a dyn Fn(&str, Device, Precision) -> MeasuredPea
 /// No measurements available.
 pub fn no_measurements(_: &str, _: Device, _: Precision) -> MeasuredPeaks {
     MeasuredPeaks::default()
+}
+
+/// The structured verdict for a forced precision the model cannot load.
+///
+/// `supported` should come from [`ModelManifest::supported_precisions_on`] so
+/// the list reflects the device, not just the model — the CPU path only ever
+/// offers fp32.
+fn unsupported_precision_error(
+    manifest: &ModelManifest,
+    device: Device,
+    precision: Precision,
+    supported: &[Precision],
+) -> ProfileError {
+    let supported_list: Vec<String> = supported.iter().map(|p| p.as_str().to_string()).collect();
+    ProfileError::new(
+        "asr_precision_unsupported",
+        format!(
+            "{} does not support {} on {}; it supports {}. The requested \
+             configuration cannot be loaded as specified.",
+            manifest.label,
+            precision.as_str(),
+            device.as_str(),
+            supported_list.join(", "),
+        ),
+        precision.as_str(),
+        supported_list,
+    )
 }
 
 /// VRAM that must stay free for the display, the compositor and other apps.
@@ -218,6 +291,7 @@ pub fn resolve_profile(
     measured: MeasuredLookup<'_>,
 ) -> ResolvedProfile {
     let mut reasons = Vec::new();
+    let mut errors = Vec::new();
 
     // --- ASR device -------------------------------------------------------
     let cuda_usable = caps.can_use_cuda();
@@ -299,28 +373,82 @@ pub fn resolve_profile(
     };
 
     // --- ASR precision ladder --------------------------------------------
+    // An explicit precision the model cannot load used to drop out of the
+    // ladder entirely: the resolver echoed it back as `asr_precision`, the
+    // sidecar tried it, failed, and fell back to the CPU — a silent 6x
+    // slowdown misreported as a memory problem. Now:
+    //
+    // * under `Custom`, the request is echoed back with a structured error —
+    //   Custom is never overwritten, so the verdict is the error, not a
+    //   substituted precision;
+    // * under every other preset the resolver may adjust, so it steps to a
+    //   precision the model actually supports and records the correction.
+    let supported_precisions = asr_model.supported_precisions_on(asr_device);
+    let unsupported_forced = overrides
+        .asr_precision
+        .filter(|p| !supported_precisions.contains(p));
+    let custom_precision_error = unsupported_forced.is_some() && preset == Preset::Custom;
+    let effective_forced = match unsupported_forced {
+        // Relax to the automatic ladder, which only walks supported rungs.
+        Some(_) if !custom_precision_error => None,
+        _ => overrides.asr_precision,
+    };
     let asr_attempts = build_attempts(
         asr_model,
         asr_device,
         asr_budget_mb,
-        overrides.asr_precision,
+        effective_forced,
         measured,
     );
-    // An explicit precision is honoured even when it does not fit the budget:
-    // silently substituting a different one would make the settings page lie.
-    // The mismatch is recorded so the UI can warn instead.
+    let fallback_precision = if asr_device.is_gpu() {
+        Precision::Bf16
+    } else {
+        Precision::Fp32
+    };
+    let supported_list: Vec<String> = supported_precisions
+        .iter()
+        .map(|p| p.as_str().to_string())
+        .collect();
     let asr_precision = match overrides.asr_precision {
-        Some(requested) => requested,
         None => asr_attempts
             .first()
             .map(|a| a.precision)
-            .unwrap_or(if asr_device.is_gpu() {
-                Precision::Bf16
-            } else {
-                Precision::Fp32
-            }),
+            .unwrap_or(fallback_precision),
+        Some(requested) => match unsupported_forced {
+            None => requested,
+            Some(_) if custom_precision_error => {
+                errors.push(unsupported_precision_error(
+                    asr_model,
+                    asr_device,
+                    requested,
+                    &supported_precisions,
+                ));
+                requested
+            }
+            Some(_) => {
+                let corrected = asr_attempts
+                    .first()
+                    .map(|a| a.precision)
+                    .unwrap_or(fallback_precision);
+                reasons.push(ProfileReason::new(
+                    "asr_precision_adjusted",
+                    format!(
+                        "{} is not supported by {} on {}; using {} instead \
+                         (supported: {}).",
+                        requested.as_str(),
+                        asr_model.label,
+                        asr_device.as_str(),
+                        corrected.as_str(),
+                        supported_list.join(", "),
+                    ),
+                ));
+                corrected
+            }
+        },
     };
-    if asr_attempts.is_empty() {
+    // "Nothing fits" is only meaningful when the ladder actually ran the
+    // supported rungs; when the Custom error fired, the error is the verdict.
+    if asr_attempts.is_empty() && !custom_precision_error {
         reasons.push(ProfileReason::new(
             "asr_no_viable_precision",
             format!(
@@ -332,17 +460,7 @@ pub fn resolve_profile(
         ));
     }
     if let Some(requested) = overrides.asr_precision {
-        if !asr_model.supports(asr_device, requested) {
-            reasons.push(ProfileReason::new(
-                "asr_precision_unsupported",
-                format!(
-                    "{} does not support {} on {}; the load will fail and fall back.",
-                    asr_model.id,
-                    requested.as_str(),
-                    asr_device.as_str()
-                ),
-            ));
-        } else if asr_attempts.is_empty() {
+        if unsupported_forced.is_none() && asr_attempts.is_empty() {
             reasons.push(ProfileReason::new(
                 "asr_precision_forced_over_budget",
                 format!(
@@ -454,6 +572,7 @@ pub fn resolve_profile(
         streaming_enabled,
         inference_threads: caps.cpu.inference_threads(),
         reasons,
+        errors,
     }
 }
 
@@ -489,7 +608,7 @@ fn pick_asr_model(
 
     // Fast always takes the smallest model: it is the lowest-latency option and
     // the preset's whole point is latency.
-    if preset == Preset::Fast {
+    if matches!(preset, Preset::Fast | Preset::Auto) {
         return smallest;
     }
 
@@ -544,6 +663,14 @@ pub struct AsrSelection {
     /// Set when the selection differs from the request, so the UI can say why
     /// instead of the user discovering it as unexplained slowness.
     pub downgrade: Option<String>,
+    /// Set when the request cannot be loaded at all — e.g. a `Custom`
+    /// precision the model does not support.
+    ///
+    /// The load must not proceed on this selection: `model_id`, `device` and
+    /// `precision` still echo the request so the UI can show exactly what was
+    /// rejected. Before this field existed the ladder silently fell back to
+    /// the CPU, which is precisely the bug it now prevents.
+    pub error: Option<ProfileError>,
 }
 
 /// Choose the ASR load that will actually be fast on this machine right now.
@@ -596,8 +723,27 @@ pub fn select_asr_load_for_runtime(
     } else {
         Device::Vulkan
     };
+
+    // Same contract as the Python path below: a forced precision the model
+    // cannot load is a structured error under Custom, an explained correction
+    // under the presets that may adjust.
+    let forced_precision = Precision::parse(requested_precision);
+    let supported = requested.supported_precisions_on(device);
+    let unsupported_forced = forced_precision.filter(|p| !supported.contains(p));
+    if let Some(p) = unsupported_forced.filter(|_| preset == Preset::Custom) {
+        return AsrSelection {
+            model_id: requested.id,
+            device,
+            precision: p,
+            downgrade: None,
+            error: Some(unsupported_precision_error(
+                requested, device, p, &supported,
+            )),
+        };
+    }
+
     let ceiling = match preset {
-        Preset::Fast => models[0].params,
+        Preset::Fast | Preset::Auto => models[0].params,
         Preset::Accurate => models[1].params,
         _ => requested.params,
     };
@@ -614,16 +760,32 @@ pub fn select_asr_load_for_runtime(
             Device::Cpu,
         ),
     };
+    let mut notes: Vec<String> = Vec::new();
+    if chosen.id != requested.id {
+        notes.push(format!(
+            "Running {} instead of {} to fit the native ASR memory budget.",
+            chosen.label, requested.label
+        ));
+    }
+    if let Some(p) = unsupported_forced {
+        notes.push(format!(
+            "{} is not supported by {}; the native GGUF weights run at int8 \
+             (supported: {}).",
+            p.as_str(),
+            requested.label,
+            supported
+                .iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
     AsrSelection {
         model_id: chosen.id,
         device,
         precision: Precision::Int8,
-        downgrade: (chosen.id != requested.id).then(|| {
-            format!(
-                "Running {} instead of {} to fit the native ASR memory budget.",
-                chosen.label, requested.label
-            )
-        }),
+        downgrade: (!notes.is_empty()).then(|| notes.join(" ")),
+        error: None,
     }
 }
 
@@ -640,6 +802,34 @@ pub fn select_asr_load(
     let requested = asr_manifest(requested_model).unwrap_or(&ASR_MODELS[0]);
     let wants_cpu = requested_device.trim().eq_ignore_ascii_case("cpu");
     let cuda_usable = caps.can_use_cuda();
+
+    // The device the request would actually land on, for support checks.
+    let effective_device = if wants_cpu || !cuda_usable {
+        Device::Cpu
+    } else {
+        Device::Cuda
+    };
+    // A forced precision the requested model cannot load used to produce an
+    // empty ladder, which fell through to the CPU fallback below with a
+    // misleading "not enough VRAM" note — the silent CPU drop this fix exists
+    // to remove. Under Custom it is a structured error; under the presets
+    // that may adjust, the precision is relaxed and the correction reported.
+    let supported = requested.supported_precisions_on(effective_device);
+    let unsupported_forced = forced_precision.filter(|p| !supported.contains(p));
+    if let Some(p) = unsupported_forced.filter(|_| preset == Preset::Custom) {
+        return AsrSelection {
+            model_id: requested.id,
+            device: effective_device,
+            precision: p,
+            downgrade: None,
+            error: Some(unsupported_precision_error(
+                requested,
+                effective_device,
+                p,
+                &supported,
+            )),
+        };
+    }
 
     let installed_by_size = |ascending: bool| -> Vec<&'static ModelManifest> {
         let mut models: Vec<&'static ModelManifest> =
@@ -663,19 +853,32 @@ pub fn select_asr_load(
         // CPU is bound by throughput, not memory, so the largest model that
         // *fits* is the wrong question — a big model on CPU is slow whether or
         // not the RAM is there. Take the smallest installed model.
-        let chosen = smallest_installed();
-        let downgrade = (chosen.id != requested.id).then(|| {
-            format!(
+        let chosen = if preset == Preset::Custom {
+            requested
+        } else {
+            smallest_installed()
+        };
+        let mut notes: Vec<String> = Vec::new();
+        if chosen.id != requested.id {
+            notes.push(format!(
                 "Running {} instead of {} because ASR is on the CPU, \
                  where a larger model is slower without being more usable.",
                 chosen.label, requested.label
-            )
-        });
+            ));
+        }
+        if let Some(p) = unsupported_forced {
+            notes.push(format!(
+                "The CPU path never quantizes, so {} is dropped and the \
+                 model runs at fp32.",
+                p.as_str()
+            ));
+        }
         return AsrSelection {
             model_id: chosen.id,
             device: Device::Cpu,
             precision: Precision::Fp32,
-            downgrade,
+            downgrade: (!notes.is_empty()).then(|| notes.join(" ")),
+            error: None,
         };
     }
 
@@ -687,6 +890,10 @@ pub fn select_asr_load(
             smallest_installed(),
             Some("the Fast profile prioritises latency over accuracy"),
         ),
+        Preset::Auto => (
+            smallest_installed(),
+            Some("the Auto profile prioritises throughput over model size"),
+        ),
         Preset::Accurate => (
             installed_by_size(false)
                 .into_iter()
@@ -694,7 +901,7 @@ pub fn select_asr_load(
                 .unwrap_or(requested),
             Some("the Accurate profile prefers the most capable model that fits"),
         ),
-        Preset::Auto | Preset::Balanced | Preset::Custom => (requested, None),
+        Preset::Balanced | Preset::Custom => (requested, None),
     };
 
     // Largest installed model at or below the ceiling that fits the budget.
@@ -705,39 +912,55 @@ pub fn select_asr_load(
     candidates.sort_by_key(|m| std::cmp::Reverse(m.params));
 
     for manifest in candidates {
-        let attempts = build_attempts(
-            manifest,
-            Device::Cuda,
-            budget_mb,
-            forced_precision,
-            measured,
-        );
+        // A forced precision this candidate cannot load is relaxed to the
+        // automatic ladder rather than producing an empty one — which is how
+        // "int4 on the 0.6B model" used to read as a VRAM problem and drop
+        // ASR to the CPU. The correction is reported below.
+        let forced_here = forced_precision.filter(|p| manifest.supports(Device::Cuda, *p));
+        let attempts = build_attempts(manifest, Device::Cuda, budget_mb, forced_here, measured);
         if let Some(attempt) = attempts.first() {
-            let downgrade = if manifest.id == requested.id {
-                None
-            } else if let Some(reason) = preset_reason.filter(|_| manifest.id == ceiling.id) {
-                // The preset, not the hardware, moved us off the Settings model.
-                Some(format!(
-                    "Running {} instead of {} because {reason}.",
-                    manifest.label, requested.label
-                ))
-            } else {
-                Some(format!(
-                    "Running {} instead of {}: only {:.0} MB of VRAM is free, \
-                     and {} needs about {:.0} MB. A smaller model on the GPU is \
-                     far faster than a larger one on the CPU.",
+            let mut notes: Vec<String> = Vec::new();
+            if manifest.id != requested.id {
+                notes.push(
+                    if let Some(reason) = preset_reason.filter(|_| manifest.id == ceiling.id) {
+                        // The preset, not the hardware, moved us off the Settings model.
+                        format!(
+                            "Running {} instead of {} because {reason}.",
+                            manifest.label, requested.label
+                        )
+                    } else {
+                        format!(
+                            "Running {} instead of {}: only {:.0} MB of VRAM is free, \
+                             and {} needs about {:.0} MB. A smaller model on the GPU is \
+                             far faster than a larger one on the CPU.",
+                            manifest.label,
+                            requested.label,
+                            budget_mb,
+                            requested.label,
+                            requested
+                                .estimated_vram_mb(forced_precision.unwrap_or(Precision::Int8)),
+                        )
+                    },
+                );
+            }
+            if forced_here != forced_precision {
+                // `forced_here` is None exactly when the requested precision
+                // is unsupported on this model; say what replaced it.
+                let p = forced_precision.expect("forced_here differs");
+                notes.push(format!(
+                    "{} is not supported by {} on {}; using {} instead.",
+                    p.as_str(),
                     manifest.label,
-                    requested.label,
-                    budget_mb,
-                    requested.label,
-                    requested.estimated_vram_mb(forced_precision.unwrap_or(Precision::Int8)),
-                ))
-            };
+                    Device::Cuda.as_str(),
+                    attempt.precision.as_str(),
+                ));
+            }
             return AsrSelection {
                 model_id: manifest.id,
                 device: Device::Cuda,
                 precision: attempt.precision,
-                downgrade,
+                downgrade: (!notes.is_empty()).then(|| notes.join(" ")),
+                error: None,
             };
         }
     }
@@ -746,15 +969,24 @@ pub fn select_asr_load(
     // installed model rather than the requested one, for the same
     // throughput reason as above.
     let chosen = smallest_installed();
+    let mut fallback_note = format!(
+        "Running {} on the CPU: only {:.0} MB of VRAM is free, which is not \
+         enough for any installed model.",
+        chosen.label, budget_mb
+    );
+    if let Some(p) = unsupported_forced {
+        fallback_note.push_str(&format!(
+            " {} is not supported by {}; the CPU path runs fp32.",
+            p.as_str(),
+            requested.label
+        ));
+    }
     AsrSelection {
         model_id: chosen.id,
         device: Device::Cpu,
         precision: Precision::Fp32,
-        downgrade: Some(format!(
-            "Running {} on the CPU: only {:.0} MB of VRAM is free, which is not \
-             enough for any installed model.",
-            chosen.label, budget_mb
-        )),
+        downgrade: Some(fallback_note),
+        error: None,
     }
 }
 
@@ -807,6 +1039,8 @@ pub fn build_attempts(
         None => AUTO_ORDER.as_slice(),
     };
 
+    // Keep each rung's measured RTF alongside it, for ordering below.
+    let mut rtfs: Vec<Option<f32>> = Vec::new();
     for &precision in order {
         if !manifest.supports(device, precision) {
             continue;
@@ -816,6 +1050,7 @@ pub fn build_attempts(
             .vram_mb
             .unwrap_or_else(|| manifest.estimated_vram_mb(precision));
         if peak <= budget_mb {
+            rtfs.push(peaks.rtf);
             attempts.push(LoadAttempt {
                 device,
                 precision,
@@ -823,6 +1058,16 @@ pub fn build_attempts(
                 measured: peaks.vram_mb.is_some(),
             });
         }
+    }
+    // A measurement outranks an estimate — and the BF16-first order above is
+    // itself an estimate ("INT8 pays dequantization overhead at batch size
+    // 1"). When every viable rung has been timed on this hardware, the
+    // measured fastest goes first; a partial table cannot rank the unmeasured
+    // rungs, so it changes nothing.
+    if attempts.len() > 1 && rtfs.iter().all(Option::is_some) {
+        let mut ranked: Vec<(Option<f32>, LoadAttempt)> = rtfs.into_iter().zip(attempts).collect();
+        ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        attempts = ranked.into_iter().map(|(_, attempt)| attempt).collect();
     }
     attempts
 }

@@ -14,6 +14,13 @@ fn test_sqlite_history_store_full_lifecycle() {
 
     // 1. Insert multiple entries
     let entry1 = HistoryEntry {
+        audio_available: false,
+        audio_expires_at: None,
+        command_input: None,
+        kind: "dictation".into(),
+        source: "dictation".into(),
+        pinned: false,
+        tags: String::new(),
         id: "id-1".into(),
         created_at: "2026-08-21T10:00:00Z".into(),
         duration_ms: 3200,
@@ -31,6 +38,13 @@ fn test_sqlite_history_store_full_lifecycle() {
     };
 
     let entry2 = HistoryEntry {
+        audio_available: false,
+        audio_expires_at: None,
+        command_input: None,
+        kind: "dictation".into(),
+        source: "dictation".into(),
+        pinned: false,
+        tags: String::new(),
         id: "id-2".into(),
         created_at: "2026-08-21T11:00:00Z".into(),
         duration_ms: 4500,
@@ -143,7 +157,6 @@ fn test_vad_speech_and_silence_detection() {
         VadConfig {
             energy_threshold: 0.02,
             silence_timeout_ms: 300, // 300ms = 4800 samples at 16k
-            pre_roll_ms: 100,
             post_roll_ms: 100,
         },
         16000,

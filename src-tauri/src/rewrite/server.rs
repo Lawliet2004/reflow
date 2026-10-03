@@ -56,10 +56,11 @@ const GPU_WEIGHT_SAFETY_FACTOR: f32 = 1.10;
 /// layers avoid CPU/GPU transfers and therefore minimize expected steady-state
 /// latency. When all weights fit, 99 asks llama.cpp for full offload; otherwise
 /// a positive model-specific layer count preserves partial offload.
-fn latency_optimized_gpu_layers(
+pub(crate) fn latency_optimized_gpu_layers(
     flow_model: &str,
     caps: &Capabilities,
     configured_reserve_mb: u32,
+    context_size: u32,
 ) -> u32 {
     if caps.primary_gpu().is_none() {
         return 0;
@@ -83,8 +84,14 @@ fn latency_optimized_gpu_layers(
     } else {
         vram_reserve_mb(caps)
     };
-    let layer_budget_mb =
-        free_vram_mb - reserve_mb - GPU_TRANSIENT_HEADROOM_MB - GPU_RUNTIME_OVERHEAD_MB;
+    // A conservative cache/workspace reserve until a measured co-resident
+    // calibration exists. Increasing context must consume admission headroom.
+    let context_workspace_mb = context_size.clamp(256, 32_768) as f32 * 0.125;
+    let layer_budget_mb = free_vram_mb
+        - reserve_mb
+        - GPU_TRANSIENT_HEADROOM_MB
+        - GPU_RUNTIME_OVERHEAD_MB
+        - context_workspace_mb;
     if layer_budget_mb <= 0.0 {
         return 0;
     }
@@ -132,6 +139,41 @@ impl LlamaMode {
     pub fn is_gpu(&self) -> bool {
         matches!(self, LlamaMode::Gpu(_))
     }
+}
+
+/// Threads to hand `llama-server` via `--threads`, or `None` to keep the
+/// server's own default.
+///
+/// `-t` sizes llama.cpp's CPU worker pool, so the right pool is the physical
+/// core count whenever the CPU runs real layers — CPU mode, or a partial GPU
+/// offload. SMT siblings buy almost nothing on memory-bound matmul, and on a
+/// 6-core/12-thread part the logical count would feed the pool twice the
+/// useful width. When every layer is offloaded the pool idles, so the flag is
+/// left off entirely and the server keeps its own default.
+pub(crate) fn llama_server_threads(
+    mode: &LlamaMode,
+    n_gpu_layers: u32,
+    model_gpu_layers: u32,
+    caps: &Capabilities,
+) -> Option<usize> {
+    let cpu_runs_layers = match mode {
+        LlamaMode::Cpu => true,
+        LlamaMode::Gpu(_) => {
+            n_gpu_layers < FULL_GPU_OFFLOAD
+                && (model_gpu_layers == 0 || n_gpu_layers < model_gpu_layers)
+        }
+    };
+    if !cpu_runs_layers {
+        return None;
+    }
+    // `inference_threads` (logical - 1) is the codebase's conservative answer
+    // when the OS will not report a physical count.
+    Some(
+        caps.cpu
+            .physical_cores
+            .unwrap_or_else(|| caps.cpu.inference_threads())
+            .max(1),
+    )
 }
 
 pub const FLOW_MODELS: [FlowModelSpec; 3] = [
@@ -332,6 +374,8 @@ impl StderrRing {
 }
 
 pub struct FlowRuntime {
+    /// Serialize readiness changes from startup, settings, and dictation tasks.
+    operation: Mutex<()>,
     child: Mutex<Option<Child>>,
     pub client: parking_lot::RwLock<FlowClient>,
     pub active_model: RwLock<Option<String>>,
@@ -364,6 +408,7 @@ pub struct FlowRuntime {
 impl Default for FlowRuntime {
     fn default() -> Self {
         Self {
+            operation: Mutex::new(()),
             child: Mutex::new(None),
             client: parking_lot::RwLock::new(FlowClient::new_missing()),
             active_model: RwLock::new(None),
@@ -391,6 +436,11 @@ impl FlowRuntime {
         runtime
     }
 
+    #[cfg(test)]
+    pub(crate) fn attach_test_child(&self, child: Child) {
+        *self.child.lock() = Some(child);
+    }
+
     fn model_path(&self, model_id: &str) -> PathBuf {
         self.model_paths
             .as_ref()
@@ -399,7 +449,15 @@ impl FlowRuntime {
     }
 
     pub fn status_ready(&self) -> bool {
-        self.client.read().base_url.is_some()
+        if self.client.read().base_url.is_none() {
+            return false;
+        }
+        // A cached URL is not evidence that its process survived. Without
+        // checking the child, ensure() kept cache-hitting after a server crash.
+        self.child
+            .lock()
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
     }
 
     pub fn active_model(&self) -> Option<String> {
@@ -422,11 +480,23 @@ impl FlowRuntime {
         self.last_error.read().clone()
     }
 
-    pub fn shutdown(&self) {
-        if let Some(mut child) = self.child.lock().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+    /// Apply the user's request deadline to the live client. A timeout is a
+    /// client-side setting, not server identity, so it is deliberately kept
+    /// out of `RuntimeRequest` — changing it must not relaunch llama-server.
+    /// `0` means unset: keep the shipped default.
+    pub fn set_deadline_ms(&self, deadline_ms: u64) {
+        if deadline_ms > 0 {
+            self.client.write().timeout = Duration::from_millis(deadline_ms);
         }
+    }
+
+    pub fn shutdown(&self) {
+        let _operation = self.operation.lock();
+        self.shutdown_inner();
+    }
+
+    fn shutdown_inner(&self) {
+        self.stop_child();
         *self.client.write() = FlowClient::new_missing();
         *self.active_model.write() = None;
         *self.active_request.write() = None;
@@ -434,6 +504,13 @@ impl FlowRuntime {
         *self.active_n_gpu_layers.write() = None;
         self.is_starting.store(false, Ordering::Release);
         *self.last_error.write() = None;
+    }
+
+    fn stop_child(&self) {
+        if let Some(mut child) = self.child.lock().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     /// Recent `llama-server` stderr, for the diagnostics panel.
@@ -466,8 +543,10 @@ impl FlowRuntime {
         vram_reserve_mb: u32,
         context_size: u32,
     ) -> Result<(), String> {
+        let _runtime_launch = crate::rewrite::runtime_inventory::launch_guard()?;
+        let _operation = self.operation.lock();
         if flow_model == "none" {
-            self.shutdown();
+            self.shutdown_inner();
             return Ok(());
         }
         let mode = pick_llama_mode(compute_backend);
@@ -507,7 +586,7 @@ impl FlowRuntime {
             return Ok(());
         }
         if self.status_ready() || self.active_model.read().is_some() {
-            self.shutdown();
+            self.shutdown_inner();
         }
         // Mark the runtime as starting so the UI can show a transient
         // "loading" state. Cleared by `shutdown()` on every exit path.
@@ -537,6 +616,7 @@ impl FlowRuntime {
                     flow_model,
                     &capabilities_uncached(),
                     vram_reserve_mb,
+                    context_size,
                 ),
             }
         } else {
@@ -664,7 +744,14 @@ impl FlowRuntime {
                     continue;
                 }
             };
-            match self.launch_on_port(flow_model, mode, override_layers, context_size, port) {
+            let outcome =
+                self.launch_on_port(flow_model, mode, override_layers, context_size, port);
+            // All launch failures must reap the previous attempt before a
+            // retry can overwrite its child handle and leave an orphan.
+            if outcome.is_err() {
+                self.stop_child();
+            }
+            match outcome {
                 Ok(()) => return Ok(()),
                 Err(failure) if failure.is_port_conflict() && attempt + 1 < PORT_ATTEMPTS => {
                     log::warn!("llama-server could not bind port {port}; retrying on a new port");
@@ -721,6 +808,18 @@ impl FlowRuntime {
             // signal on failure was "exited before becoming ready", with no
             // llama.cpp output at all.
             .stderr(Stdio::piped());
+        // Pin `--threads` to the physical core count when the CPU runs real
+        // layers; leave it off when the whole model is on the GPU. The probe
+        // is cached — `ensure()` read it moments ago for the launch decision,
+        // so port-conflict retries do not re-probe.
+        if let Some(threads) = llama_server_threads(
+            mode,
+            n_layers,
+            flow_model_spec(flow_model).gpu_layer_count,
+            &capabilities(),
+        ) {
+            cmd.arg("--threads").arg(threads.to_string());
+        }
         if let Some((_, mmproj)) = &self.model_paths {
             cmd.arg("--mmproj").arg(mmproj);
             if !mode.is_gpu() {
@@ -731,7 +830,10 @@ impl FlowRuntime {
         // can layer-offload around this with `--n-gpu-layers`; explicit
         // `--tensor-split` is intentionally out of scope for v1.
         if mode.is_gpu() {
-            cmd.arg("--main-gpu").arg("0");
+            cmd.arg("--main-gpu")
+                .arg("0")
+                .arg("--split-mode")
+                .arg("none");
         }
         #[cfg(windows)]
         {
@@ -772,6 +874,7 @@ impl FlowRuntime {
         let timeout_secs: u64 = 30;
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
         let http = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_millis(300))
             .build()
             .map_err(|e| FlowLaunchFailure::SpawnFailed(e.to_string()))?;
@@ -994,7 +1097,7 @@ mod tests {
         );
 
         assert_eq!(
-            latency_optimized_gpu_layers("qwen3.5-0.8b", &caps, 0),
+            latency_optimized_gpu_layers("qwen3.5-0.8b", &caps, 0, 1024),
             FULL_GPU_OFFLOAD,
             "roomy VRAM should use full offload"
         );
@@ -1007,11 +1110,16 @@ mod tests {
         // model being 508 MB rather than the 790 MB one this replaced.
         let layers = flow_model_spec("qwen3.5-0.8b").gpu_layer_count;
         caps.gpus[0].free_vram_mb = 1300.0;
-        let partial = latency_optimized_gpu_layers("qwen3.5-0.8b", &caps, 0);
+        let partial = latency_optimized_gpu_layers("qwen3.5-0.8b", &caps, 0, 1024);
         assert!(
             (1..layers).contains(&partial),
             "constrained VRAM should retain a useful partial offload, \
-             got {partial} of {layers}"
+            got {partial} of {layers}"
+        );
+        let large_context = latency_optimized_gpu_layers("qwen3.5-0.8b", &caps, 0, 8192);
+        assert!(
+            large_context < partial,
+            "larger contexts must leave less memory for weights"
         );
     }
 
@@ -1067,6 +1175,46 @@ mod tests {
         });
         runtime.shutdown();
         assert!(runtime.active_request.read().is_none());
+    }
+
+    #[test]
+    fn a_cached_url_without_a_live_child_is_not_ready() {
+        let runtime = FlowRuntime::default();
+        *runtime.client.write() =
+            FlowClient::new_url("http://127.0.0.1:9".into(), Duration::from_secs(1));
+        assert!(!runtime.status_ready());
+    }
+
+    #[test]
+    fn an_exited_child_invalidates_runtime_readiness() {
+        #[cfg(windows)]
+        let mut cmd = {
+            use std::os::windows::process::CommandExt;
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "exit", "0"]);
+            cmd.creation_flags(0x08000000);
+            cmd
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "exit 0"]);
+            cmd
+        };
+        let mut child = cmd
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        let runtime = FlowRuntime::default();
+        *runtime.client.write() =
+            FlowClient::new_url("http://127.0.0.1:9".into(), Duration::from_secs(1));
+        *runtime.child.lock() = Some(child);
+        assert!(
+            !runtime.status_ready(),
+            "crashed server must not keep hitting the request cache"
+        );
     }
 
     #[test]
@@ -1147,6 +1295,36 @@ mod tests {
         assert!(!is_managed_orphan(Some(&owned), managed, 1, 1, false));
         assert!(!is_managed_orphan(Some(other), managed, 42, 1, false));
         assert!(!is_managed_orphan(None, managed, 42, 1, false));
+    }
+
+    /// `--threads` must be the physical core count when the CPU does real
+    /// work, and absent when the GPU holds the whole model.
+    #[test]
+    fn llama_threads_track_physical_cores_and_offload() {
+        let mut caps = Capabilities {
+            cpu: crate::capability::CpuInfo {
+                physical_cores: Some(6),
+                logical_cores: 12,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // CPU-only: physical, not logical.
+        assert_eq!(llama_server_threads(&LlamaMode::Cpu, 0, 0, &caps), Some(6));
+        // Partial offload still runs the remaining layers on the CPU.
+        let gpu = LlamaMode::Gpu("Test GPU".into());
+        assert_eq!(llama_server_threads(&gpu, 12, 24, &caps), Some(6));
+        // Full offload, either via the 99 convention or an explicit layer
+        // count equal to the model's: `-t` drives nothing, so it stays off.
+        assert_eq!(
+            llama_server_threads(&gpu, FULL_GPU_OFFLOAD, 24, &caps),
+            None
+        );
+        assert_eq!(llama_server_threads(&gpu, 24, 24, &caps), None);
+        // An OS that will not report physical cores gets the conservative
+        // logical-minus-one answer the rest of the codebase already uses.
+        caps.cpu.physical_cores = None;
+        assert_eq!(llama_server_threads(&LlamaMode::Cpu, 0, 0, &caps), Some(11));
     }
 
     #[test]

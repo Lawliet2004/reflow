@@ -4,10 +4,51 @@ use crate::state::SystemMetrics;
 
 use super::session;
 
+static APP_DIR_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 pub struct PlatformSys;
 
 impl PlatformSys {
+    /// Called before bootstrap by the --portable CLI flag. Once selected, all
+    /// settings, history, models, runtimes and app caches share this directory.
+    pub fn enable_portable() -> Result<PathBuf, String> {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let directory = Self::portable_dir_for_executable(&executable)?;
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("Cannot create portable data directory: {error}"))?;
+        APP_DIR_OVERRIDE
+            .set(directory.clone())
+            .map_err(|_| "The application data directory was already selected".to_string())?;
+        // Download helpers inherit these locations; portable mode must not
+        // scatter model/package caches into the user's regular profile.
+        for (variable, child) in [
+            ("HF_HOME", "huggingface"),
+            ("TORCH_HOME", "torch"),
+            ("XDG_CACHE_HOME", "xdg"),
+            ("PIP_CACHE_DIR", "pip"),
+            ("UV_CACHE_DIR", "uv"),
+        ] {
+            std::env::set_var(variable, directory.join("cache").join(child));
+        }
+        Ok(directory)
+    }
+
+    pub fn is_portable() -> bool {
+        APP_DIR_OVERRIDE.get().is_some()
+    }
+
+    pub fn portable_dir_for_executable(executable: &std::path::Path) -> Result<PathBuf, String> {
+        executable
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|parent| parent.join("reflow-data"))
+            .ok_or_else(|| "The executable directory could not be resolved".into())
+    }
+
     pub fn get_app_dir() -> PathBuf {
+        if let Some(directory) = APP_DIR_OVERRIDE.get() {
+            return directory.clone();
+        }
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("reflow")

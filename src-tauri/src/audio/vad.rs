@@ -1,10 +1,7 @@
-use std::collections::VecDeque;
-
 #[derive(Debug, Clone)]
 pub struct VadConfig {
     pub energy_threshold: f32,
     pub silence_timeout_ms: u64,
-    pub pre_roll_ms: u64,
     pub post_roll_ms: u64,
 }
 
@@ -13,7 +10,6 @@ impl Default for VadConfig {
         Self {
             energy_threshold: 0.015,
             silence_timeout_ms: 1500,
-            pre_roll_ms: 300,
             post_roll_ms: 500,
         }
     }
@@ -21,8 +17,6 @@ impl Default for VadConfig {
 
 pub struct VoiceActivityDetector {
     config: VadConfig,
-    pre_roll_buffer: VecDeque<f32>,
-    max_pre_roll_samples: usize,
     post_roll_samples_remaining: usize,
     max_post_roll_samples: usize,
     consecutive_silence_samples: usize,
@@ -33,8 +27,6 @@ pub struct VoiceActivityDetector {
 
 impl VoiceActivityDetector {
     pub fn new(config: VadConfig, sample_rate: u32) -> Self {
-        let max_pre_roll_samples =
-            ((config.pre_roll_ms as f32 / 1000.0) * sample_rate as f32) as usize;
         let max_post_roll_samples =
             ((config.post_roll_ms as f32 / 1000.0) * sample_rate as f32) as usize;
         let silence_timeout_samples =
@@ -42,8 +34,6 @@ impl VoiceActivityDetector {
 
         Self {
             config,
-            pre_roll_buffer: VecDeque::with_capacity(max_pre_roll_samples),
-            max_pre_roll_samples,
             post_roll_samples_remaining: 0,
             max_post_roll_samples,
             consecutive_silence_samples: 0,
@@ -108,25 +98,11 @@ impl VoiceActivityDetector {
             }
         }
 
-        // Maintain pre-roll buffer
-        for &s in chunk {
-            if self.pre_roll_buffer.len() >= self.max_pre_roll_samples {
-                self.pre_roll_buffer.pop_front();
-            }
-            self.pre_roll_buffer.push_back(s);
-        }
-
         let active = frame_is_speech || self.post_roll_samples_remaining > 0;
         (active, auto_stop, rms)
     }
 
-    /// Extract pre-roll audio buffer on speech onset
-    pub fn drain_pre_roll(&mut self) -> Vec<f32> {
-        self.pre_roll_buffer.drain(..).collect()
-    }
-
     pub fn reset(&mut self) {
-        self.pre_roll_buffer.clear();
         self.consecutive_silence_samples = 0;
         self.post_roll_samples_remaining = 0;
         self.is_speaking = false;

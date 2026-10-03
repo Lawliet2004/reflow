@@ -5,6 +5,7 @@ data class ServerConnection(
     val port: Int,
     val token: String,
     val serverName: String,
+    val certificateSha256: String = "",
 )
 
 data class HistoryItem(

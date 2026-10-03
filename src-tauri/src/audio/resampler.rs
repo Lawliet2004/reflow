@@ -62,7 +62,10 @@ impl AudioResampler {
             pos += step;
         }
 
-        let keep = pos.floor() as usize;
+        // A downsampling step can pass the end of this callback's input.
+        // Carry that whole-sample advance into the next callback as well as
+        // its fractional part; otherwise small chunks change the sample rate.
+        let keep = (pos.floor() as usize).min(src.len());
         self.leftover = if keep < src.len() {
             src[keep..].to_vec()
         } else {
@@ -75,7 +78,9 @@ impl AudioResampler {
     /// Converts little-endian 16-bit PCM bytes to f32 samples in [-1, 1].
     pub fn pcm16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
         bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| {
                 let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
                 sample as f32 / 32768.0
@@ -134,6 +139,39 @@ mod tests {
             parts.len()
         );
         assert!(parts.len() > 15000 && parts.len() < 17000);
+    }
+
+    #[test]
+    fn streaming_downsampling_preserves_phase_with_tiny_chunks() {
+        let src: Vec<f32> = (0..480).map(|i| i as f32).collect();
+        for chunk_size in [1, 2, 4, 5, 7, 16, 31] {
+            let mut offline = AudioResampler::new(48000, 1);
+            let expected = offline.resample_f32(&src);
+            let mut streamed = AudioResampler::new(48000, 1);
+            let mut actual = Vec::new();
+            for chunk in src.chunks(chunk_size) {
+                actual.extend(streamed.resample_f32(chunk));
+            }
+            assert_eq!(actual, expected, "chunk size {chunk_size}");
+        }
+    }
+
+    #[test]
+    fn streaming_noninteger_downsampling_matches_sample_values() {
+        let src: Vec<f32> = (0..4410).map(|i| i as f32).collect();
+        let mut offline = AudioResampler::new(44100, 1);
+        let expected = offline.resample_f32(&src);
+        for chunk_size in [1, 2, 5, 17, 512] {
+            let mut streamed = AudioResampler::new(44100, 1);
+            let actual: Vec<f32> = src
+                .chunks(chunk_size)
+                .flat_map(|chunk| streamed.resample_f32(chunk))
+                .collect();
+            assert_eq!(actual.len(), expected.len(), "chunk size {chunk_size}");
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert!((actual - expected).abs() < 0.001, "chunk size {chunk_size}");
+            }
+        }
     }
 
     #[test]

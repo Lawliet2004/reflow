@@ -1,5 +1,14 @@
 import React, { useEffect, useState } from "react";
-import { Mic, Square, Copy, Loader2, ArrowUpRight, ShieldCheck, RotateCcw } from "lucide-react";
+import {
+  Mic,
+  Square,
+  Copy,
+  Check,
+  Loader2,
+  ArrowUpRight,
+  ShieldCheck,
+  RotateCcw,
+} from "lucide-react";
 import {
   AppState,
   AppSettings,
@@ -13,15 +22,21 @@ import {
   isModelReady,
 } from "../types";
 import { api } from "../services/tauriApi";
+import { FileTranscription, FileTranscriptionController } from "./FileTranscription";
+import { LanguageOptions } from "./LanguageOptions";
 import { derivePhase, BackendStage } from "./hud/stages";
 import { Waveform } from "./Waveform";
 import { LatencyWaterfall } from "./LatencyWaterfall";
+import { StageRail } from "./hud/StageRail";
+import { relativeTime } from "../historyDisplay";
 
 interface DictateHomeProps {
   appState: AppState;
   settings: AppSettings;
   modelStatus: ModelStatus | null;
   transcript: StreamingTranscriptPayload;
+  originalText?: string;
+  asrProgress?: { completed: number; total: number } | null;
   latencyMetrics: LatencyMetrics | null;
   latencyPercentiles: LatencyPercentiles | null;
   onStartRecording: () => void;
@@ -30,6 +45,7 @@ interface DictateHomeProps {
   onOpenHistory: () => void;
   onOpenSettings?: () => void;
   backendStage?: BackendStage | null;
+  fileTranscription?: FileTranscriptionController;
 }
 const CLEANUP: { id: CleanupLevel; label: string; description: string }[] = [
   { id: "raw", label: "Original", description: "Keep the words exactly as recognized." },
@@ -42,6 +58,8 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   settings,
   modelStatus,
   transcript,
+  originalText,
+  asrProgress,
   latencyMetrics,
   latencyPercentiles,
   onStartRecording,
@@ -50,14 +68,39 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   onOpenHistory,
   onOpenSettings,
   backendStage = null,
+  fileTranscription,
 }) => {
   const [draft, setDraft] = useState<{ source: string; text: string } | null>(null);
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
   const [seconds, setSeconds] = useState(0);
   const isRecording = appState === "RECORDING";
-  const isProcessing = appState === "PROCESSING";
+  useEffect(() => {
+    if (!isRecording) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && settings.hotkeys?.cancel !== null) {
+        void api
+          .cancelRecording()
+          .catch((error: unknown) => setFeedback({ error: true, text: String(error) }));
+      }
+    };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, [isRecording, settings.hotkeys?.cancel]);
+  const [previousRecording, setPreviousRecording] = useState(isRecording);
+  // Reset synchronously on a new session, including global-shortcut starts.
+  // A deferred effect can be cancelled by a fast stop and retain old edits.
+  if (previousRecording !== isRecording) {
+    setPreviousRecording(isRecording);
+    if (isRecording) {
+      setDraft(null);
+      setSeconds(0);
+    }
+  }
+  const isProcessing = appState === "PROCESSING" || appState === "INJECTING";
   const modelReady = isModelReady(modelStatus);
+  const canStart = modelReady && (appState === "READY" || appState === "IDLE");
   const editableText = draft?.source === transcript.full_text ? draft.text : transcript.full_text;
   const cleanup = settings.cleanup_level ?? "light";
   const phase = derivePhase(appState, transcript, null, backendStage);
@@ -78,27 +121,65 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
     if (!isRecording) return;
     const started = Date.now();
     const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+    };
   }, [isRecording]);
   useEffect(() => {
     if (!feedback) return;
     const timer = setTimeout(() => setFeedback(null), 5000);
     return () => clearTimeout(timer);
   }, [feedback]);
-  const copy = async (text: string) => {
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(null), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  // Success is confirmed on the button that was pressed; only failures get a message.
+  const copy = async (text: string, key: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      setFeedback({ error: false, text: "Copied to clipboard." });
+      setFeedback(null);
+      setCopied(key);
     } catch {
+      setCopied(null);
       setFeedback({ error: true, text: "Could not copy. Select the text and copy it manually." });
     }
   };
+  const selectCleanup = (id: CleanupLevel) =>
+    onUpdateSettings({
+      cleanup_level: id,
+      intelligence_tier:
+        id === "raw" || id === "light"
+          ? "raw_verbatim"
+          : id === "high"
+            ? "deep_context"
+            : "smart_flow",
+      ...(id !== "raw" && id !== "light" && settings.preset === "fast"
+        ? { preset: "auto" as const }
+        : {}),
+    });
+  // Radio-group keyboard model: arrows move the selection, Tab leaves the group.
+  const onCleanupKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const index =
+      (CLEANUP.findIndex((item) => item.id === cleanup) + step + CLEANUP.length) % CLEANUP.length;
+    selectCleanup(CLEANUP[index].id);
+    (event.currentTarget.children[index] as HTMLElement | undefined)?.focus();
+  };
+  const polishEnabled = cleanup === "medium" || cleanup === "high";
   const status = isRecording
     ? "Listening to you"
     : isProcessing
-      ? phase === "polish"
-        ? "A final polish"
-        : "Finding your words"
+      ? appState === "INJECTING"
+        ? "Inserting your words"
+        : phase === "polish"
+          ? "A final polish"
+          : asrProgress?.total
+            ? `Transcribing segment ${Math.min(asrProgress.completed + 1, asrProgress.total)} of ${asrProgress.total}`
+            : "Finding your words"
       : modelReady
         ? "Ready when you are"
         : modelStatus?.is_downloading
@@ -107,17 +188,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   return (
     <div className="workspace-page dictate-page animate-fade-rise">
       <header className="page-heading">
-        <div>
-          <p className="eyebrow">YOUR PERSONAL DICTATION SPACE</p>
-          <h1>
-            Speak freely.
-            <br />
-            <span className="text-muted">Let your words flow.</span>
-          </h1>
-        </div>
-        <span className="privacy-label">
-          <ShieldCheck size={15} /> On-device by design
-        </span>
+        <h1>Speak freely.</h1>
       </header>
       <section className="dictation-studio" aria-label="Dictation studio">
         <div className="studio-toolbar">
@@ -136,15 +207,15 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
               })
             }
           >
-            <option value="auto">Auto-detect</option>
-            <option value="en">English</option>
-            <option value="hi">Hindi</option>
+            <LanguageOptions />
           </select>
         </div>
         <div className="studio-center">
           <button
             className={`record-button ${isRecording ? "is-recording" : ""}`}
-            disabled={isProcessing || (!isRecording && !modelReady)}
+            // RMS speech sits around 0.05-0.3; the same 3.4x gain as the waveform.
+            style={{ "--level": Math.min(1, transcript.audio_level * 3.4) } as React.CSSProperties}
+            disabled={isProcessing || (!isRecording && !canStart)}
             aria-label={isRecording ? "Stop recording" : "Start recording"}
             onClick={() => {
               if (isRecording) onStopRecording();
@@ -163,6 +234,19 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
             )}
           </button>
           <h2>{status}</h2>
+          {isRecording && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => {
+                void api
+                  .cancelRecording()
+                  .catch((error: unknown) => setFeedback({ error: true, text: String(error) }));
+              }}
+            >
+              Cancel · Esc
+            </button>
+          )}
           {isRecording ? (
             <div className="flex items-center gap-3">
               <Waveform level={transcript.audio_level} active barCount={24} height={24} />
@@ -171,7 +255,9 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
               </span>
             </div>
           ) : isProcessing ? (
-            <p>Your transcript will appear below.</p>
+            <div className="stage-track" data-phase={phase}>
+              <StageRail phase={phase} polishEnabled={polishEnabled} />
+            </div>
           ) : modelReady ? (
             <p className="shortcut-hint">
               {!settings.push_to_talk ? "Press" : "Hold"}{" "}
@@ -200,33 +286,55 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
           </span>
         </div>
       </section>
+      {settings.meeting_mode && (
+        <section
+          className="panel p-4 flex items-center justify-between gap-4"
+          aria-label="Meeting recording"
+        >
+          <div>
+            <h2 className="font-semibold">Capture a meeting</h2>
+            <p className="text-sm text-muted">
+              Record your mic and computer playback. Saved to History without pasting.
+            </p>
+          </div>
+          <button
+            className="btn btn-secondary shrink-0"
+            disabled={!canStart}
+            onClick={() => {
+              void api
+                .startMeeting()
+                .catch((e: unknown) => setFeedback({ error: true, text: String(e) }));
+            }}
+          >
+            Record meeting
+          </button>
+        </section>
+      )}
       <section className="cleanup-strip" aria-label="Writing preferences">
         <div>
           <h2>Make it sound like you.</h2>
           <p>{CLEANUP.find((item) => item.id === cleanup)?.description}</p>
         </div>
-        <div className="segmented-control" aria-label="Cleanup level">
+        <div
+          className="segmented-control"
+          role="radiogroup"
+          aria-label="Cleanup level"
+          tabIndex={-1}
+          onKeyDown={onCleanupKey}
+        >
           {CLEANUP.map((item) => (
             <button
               key={item.id}
-              aria-pressed={cleanup === item.id}
-              onClick={() =>
-                onUpdateSettings({
-                  cleanup_level: item.id,
-                  intelligence_tier:
-                    item.id === "raw" || item.id === "light"
-                      ? "raw_verbatim"
-                      : settings.intelligence_tier === "deep_context"
-                        ? "deep_context"
-                        : "smart_flow",
-                })
-              }
+              role="radio"
+              aria-checked={cleanup === item.id}
+              tabIndex={cleanup === item.id ? 0 : -1}
+              onClick={() => selectCleanup(item.id)}
             >
               {item.label}
             </button>
           ))}
         </div>
-        {(cleanup === "medium" || cleanup === "high") && (
+        {polishEnabled && (
           <label className="flex items-center gap-2 text-sm text-muted">
             Writing style
             <select
@@ -258,6 +366,13 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
           aria-label="Transcript"
           value={editableText}
           readOnly={isRecording || isProcessing}
+          aria-keyshortcuts="Control+Enter"
+          onKeyDown={(event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && editableText.trim()) {
+              event.preventDefault();
+              void copy(editableText, "main");
+            }
+          }}
           onChange={(event) => setDraft({ source: transcript.full_text, text: event.target.value })}
           placeholder="Start speaking. Your transcript will appear here, ready to edit and copy into any app."
         />
@@ -271,25 +386,45 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
             <RotateCcw size={15} />
           </button>
           <div className="flex items-center gap-2">
+            {originalText !== undefined && originalText !== editableText && (
+              <button
+                className="btn btn-ghost"
+                disabled={isRecording || isProcessing}
+                onClick={() => setDraft({ source: transcript.full_text, text: originalText })}
+              >
+                Use original
+              </button>
+            )}
+            {draft?.source === transcript.full_text && (
+              <button
+                className="btn btn-ghost"
+                disabled={isRecording || isProcessing}
+                onClick={() => setDraft(null)}
+              >
+                Undo transcript edit
+              </button>
+            )}
             <button
-              className="btn btn-primary"
+              className="btn btn-primary min-w-[92px]"
               disabled={!editableText.trim()}
-              onClick={() => copy(editableText)}
+              title="Copy (Ctrl+Enter)"
+              aria-keyshortcuts="Control+Enter"
+              onClick={() => copy(editableText, "main")}
             >
-              <Copy size={14} />
-              Copy
+              {copied === "main" ? <Check size={14} /> : <Copy size={14} />}
+              {copied === "main" ? "Copied" : "Copy"}
             </button>
           </div>
         </footer>
       </section>
       {feedback && (
-        <p
-          className={`action-feedback ${feedback.error ? "text-danger" : "text-muted"}`}
-          role={feedback.error ? "alert" : "status"}
-        >
+        <p className="action-feedback text-danger" role="alert">
           {feedback.text}
         </p>
       )}
+      <span className="sr-only" role="status">
+        {copied ? "Copied to clipboard." : ""}
+      </span>
       <section className="recent-section">
         <header>
           <h2>Recently said</h2>
@@ -302,18 +437,22 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
             {recent.map((entry) => (
               <div key={entry.id}>
                 <p>{entry.final_transcript}</p>
-                <time dateTime={entry.created_at}>
-                  {new Date(entry.created_at).toLocaleDateString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                  })}
+                <time
+                  dateTime={entry.created_at}
+                  title={new Date(entry.created_at).toLocaleString()}
+                >
+                  {relativeTime(entry.created_at)}
                 </time>
                 <button
                   className="icon-btn"
                   aria-label="Copy recent transcript"
-                  onClick={() => copy(entry.final_transcript)}
+                  onClick={() => copy(entry.final_transcript, String(entry.id))}
                 >
-                  <Copy size={14} />
+                  {copied === String(entry.id) ? (
+                    <Check size={14} className="text-success" />
+                  ) : (
+                    <Copy size={14} />
+                  )}
                 </button>
               </div>
             ))}
@@ -324,6 +463,11 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
           </p>
         )}
       </section>
+      <FileTranscription
+        onOpenHistory={onOpenHistory}
+        disabled={isRecording || isProcessing}
+        controller={fileTranscription}
+      />
       {settings.developer_mode && latencyMetrics && (
         <details className="panel p-5">
           <summary className="cursor-pointer text-sm font-medium">Dictation diagnostics</summary>

@@ -9,6 +9,25 @@ src-tauri/target/
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Local models, history and portable application data
+/models/
+/reflow-data/
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
 # Python bytecode and local virtual environments
 __pycache__/
@@ -20,6 +39,13 @@ venv/
 scripts/test_speech.wav
 src-tauri/test_*.txt
 test_masked.png
+*.pdb
+*.dmp
+
+# Raw local verification output can contain machine paths and diagnostics.
+/docs/*.log
+/docs/audit-*.json
+/docs/implementation-*.json
 
 # Operating-system and editor files
 .DS_Store

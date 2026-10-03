@@ -1,24 +1,32 @@
 pub mod api;
 pub mod asr;
+pub mod assistant_tools;
 pub mod audio;
 pub mod benchmark;
+pub mod calibration;
 pub mod capability;
 pub mod commands;
 pub mod context;
 pub mod dory;
+pub mod expansion_commands;
+pub mod file_jobs;
 pub mod formatting;
 pub mod history;
 pub mod hotkey;
+pub mod idle_policies;
 pub mod injection;
 pub mod model;
+pub mod network_policy;
 pub mod overlay;
 pub mod pairing;
 pub mod platform;
 pub mod profile;
 pub mod rewrite;
+pub mod runtime;
 pub mod session;
 pub mod settings;
 pub mod state;
+pub mod transfer;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -41,6 +49,12 @@ pub fn run() {
     let asr_handle = context.asr_handle.clone();
     let hotkey_error = std::sync::Arc::clone(&context.hotkey_error);
 
+    let mut tauri_context = tauri::generate_context!();
+    if crate::platform::PlatformSys::is_portable() {
+        for window in &mut tauri_context.config_mut().app.windows {
+            window.create = false;
+        }
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // A second launch must not steal or block the global hotkey —
@@ -77,6 +91,40 @@ pub fn run() {
         )
         .manage(context.clone())
         .setup(move |app| {
+            if crate::platform::PlatformSys::is_portable() {
+                for window in &app.config().app.windows {
+                    let builder = tauri::WebviewWindowBuilder::from_config(app, window)?;
+                    #[cfg(not(target_os = "macos"))]
+                    let builder = builder.data_directory(
+                        crate::platform::PlatformSys::get_app_dir()
+                            .join("webview")
+                            .join(&window.label),
+                    );
+                    builder.build()?;
+                }
+            }
+
+            // The app can remain in the tray for days. Expire audio there too.
+            let retention_context = context.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let ctx = retention_context.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        let _operation = ctx.settings_operation.lock();
+                        RetentionCleaner::apply_retention(
+                            &ctx.history_store,
+                            &ctx.settings_store.get().history_retention,
+                        )?;
+                        ctx.history_store.purge_expired_audio()
+                    })
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        result => log::error!("History/audio retention cleanup failed: {result:?}"),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            });
             if let Ok(resource_dir) = app.path().resource_dir() {
                 let _ = asr_handle.set_resource_dir_blocking(resource_dir);
             }
@@ -107,13 +155,8 @@ pub fn run() {
             // precision is whatever the user last picked — this is what
             // makes the "remember my precision across launches" guarantee
             // work.
-            if initial_settings.asr.keep_loaded
-                && context
-                    .model_manager
-                    .is_installed(&model::manager::runtime_model_id(
-                        &initial_settings.asr.model,
-                        &initial_settings.asr.runtime,
-                    ))
+            if (initial_settings.asr.keep_loaded || initial_settings.preset != "custom")
+                && crate::runtime::has_installed_asr(&context, &initial_settings)
             {
                 let ctx_load = context.clone();
                 tauri::async_runtime::spawn(async move {
@@ -155,18 +198,23 @@ pub fn run() {
                     // choice is a ceiling, and a model that cannot fit free VRAM is
                     // stepped down so the work stays on the GPU. See
                     // `profile::select_asr_load`.
-                    let (model_id, backend, precision) = commands::resolve_asr_load(&ctx_load);
-                    let model_dir = ctx_load.model_manager.get_model_dir(&model_id);
-                    let asr = ctx_load.asr_handle.clone();
-                    let result = asr
-                        .load_model_with_precision(
-                            &model_dir.to_string_lossy(),
-                            &backend,
-                            &precision,
-                        )
-                        .await;
-                    if let Err(err) = result {
-                        log::warn!("Deferred model load failed: {err}");
+                    let resolved = commands::resolve_asr_load(&ctx_load);
+                    match resolved {
+                        Ok((model_id, backend, precision)) => {
+                            let model_dir = ctx_load.model_manager.get_model_dir(&model_id);
+                            let asr = ctx_load.asr_handle.clone();
+                            let result = asr
+                                .load_model_with_precision(
+                                    &model_dir.to_string_lossy(),
+                                    &backend,
+                                    &precision,
+                                )
+                                .await;
+                            if let Err(err) = result {
+                                log::warn!("Deferred model load failed: {err}");
+                            }
+                        }
+                        Err(err) => log::warn!("Deferred model load rejected: {err}"),
                     }
                 });
             } else if !context
@@ -212,27 +260,38 @@ pub fn run() {
             // window creation.
             {
                 let intent = initial_settings.resolve_intent();
-                if intent.run_llm {
+                if intent.run_llm
+                    && initial_settings.preset != "fast"
+                    && initial_settings.refinement.keep_warm
+                {
                     let ctx_flow = context.clone();
-                    let flow_model = intent.flow_model.clone();
-                    let backend = initial_settings.refinement.device.clone();
-                    let override_layers = if initial_settings.refinement.gpu_layers < 0 {
-                        None
-                    } else {
-                        Some(initial_settings.refinement.gpu_layers.max(0) as u32)
-                    };
-                    let reserve = initial_settings.memory_policy.vram_reserve_mb;
-                    let context_size = initial_settings.refinement.context_size;
+                    let deadline_ms = initial_settings.refinement.deadline_ms;
                     tauri::async_runtime::spawn(async move {
+                        // The ASR load resolves at the sidecar's ack, not at
+                        // completion — its weights land on the GPU seconds to
+                        // minutes later. Budgeting refinement GPU layers from
+                        // free VRAM in that window over-allocates and the
+                        // llama-server either OOMs or lands on the CPU.
+                        commands::wait_for_asr_load_settled(&ctx_flow.asr_handle).await;
+                        let flow_rt = ctx_flow.flow_runtime.clone();
                         let result = tokio::task::spawn_blocking(move || {
+                            let effective = crate::runtime::current_settings(&ctx_flow);
+                            let intent = effective.resolve_intent();
+                            if !intent.run_llm || !effective.refinement.keep_warm {
+                                return Ok(());
+                            }
+                            let flow_model = intent.flow_model;
+                            let backend = effective.refinement.device;
+                            let override_layers = (effective.refinement.gpu_layers >= 0)
+                                .then_some(effective.refinement.gpu_layers.max(0) as u32);
                             let runtime = &ctx_flow.flow_runtime;
                             runtime
                                 .ensure(
                                     &flow_model,
                                     &backend,
                                     override_layers,
-                                    reserve,
-                                    context_size,
+                                    effective.memory_policy.vram_reserve_mb,
+                                    effective.refinement.context_size,
                                 )
                                 .map(|()| {
                                     runtime.warm_prompt_cache(&flow_model);
@@ -240,7 +299,10 @@ pub fn run() {
                         })
                         .await;
                         match result {
-                            Ok(Ok(())) => log::info!("Refinement runtime preloaded"),
+                            Ok(Ok(())) => {
+                                flow_rt.set_deadline_ms(deadline_ms);
+                                log::info!("Refinement runtime preloaded")
+                            }
                             Ok(Err(err)) => log::warn!(
                                 "Refinement runtime preload failed ({err}); \
                                  the first dictation will start it on demand"
@@ -266,6 +328,7 @@ pub fn run() {
             overlay::position_overlay(app.handle(), &initial_settings.overlay_position);
 
             bind_dory_ui(app.handle().clone(), context.bus.clone(), context.clone());
+            idle_policies::start(app.handle().clone(), context.clone());
 
             if initial_settings.api_enabled {
                 let ctx_api = context.clone();
@@ -304,16 +367,18 @@ pub fn run() {
                 MenuItem::with_id(app, "history", "Open History", true, None::<&str>)?;
             let item_settings =
                 MenuItem::with_id(app, "settings", "Open Settings", true, None::<&str>)?;
-            let item_undo =
-                MenuItem::with_id(app, "undo_ai", "Undo last AI edit", true, None::<&str>)?;
+            let item_offline =
+                MenuItem::with_id(app, "offline", "Toggle airplane mode", true, None::<&str>)?;
+            let item_note = MenuItem::with_id(app, "note", "New note", true, None::<&str>)?;
             let item_quit = MenuItem::with_id(app, "quit", "Quit Reflow", true, None::<&str>)?;
 
             tray_menu.append(&item_status)?;
             tray_menu.append(&item_dictate)?;
             tray_menu.append(&item_polish)?;
             tray_menu.append(&item_history)?;
+            tray_menu.append(&item_note)?;
+            tray_menu.append(&item_offline)?;
             tray_menu.append(&item_settings)?;
-            tray_menu.append(&item_undo)?;
             tray_menu.append(&item_quit)?;
 
             if let Some(main) = app.get_webview_window("main") {
@@ -351,10 +416,6 @@ pub fn run() {
                             }
                             Err(err) => log::error!("Could not toggle polishing: {err}"),
                         }
-                    }
-                    "undo_ai" => {
-                        let ctx = app_handle.state::<AppContext>();
-                        let _ = commands::undo_last_ai_edit_inner(ctx.inner());
                     }
                     "history" | "settings" => {
                         if let Some(window) = app_handle.get_webview_window("main") {
@@ -397,17 +458,54 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            api::automation::get_automation_token_status,
+            api::automation::create_automation_token,
+            api::automation::revoke_automation_token,
+            network_policy::get_network_journal,
+            transfer::export_config,
+            transfer::import_config,
+            transfer::import_model_file,
+            expansion_commands::get_stats,
+            expansion_commands::repaste_last,
+            expansion_commands::get_app_version,
+            expansion_commands::open_releases,
+            expansion_commands::add_note,
+            expansion_commands::export_notes,
+            expansion_commands::update_history_metadata,
+            expansion_commands::edit_history_transcript,
+            commands::dismiss_assistant,
+            file_jobs::transcribe_file,
+            file_jobs::cancel_file_transcription,
+            file_jobs::get_file_job,
+            file_jobs::export_file_transcript,
+            file_jobs::select_audio_file,
             commands::get_app_state,
             commands::get_settings,
             commands::update_settings,
             commands::get_audio_devices,
             commands::set_audio_device,
             commands::get_current_audio_level,
+            commands::get_asr_progress,
+            commands::get_calibration_status,
+            commands::run_calibration,
+            commands::cancel_calibration,
+            commands::apply_calibration,
+            commands::test_microphone,
+            commands::test_recognition,
+            commands::retry_clipboard_restore,
             commands::start_recording,
+            commands::start_meeting,
+            expansion_commands::summarize_history,
+            assistant_tools::execute_assistant_tool,
             commands::stop_recording,
             commands::cancel_recording,
             commands::inject_text,
             commands::get_history,
+            commands::query_history,
+            commands::export_history,
+            commands::get_runtime_inventory,
+            commands::rollback_runtime,
+            commands::repair_runtime,
             commands::search_history,
             commands::delete_history_item,
             commands::clear_today_history,
@@ -432,6 +530,7 @@ pub fn run() {
             commands::refresh_capabilities,
             commands::get_model_manifests,
             commands::preview_profile,
+            commands::get_runtime_plan,
             commands::open_logs_folder,
             commands::get_diagnostics_report,
             commands::get_platform_info,
@@ -439,10 +538,14 @@ pub fn run() {
             commands::rotate_pairing_code,
             commands::quit_app,
             commands::list_api_devices,
+            commands::set_api_device_permissions,
             commands::revoke_api_device,
             commands::get_flow_status,
             commands::preview_cleanup,
             commands::undo_last_ai_edit,
+            commands::undo_history_ai_edit,
+            commands::retry_history_transcript,
+            commands::extract_history_audio,
             commands::get_intelligence_status,
             commands::get_intelligence_tiers,
             commands::install_intelligence_model,
@@ -454,16 +557,41 @@ pub fn run() {
             commands::set_polish_enabled,
             commands::preview_tier_cleanup,
         ])
-        .run(tauri::generate_context!())
+        .run(tauri_context)
         .expect("Error while running Reflow desktop application");
 }
 
 fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContext) {
+    let warning_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            if let Some(error) = crate::injection::TextInjector::take_restore_error() {
+                // This can arrive during a later dictation. Keep its state
+                // untouched; the warning only notifies about restoration.
+                let _ = warning_app.emit(
+                    "app:warning",
+                    format!("Clipboard restoration failed: {error}. Retry in Settings → Advanced."),
+                );
+            }
+        }
+    });
     tauri::async_runtime::spawn(async move {
         let mut rx = bus.subscribe();
+        let mut previous_state = AppStateEnum::Ready;
         loop {
             match rx.recv().await {
                 Ok(DoryEvent::State(state)) => {
+                    let settings = ctx.settings_store.get();
+                    if settings.sounds_enabled
+                        && (state == AppStateEnum::Recording
+                            || (previous_state == AppStateEnum::Recording
+                                && state == AppStateEnum::Processing))
+                    {
+                        let _ = app.emit("hud:sound", serde_json::json!({"kind":if state == AppStateEnum::Recording {"start"} else {"stop"}}));
+                    }
+                    previous_state = state;
                     let _ = app.emit("app:state-changed", state);
                     match state {
                         AppStateEnum::Recording => {
@@ -503,7 +631,12 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     overlay::resize_overlay(&app, "preview");
                     let _ = app.emit("transcript:final", payload);
                 }
-                Ok(DoryEvent::SessionFinished { .. }) => {}
+                Ok(DoryEvent::SessionFinished { raw, text, .. }) => {
+                    let _ = app.emit(
+                        "transcript:source",
+                        serde_json::json!({"raw":raw,"final_text":text}),
+                    );
+                }
                 Ok(DoryEvent::Injection(feedback)) => {
                     overlay::resize_overlay(&app, "preview");
                     let hide_delay = if feedback.fallback_copy { 2500 } else { 1200 };
@@ -515,6 +648,13 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                 }
                 Ok(DoryEvent::AutoStop) => {
                     let _ = app.emit("app:auto-stop", ());
+                }
+                Ok(DoryEvent::FileProgress(progress)) => {
+                    let _ = app.emit("transcribe:progress", progress);
+                }
+                Ok(DoryEvent::AssistantResponse(text)) => {
+                    overlay::show_response(&app);
+                    let _ = app.emit("assistant:response", text);
                 }
                 Ok(DoryEvent::Stage(stage)) => {
                     let _ = app.emit("pipeline:stage", stage);
@@ -551,7 +691,7 @@ pub async fn run_api_standalone(bind: Option<String>) -> Result<(), String> {
     let status = crate::api::current_status(&ctx);
     println!("Reflow LAN API listening");
     for addr in &status.listen_addrs {
-        println!("  http://{addr}:{}", status.port);
+        println!("  https://{addr}:{}", status.port);
     }
     if let Some(code) = &status.pairing_code {
         println!("Pairing code: {code}");
@@ -564,13 +704,8 @@ pub async fn run_api_standalone(bind: Option<String>) -> Result<(), String> {
     // the API was reachable but useless. Load the model the same way the
     // GUI does: probe CUDA first (see the startup-load comment in `run`),
     // then resolve and load.
-    if settings.asr.keep_loaded
-        && ctx
-            .model_manager
-            .is_installed(&model::manager::runtime_model_id(
-                &settings.asr.model,
-                &settings.asr.runtime,
-            ))
+    if (settings.asr.keep_loaded || settings.preset != "custom")
+        && crate::runtime::has_installed_asr(&ctx, &settings)
     {
         if let Err(err) = ctx.asr_handle.probe_cuda().await {
             log::warn!("Could not start the sidecar CUDA probe: {err}");
@@ -584,17 +719,21 @@ pub async fn run_api_standalone(bind: Option<String>) -> Result<(), String> {
             }
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
         }
-        let (model_id, backend, precision) = commands::resolve_asr_load(&ctx);
-        let model_dir = ctx.model_manager.get_model_dir(&model_id);
-        match ctx
-            .asr_handle
-            .load_model_with_precision(&model_dir.to_string_lossy(), &backend, &precision)
-            .await
-        {
-            Ok(()) => log::info!(
-                "ASR model loaded for the headless API ({model_id} on {backend}, {precision})"
-            ),
-            Err(err) => log::warn!("Headless ASR model load failed: {err}"),
+        match commands::resolve_asr_load(&ctx) {
+            Ok((model_id, backend, precision)) => {
+                let model_dir = ctx.model_manager.get_model_dir(&model_id);
+                match ctx
+                    .asr_handle
+                    .load_model_with_precision(&model_dir.to_string_lossy(), &backend, &precision)
+                    .await
+                {
+                    Ok(()) => log::info!(
+                        "ASR model loaded for the headless API ({model_id} on {backend}, {precision})"
+                    ),
+                    Err(err) => log::warn!("Headless ASR model load failed: {err}"),
+                }
+            }
+            Err(err) => log::warn!("Headless ASR model load rejected: {err}"),
         }
     } else {
         log::warn!(

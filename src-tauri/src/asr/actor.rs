@@ -112,6 +112,7 @@ pub struct AsrHandle {
     last_warning: Arc<RwLock<Option<String>>>,
     session_counter: Arc<AtomicU64>,
     inference_cancel: InferenceCancel,
+    progress: super::engine::ProgressTracker,
 }
 
 impl AsrHandle {
@@ -125,6 +126,9 @@ impl AsrHandle {
         let session_counter = Arc::new(AtomicU64::new(1));
         let inference_cancel: InferenceCancel = Arc::new(RwLock::new(None));
         let cancel_c = Arc::clone(&inference_cancel);
+        let progress = Arc::new(RwLock::new(super::engine::InferenceProgress::default()));
+        engine.set_progress_tracker(progress.clone());
+        let progress_c = progress.clone();
 
         let status_c = Arc::clone(&status_cache);
         let lang_c = Arc::clone(&detected_language);
@@ -189,6 +193,11 @@ impl AsrHandle {
                             reply,
                         } => {
                             cancelled_sessions.remove(&session_id);
+                            *progress_c.write() = super::engine::InferenceProgress {
+                                session_id: Some(session_id),
+                                completed: 0,
+                                total: 0,
+                            };
                             active_session_id = Some(session_id);
                             let res = engine.start_stream(&language, &vocabulary);
                             *cancel_c.write() = if res.is_ok() {
@@ -301,6 +310,8 @@ impl AsrHandle {
                         } => {
                             *cancel_c.write() = None;
                             engine = new_engine;
+                            engine.set_progress_tracker(progress_c.clone());
+                            *progress_c.write() = super::engine::InferenceProgress::default();
                             active_session_id = None;
                             Self::sync_cache(
                                 &mut *engine,
@@ -324,6 +335,7 @@ impl AsrHandle {
             last_warning,
             session_counter,
             inference_cancel,
+            progress,
         }
     }
 
@@ -340,6 +352,10 @@ impl AsrHandle {
         if let Some(w) = engine.take_last_warning() {
             *last_warning.write() = Some(w);
         }
+    }
+
+    pub fn inference_progress(&self) -> super::engine::InferenceProgress {
+        self.progress.read().clone()
     }
 
     pub fn new_runtime(runtime: &str) -> Self {

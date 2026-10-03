@@ -27,7 +27,6 @@ fn test_100_consecutive_dictation_cycles_stress_and_leak_detection() {
             VadConfig {
                 energy_threshold: 0.02,
                 silence_timeout_ms: 300,
-                pre_roll_ms: 100,
                 post_roll_ms: 100,
             },
             16000,
@@ -50,6 +49,13 @@ fn test_100_consecutive_dictation_cycles_stress_and_leak_detection() {
 
         // 4. History persistence
         let entry = HistoryEntry {
+            audio_available: false,
+            audio_expires_at: None,
+            command_input: None,
+            kind: "dictation".into(),
+            source: "dictation".into(),
+            pinned: false,
+            tags: String::new(),
             id: format!("stress-{}", cycle),
             created_at: chrono::Utc::now().to_rfc3339(),
             duration_ms: 1200,

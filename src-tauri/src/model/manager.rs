@@ -151,9 +151,13 @@ impl ModelManager {
     }
 
     pub fn remove_model(&self, id: &str) -> Result<(), String> {
+        if !MODELS.iter().any(|model| model.id == id) {
+            return Err(format!("Unknown ASR model: {id}"));
+        }
         let model_dir = self.get_model_dir(id);
         if model_dir.exists() {
-            let _ = fs::remove_dir_all(&model_dir);
+            fs::remove_dir_all(&model_dir)
+                .map_err(|e| format!("Failed to remove ASR model '{id}': {e}"))?;
         }
         Ok(())
     }
@@ -211,5 +215,20 @@ mod tests {
         assert!(status.is_loading);
         assert_eq!(status.name, "Qwen/Qwen3-ASR-1.7B-hf");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn removing_unknown_model_preserves_default_model() {
+        let dir =
+            std::env::temp_dir().join(format!("reflow_model_remove_{}", uuid::Uuid::new_v4()));
+        let manager = ModelManager::new(dir.clone());
+        let model_dir = manager.get_model_dir("0.6b");
+        fs::create_dir_all(&model_dir).unwrap();
+        fs::write(model_dir.join("config.json"), "{}").unwrap();
+        assert!(manager.remove_model("unknown").is_err());
+        assert!(model_dir.join("config.json").is_file());
+        manager.remove_model("0.6b").unwrap();
+        assert!(!model_dir.exists());
+        let _ = fs::remove_dir_all(dir);
     }
 }

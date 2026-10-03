@@ -8,12 +8,32 @@ use sha2::{Digest, Sha256};
 
 const PAIRING_TTL: Duration = Duration::from_secs(5 * 60);
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DevicePermissions {
+    pub stream: bool,
+    pub history: bool,
+    pub injection: bool,
+}
+impl Default for DevicePermissions {
+    fn default() -> Self {
+        Self {
+            stream: true,
+            history: false,
+            injection: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairedDevice {
     pub id: String,
     pub name: String,
     pub token_hash: String,
     pub created_at: String,
+    #[serde(default)]
+    pub permissions: DevicePermissions,
+    #[serde(default)]
+    pub automation: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +41,8 @@ pub struct PairedDevicePublic {
     pub id: String,
     pub name: String,
     pub created_at: String,
+    #[serde(default)]
+    pub permissions: DevicePermissions,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +56,7 @@ pub struct PairingState {
     offer: RwLock<Option<PairingOffer>>,
     devices: RwLock<Vec<PairedDevice>>,
     path: PathBuf,
+    pub(crate) automation_sessions: tokio::sync::Mutex<std::collections::HashMap<String, u64>>,
 }
 
 impl PairingState {
@@ -43,6 +66,7 @@ impl PairingState {
             offer: RwLock::new(None),
             devices: RwLock::new(devices),
             path,
+            automation_sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -110,11 +134,14 @@ impl PairingState {
             },
             token_hash: hash_token(&token),
             created_at: chrono::Utc::now().to_rfc3339(),
+            permissions: DevicePermissions::default(),
+            automation: false,
         };
         let public = PairedDevicePublic {
             id: device.id.clone(),
             name: device.name.clone(),
             created_at: device.created_at.clone(),
+            permissions: device.permissions,
         };
         {
             let mut devices = self.devices.write();
@@ -127,19 +154,106 @@ impl PairingState {
         Ok((token, public))
     }
 
+    /// Creation is exposed only through desktop IPC. The raw token is returned
+    /// once; only its SHA-256 digest is persisted alongside paired devices.
+    pub fn create_automation_token(&self) -> Result<(String, PairedDevicePublic), String> {
+        let token = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let device = PairedDevice {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Local automation".into(),
+            token_hash: hash_token(&token),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            permissions: DevicePermissions {
+                stream: true,
+                history: true,
+                injection: true,
+            },
+            automation: true,
+        };
+        let public = PairedDevicePublic {
+            id: device.id.clone(),
+            name: device.name.clone(),
+            created_at: device.created_at.clone(),
+            permissions: device.permissions,
+        };
+        let mut devices = self.devices.write();
+        let mut next = devices.clone();
+        // Rotation invalidates the previous automation token without affecting phones.
+        next.retain(|device| !device.automation);
+        next.push(device);
+        persist_devices(&self.path, &next)?;
+        *devices = next;
+        Ok((token, public))
+    }
+
+    pub fn is_automation_token(&self, token: &str) -> bool {
+        let hash = hash_token(token);
+        self.devices
+            .read()
+            .iter()
+            .any(|device| device.automation && device.token_hash == hash)
+    }
+
+    pub fn automation_device(&self) -> Option<PairedDevicePublic> {
+        self.devices
+            .read()
+            .iter()
+            .find(|device| device.automation)
+            .map(|device| PairedDevicePublic {
+                id: device.id.clone(),
+                name: device.name.clone(),
+                created_at: device.created_at.clone(),
+                permissions: device.permissions,
+            })
+    }
+
     pub fn authorize(&self, token: &str) -> bool {
         let hash = hash_token(token);
         self.devices.read().iter().any(|d| d.token_hash == hash)
+    }
+
+    pub fn permissions(&self, token: &str) -> Option<DevicePermissions> {
+        let hash = hash_token(token);
+        self.devices
+            .read()
+            .iter()
+            .find(|d| d.token_hash == hash)
+            .map(|d| d.permissions)
+    }
+
+    pub fn set_permissions(
+        &self,
+        id: &str,
+        permissions: DevicePermissions,
+    ) -> Result<bool, String> {
+        let mut devices = self.devices.write();
+        let mut next = devices.clone();
+        let Some(device) = next.iter_mut().find(|d| d.id == id) else {
+            return Ok(false);
+        };
+        if device.automation {
+            return Err("Local automation permissions are fixed; revoke the token instead".into());
+        }
+        device.permissions = permissions;
+        persist_devices(&self.path, &next)?;
+        *devices = next;
+        Ok(true)
     }
 
     pub fn list_public(&self) -> Vec<PairedDevicePublic> {
         self.devices
             .read()
             .iter()
+            .filter(|device| !device.automation)
             .map(|d| PairedDevicePublic {
                 id: d.id.clone(),
                 name: d.name.clone(),
                 created_at: d.created_at.clone(),
+                permissions: d.permissions,
             })
             .collect()
     }

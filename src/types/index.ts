@@ -64,7 +64,7 @@ export const INTELLIGENCE_TIERS: Record<IntelligenceTier, TierMetadata> = {
     tagline: "Fast, natural cleanup and auto-repair",
     description:
       "Drops 'ums', stutters, and spoken self-corrections while preserving your exact voice.",
-    latencyEstimate: "Fast (~400ms)",
+    latencyEstimate: "Not measured on this computer",
     downloadSizeMB: 508,
     vramRequiredMB: 900,
     ramRequiredMB: 850,
@@ -80,8 +80,8 @@ export const INTELLIGENCE_TIERS: Record<IntelligenceTier, TierMetadata> = {
     modelFile: "Qwen3.5-2B-Q4_K_M.gguf",
     tagline: "Advanced multilingual reasoning",
     description:
-      "Handles 201 languages, mixed dialects, code-mixing, and formats complex technical dictation.",
-    latencyEstimate: "Smooth (~350ms)",
+      "Multilingual cleanup for supported speech languages, including mixed-language technical dictation.",
+    latencyEstimate: "Not measured on this computer",
     downloadSizeMB: 1400,
     vramRequiredMB: 1600,
     ramRequiredMB: 1800,
@@ -129,6 +129,7 @@ export function polishEnabledFor(settings: {
 }
 export type TranscriptStyle = "faithful" | "neutral" | "decisive" | "email" | "chat";
 export type HistoryRetention = "disabled" | "1_day" | "7_days" | "30_days" | "90_days" | "forever";
+export type AudioRetention = "disabled" | "1_day" | "7_days" | "30_days" | "forever";
 export type OverlayPosition = "bottom_center" | "top_center" | "bottom_right" | "top_right";
 export type ComputeBackend = "auto" | "cpu" | "gpu";
 export type AppTheme = "system" | "light" | "dark";
@@ -184,16 +185,43 @@ export interface MemoryPolicySettings {
 }
 
 export interface AppSettings {
+  sounds_enabled?: boolean;
+  sounds_volume?: number;
+  history_encryption?: boolean;
+  excluded_apps?: string[];
+  duck_media?: boolean;
+  follow_default_mic?: boolean;
+  voice_commands_enabled?: boolean;
+  min_dictation_ms?: number;
+  power_policy?: { unload_on_battery: boolean; battery_preset: string | null };
+  hud_contrast?: "standard" | "high";
+  paste_delay_ms?: number;
+  inject_method?: "paste" | "type";
+  append_space?: boolean;
+  capitalize_first?: boolean;
+  meeting_mode?: boolean;
+  meeting_monitor_device_id?: string | null;
+
+  notes_folder?: string;
+  dictionary_suggestions?: { before: string; after: string; frequency: number }[];
+  dismissed_corrections?: string[];
+  hotkeys?: Hotkeys;
+  output_action?: OutputAction;
+  send_key?: SendKey;
+  modes?: Mode[];
+  default_mode_id?: string;
+  mode_triggers_enabled?: boolean;
+  snippets?: Snippet[];
   hotkey: string;
   push_to_talk: boolean;
   auto_stop_silence_ms: number;
   max_duration_sec: number;
-  language: string; // 'auto', 'en', 'hi', 'bn'
+  language: string; // 'auto' or a code from the shared dictation-language catalogue
   auto_detect_language: boolean;
   microphone_device_id: string | null;
   input_gain: number; // 0.1 to 3.0
   vad_sensitivity: number; // 0.0 to 1.0 (threshold)
-  processing_mode: ProcessingMode;
+  processing_mode: ProcessingMode | "command" | "assistant" | "file";
   dictation_mode: DictationMode;
   /** Performance intent. `"custom"` is never overwritten by the resolver. */
   preset: Preset;
@@ -204,6 +232,7 @@ export interface AppSettings {
   streaming: StreamingSettings;
   memory_policy: MemoryPolicySettings;
   history_retention: HistoryRetention;
+  audio_retention: AudioRetention;
   overlay_position: OverlayPosition;
   overlay_theme: "dark" | "light" | "auto";
   app_theme: AppTheme;
@@ -226,15 +255,86 @@ export interface AppSettings {
   filler_removal_enabled: boolean;
   clipboard_restore_enabled: boolean;
   dictionary_terms: DictionaryTerm[];
+  application_profiles?: ApplicationProfile[];
   custom_replacements: CustomReplacement[];
   api_enabled: boolean;
   api_bind: "localhost" | "lan";
   api_port: number;
-  api_mdns: boolean;
   api_inject_default: boolean;
 }
 
+export type SessionIntent = "dictate" | "command" | "assistant" | "note";
+export type SendKey = "enter" | "shift_enter" | "ctrl_enter";
+export type OutputAction =
+  | { type: "paste" | "paste_enter" | "copy" | "hud" }
+  | { type: "append_file"; path: string }
+  | { type: "run_command"; template: string };
+export interface Hotkeys {
+  dictation: string;
+  command: string | null;
+  assistant: string | null;
+  note: string | null;
+  cancel: "Escape" | null;
+}
+export interface Snippet {
+  id: string;
+  trigger: string;
+  expansion: string;
+  enabled: boolean;
+}
+export interface Mode {
+  id: string;
+  name: string;
+  icon?: string | null;
+  hotkey: string | null;
+  triggers: { apps: string[]; spoken: string[] };
+  language: string | null;
+  dictation_mode: DictationMode;
+  cleanup_level: CleanupLevel;
+  intelligence_tier: IntelligenceTier;
+  style: TranscriptStyle;
+  custom_instructions: string;
+  context: { selected_text: boolean; clipboard: boolean; window_title: boolean };
+  output: OutputAction;
+  send_key: SendKey;
+  enabled: boolean;
+  translate_to?: string | null;
+}
+export function defaultModes(): Mode[] {
+  const dictation: Mode = {
+    id: "dictation",
+    name: "Dictation",
+    hotkey: null,
+    triggers: { apps: [], spoken: [] },
+    language: null,
+    dictation_mode: "normal",
+    cleanup_level: "light",
+    intelligence_tier: "smart_flow",
+    style: "neutral",
+    custom_instructions: "",
+    context: { selected_text: false, clipboard: false, window_title: false },
+    output: { type: "paste" },
+    send_key: "enter",
+    enabled: true,
+    translate_to: null,
+  };
+  return [
+    dictation,
+    { ...structuredClone(dictation), id: "message", name: "Message", style: "chat" },
+    { ...structuredClone(dictation), id: "email", name: "Email", style: "email" },
+    {
+      ...structuredClone(dictation),
+      id: "coding",
+      name: "Coding",
+      dictation_mode: "coding",
+      cleanup_level: "raw",
+      intelligence_tier: "raw_verbatim",
+    },
+  ];
+}
+
 export interface AudioDevice {
+  is_monitor?: boolean;
   id: string;
   name: string;
   is_default: boolean;
@@ -243,6 +343,13 @@ export interface AudioDevice {
 }
 
 export interface HistoryEntry {
+  kind?: string;
+  source?: string;
+  pinned?: boolean;
+  tags?: string;
+  command_input?: string | null;
+  audio_available?: boolean;
+  audio_expires_at?: number | null;
   id: string;
   created_at: string;
   duration_ms: number;
@@ -256,7 +363,7 @@ export interface HistoryEntry {
   word_count: number;
   character_count: number;
   model_version: string;
-  processing_mode: ProcessingMode;
+  processing_mode: ProcessingMode | "command" | "assistant" | "file";
 }
 
 export interface DictionaryTerm {
@@ -264,6 +371,11 @@ export interface DictionaryTerm {
   term: string;
   preferred_spelling: string;
   category: string;
+}
+export interface ApplicationProfile {
+  process: string;
+  style: TranscriptStyle;
+  dictionary_terms: DictionaryTerm[];
 }
 
 export interface CustomReplacement {
@@ -284,6 +396,16 @@ export interface SegmentTiming {
 }
 
 export interface LatencyMetrics {
+  dropped_audio_chunks?: number;
+  failed_audio_pushes?: number;
+  peak_audio_queue_chunks?: number;
+  llm_was_warm?: boolean;
+  llm_generation?: {
+    prompt_tokens: number;
+    output_tokens: number;
+    prompt_ms: number | null;
+    decode_ms: number | null;
+  } | null;
   hotkey_to_recording_ms: number;
   recording_to_first_audio_ms: number;
   audio_to_first_partial_ms: number;
@@ -336,20 +458,21 @@ export interface AsrBenchmarkMetrics {
   device: string;
   precision: string;
   load_ms: number;
-  warmup_rtf: number;
-  average_inference_ms: number;
-  corpus_wer: number;
-  corpus_cer: number;
+  warmup_rtf: number | null;
+  /** null = not measured on this machine (never a fabricated value). */
+  average_inference_ms: number | null;
+  corpus_wer: number | null;
+  corpus_cer: number | null;
   spill_detected: boolean;
 }
 
 export interface RefinementBenchmarkMetrics {
   model_id: string;
   device: string;
-  load_ms: number;
-  tokens_per_second: number;
-  safety_pass_rate: number;
-  average_latency_ms: number;
+  load_ms: number | null;
+  tokens_per_second: number | null;
+  safety_pass_rate: number | null;
+  average_latency_ms: number | null;
 }
 
 export interface FullBenchmarkReport {
@@ -357,6 +480,52 @@ export interface FullBenchmarkReport {
   asr?: AsrBenchmarkMetrics;
   refinement?: RefinementBenchmarkMetrics;
   hardware_summary: string;
+}
+
+export interface HistoryQuery {
+  kind?: string;
+  application_process?: string;
+  pinned_only?: boolean;
+  tag?: string;
+  query?: string;
+  from?: string | null;
+  until?: string | null;
+  limit?: number;
+  offset?: number;
+}
+
+export interface HistoryPage {
+  entries: HistoryEntry[];
+  total: number;
+  next_offset: number | null;
+  recovery_notice: string | null;
+}
+
+export interface RuntimeEntry {
+  id: string;
+  version: string;
+  kind: string;
+  binary_path: string;
+  active: boolean;
+  rollback_available: boolean;
+  healthy: boolean;
+  error: string | null;
+}
+
+export interface MicrophoneHealth {
+  device: string;
+  duration_ms: number;
+  peak: number;
+  rms: number;
+  clipped_pct: number;
+  dropped_chunks: number;
+  assessment: string;
+}
+
+export interface RecognitionTest {
+  text: string;
+  language: string;
+  health: MicrophoneHealth;
 }
 
 export interface SystemMetrics {
@@ -471,6 +640,18 @@ export interface ProfileReason {
   detail: string;
 }
 
+/**
+ * A requested configuration the resolver cannot honor at all — e.g. a Custom
+ * precision the model does not support. Unlike a reason, this must be shown
+ * as an error: the load will fail if attempted.
+ */
+export interface ProfileError {
+  code: string;
+  detail: string;
+  requested: string;
+  supported: string[];
+}
+
 export interface ProfileOverrides {
   asr_model?: string | null;
   asr_device?: ComputeDevice | null;
@@ -496,6 +677,23 @@ export interface ResolvedProfile {
   streaming_enabled: boolean;
   inference_threads: number;
   reasons: ProfileReason[];
+  errors?: ProfileError[];
+}
+
+export interface RuntimePlan {
+  preset: Preset;
+  asr_model: string;
+  asr_device: string;
+  asr_precision: string;
+  refinement_model: string | null;
+  refinement_device: string;
+  refinement_gpu_layers: number;
+  context_size: number;
+  inference_threads: number;
+  keep_asr_loaded: boolean;
+  keep_refinement_warm: boolean;
+  reasons: ProfileReason[];
+  error: string | null;
 }
 
 export function isAsrOnly(profile: ResolvedProfile): boolean {
@@ -608,6 +806,8 @@ export interface FlowStatus {
 export interface IntelligenceTierState {
   tier: IntelligenceTier;
   model_id: FlowModel;
+  /** True when this tier's model weights are downloaded, independently of the runtime. */
+  weights_installed?: boolean;
   /** True when the GGUF weights for this tier are on disk AND the
    *  `llama-server` runtime is on disk. The Download button should be hidden
    *  when this is `true`. */
@@ -644,7 +844,7 @@ export function isModelReady(status: ModelStatus | null | undefined): boolean {
 
 export function isModelLoading(status: ModelStatus | null | undefined): boolean {
   if (!status) return true;
-  if (status.is_downloading) return false;
+  if (!status.installed || status.is_downloading) return false;
   return !isModelReady(status) && !status.error;
 }
 
@@ -661,9 +861,36 @@ export interface PairedDevice {
   id: string;
   name: string;
   created_at: string;
+  permissions?: { stream: boolean; history: boolean; injection: boolean };
+}
+
+export interface CalibrationCandidate {
+  id: string;
+  label: string;
+  median_ms: number;
+  p95_ms: number;
+  wer: number;
+  cer: number;
+  eligible: boolean;
+  error: string | null;
+  observed_vram_mb?: number;
+  minimum_ram_mb?: number;
+  transcript?: string;
+  output?: string;
+}
+export interface CalibrationStatus {
+  running: boolean;
+  phase: string;
+  candidates: CalibrationCandidate[];
+  winner_id: string | null;
+  error: string | null;
+  language: string;
+  reference: string;
 }
 
 export interface ApiStatus {
+  certificate_sha256?: string | null;
+  transport?: string;
   enabled: boolean;
   running: boolean;
   bind: string;
@@ -734,6 +961,37 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   const flow_model = flowModelForTier(intelligence_tier);
   return {
     ...settings,
+    sounds_enabled: settings.sounds_enabled ?? true,
+    sounds_volume: settings.sounds_volume ?? 0.7,
+    history_encryption: settings.history_encryption ?? false,
+    excluded_apps: settings.excluded_apps ?? [],
+    duck_media: settings.duck_media ?? false,
+    follow_default_mic: settings.follow_default_mic ?? true,
+    voice_commands_enabled: settings.voice_commands_enabled ?? false,
+    min_dictation_ms: settings.min_dictation_ms ?? 300,
+    power_policy: settings.power_policy ?? { unload_on_battery: false, battery_preset: null },
+    hud_contrast: settings.hud_contrast ?? "standard",
+    paste_delay_ms: settings.paste_delay_ms ?? 30,
+    inject_method: settings.inject_method ?? "paste",
+    append_space: settings.append_space ?? false,
+    capitalize_first: settings.capitalize_first ?? true,
+    meeting_mode: settings.meeting_mode ?? false,
+    meeting_monitor_device_id: settings.meeting_monitor_device_id ?? null,
+    hotkeys: {
+      dictation: settings.hotkey,
+      command: settings.hotkey?.includes("Win") ? "Ctrl+Win+Alt" : "Ctrl+Alt+Space",
+      assistant: null,
+      note: null,
+      cancel: "Escape",
+      ...settings.hotkeys,
+    },
+    output_action: settings.output_action ?? { type: "paste" },
+    send_key: settings.send_key ?? "enter",
+    modes: settings.modes ?? defaultModes(),
+    default_mode_id: settings.default_mode_id ?? "dictation",
+    mode_triggers_enabled: settings.mode_triggers_enabled ?? true,
+    snippets: settings.snippets ?? [],
+    audio_retention: settings.audio_retention ?? "disabled",
     cleanup_level: inferCleanupLevel(settings),
     intelligence_tier,
     flow_model,
@@ -768,4 +1026,30 @@ export interface InjectionResult {
   target_app: string;
   duration_ms: number;
   error?: string;
+}
+
+export interface FileProgress {
+  job_id: string;
+  done_s: number;
+  total_s: number;
+  finished: boolean;
+  error: string | null;
+  history_id: string | null;
+}
+
+export interface UsageStats {
+  total_words: number;
+  total_characters: number;
+  dictations: number;
+  minutes_spoken: number;
+  time_saved_minutes: number;
+  streak_days: number;
+  per_app: {
+    process: string;
+    application_name: string;
+    words: number;
+    dictations: number;
+    minutes_spoken: number;
+  }[];
+  per_day: { date: string; words: number; dictations: number; minutes_spoken: number }[];
 }

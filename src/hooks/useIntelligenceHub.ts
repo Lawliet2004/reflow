@@ -60,23 +60,40 @@ export function useIntelligenceHub(): IntelligenceHub {
   const [runtimeDownloadError, setRuntimeDownloadError] = useState<string | null>(null);
   const [lastToast, setLastToast] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const refreshing = useRef<Promise<void> | null>(null);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const notifyToast = useCallback((kind: "error" | "info", text: string) => {
     setLastToast({ kind, text });
   }, []);
 
   const refresh = useCallback(async () => {
-    try {
-      const [fs, sm, tiers] = await Promise.all([
-        api.getIntelligenceStatus(),
-        api.getSystemMetrics(),
-        api.getIntelligenceTiers(),
+    if (refreshing.current) return refreshing.current;
+    const request = (async () => {
+      await Promise.allSettled([
+        api.getIntelligenceStatus().then((status) => {
+          if (mounted.current) setFlowStatus(status);
+        }),
+        api.getSystemMetrics().then((metrics) => {
+          if (mounted.current) setSystemMetrics(metrics);
+        }),
+        api.getIntelligenceTiers().then((tiers) => {
+          if (mounted.current) setIntelligenceTiers(tiers);
+        }),
       ]);
-      setFlowStatus(fs);
-      setSystemMetrics(sm);
-      setIntelligenceTiers(tiers);
-    } catch (e) {
-      console.error("intelligence status refresh failed", e);
+    })();
+    refreshing.current = request;
+    try {
+      await request;
+    } finally {
+      refreshing.current = null;
     }
   }, []);
 
@@ -93,69 +110,71 @@ export function useIntelligenceHub(): IntelligenceHub {
       if (alive) unsubs.push(fn);
       else fn();
     };
-    const setup = async () => {
-      track(
-        await safeListen<IntelligenceDownloadEvent>("intelligence:download-progress", (event) => {
-          if (!alive) return;
-          setActiveDownloadTiers((prev) => {
-            const next = new Set(prev);
-            if (isInFlight(event.phase)) next.add(event.tier);
-            else next.delete(event.tier);
-            return next;
-          });
-          // Monotonic guard: ignore events that would move the bar backwards
-          // mid-download; terminal phases always win.
-          setIntelligenceDownload((prev) => {
-            if (
-              prev &&
-              prev.tier === event.tier &&
-              isInFlight(prev.phase) &&
-              isInFlight(event.phase) &&
-              event.progress_pct < prev.progress_pct
-            ) {
-              return prev;
-            }
-            return event;
-          });
-          if (TERMINAL.has(event.phase)) {
-            // The file just landed on disk; re-read installed flags once.
-            void refresh();
-          }
-        }),
-      );
-      track(
-        await safeListen<RuntimeDownloadEvent>("runtime:download-progress", (event) => {
-          if (!alive) return;
-          const inFlight =
-            event.phase === "starting" ||
-            event.phase === "downloading" ||
-            event.phase === "verifying" ||
-            event.phase === "extracting";
-          setRuntimeDownloadActive(inFlight);
-          setRuntimeDownload(event);
-          if (event.phase === "error") {
-            setRuntimeDownloadError(event.error ?? "Runtime download failed");
-            setLastToast({
-              kind: "error",
-              text: event.error ?? "llama-server runtime download failed. Will retry next time.",
-            });
-          } else if (event.phase === "complete") {
-            setRuntimeDownloadError(null);
-            setLastToast({
-              kind: "info",
-              text: `llama-server ${event.kind_label ?? ""} runtime installed.`,
-            });
-            void refresh();
-          }
-        }),
-      );
+    const subscribe = async <T>(event: string, handler: (payload: T) => void) => {
+      try {
+        track(await safeListen<T>(event, handler));
+      } catch (error) {
+        if (alive) notifyToast("error", `Could not subscribe to ${event}. ${String(error)}`);
+      }
     };
-    void setup();
+    void Promise.all([
+      subscribe<IntelligenceDownloadEvent>("intelligence:download-progress", (event) => {
+        if (!alive) return;
+        setActiveDownloadTiers((prev) => {
+          const next = new Set(prev);
+          if (isInFlight(event.phase)) next.add(event.tier);
+          else next.delete(event.tier);
+          return next;
+        });
+        // Monotonic guard: ignore events that would move the bar backwards
+        // mid-download; terminal phases always win.
+        setIntelligenceDownload((prev) => {
+          if (
+            prev &&
+            prev.tier === event.tier &&
+            isInFlight(prev.phase) &&
+            isInFlight(event.phase) &&
+            event.progress_pct < prev.progress_pct
+          ) {
+            return prev;
+          }
+          return event;
+        });
+        if (TERMINAL.has(event.phase)) {
+          // The file just landed on disk; re-read installed flags once.
+          void refresh();
+        }
+      }),
+      subscribe<RuntimeDownloadEvent>("runtime:download-progress", (event) => {
+        if (!alive) return;
+        const inFlight =
+          event.phase === "starting" ||
+          event.phase === "downloading" ||
+          event.phase === "verifying" ||
+          event.phase === "extracting";
+        setRuntimeDownloadActive(inFlight);
+        setRuntimeDownload(event);
+        if (event.phase === "error") {
+          setRuntimeDownloadError(event.error ?? "Runtime download failed");
+          setLastToast({
+            kind: "error",
+            text: event.error ?? "llama-server runtime download failed. Will retry next time.",
+          });
+        } else if (event.phase === "complete") {
+          setRuntimeDownloadError(null);
+          setLastToast({
+            kind: "info",
+            text: `llama-server ${event.kind_label ?? ""} runtime installed.`,
+          });
+          void refresh();
+        }
+      }),
+    ]);
     return () => {
       alive = false;
       unsubs.forEach((fn) => fn());
     };
-  }, [refresh]);
+  }, [refresh, notifyToast]);
 
   // Polling fallback: runs only when no download is in flight, so it can never
   // clobber event-driven progress or resurrect Download buttons mid-write.

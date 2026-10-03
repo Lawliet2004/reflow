@@ -168,7 +168,16 @@ impl EngineStatus {
 
 pub type InferenceCancellation = std::sync::Arc<dyn Fn() + Send + Sync>;
 
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct InferenceProgress {
+    pub session_id: Option<u64>,
+    pub completed: usize,
+    pub total: usize,
+}
+pub type ProgressTracker = std::sync::Arc<parking_lot::RwLock<InferenceProgress>>;
+
 pub trait ASREngine: Send + Sync {
+    fn set_progress_tracker(&mut self, _tracker: ProgressTracker) {}
     fn initialize(&mut self) -> Result<(), String>;
     /// Ask the runtime to compute its CUDA capability snapshot now.
     ///

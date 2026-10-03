@@ -181,17 +181,13 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// The device a GPU workload would actually run on: the NVIDIA GPU with
-    /// the most free VRAM, else any GPU, else none.
+    /// The device the Python runtime actually targets (`cuda:0`). Choosing a
+    /// different adapter's budget without routing inference there is unsafe.
     pub fn primary_gpu(&self) -> Option<&GpuInfo> {
         self.gpus
             .iter()
             .filter(|g| g.vendor == GpuVendor::Nvidia)
-            .max_by(|a, b| {
-                a.free_vram_mb
-                    .partial_cmp(&b.free_vram_mb)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .min_by_key(|g| g.index)
             .or_else(|| self.gpus.first())
     }
 
@@ -207,6 +203,7 @@ impl Capabilities {
     /// `true` when a CUDA workload can actually be dispatched from Python.
     pub fn can_use_cuda(&self) -> bool {
         self.cuda.torch_cuda_available
+            && cuda_mapping_matches_primary(std::env::var("CUDA_VISIBLE_DEVICES").ok().as_deref())
     }
 
     /// A GPU exists that `llama.cpp` could target through Vulkan even without
@@ -233,6 +230,17 @@ impl Capabilities {
             ),
         }
     }
+}
+
+/// The runtime targets cuda:0 while admission uses driver adapter zero.
+/// A remapped adapter needs separate budgeting; refuse unsafe automatic admission.
+pub fn cuda_mapping_matches_primary(visible: Option<&str>) -> bool {
+    visible.is_none_or(|value| {
+        value
+            .split(',')
+            .next()
+            .is_some_and(|first| first.trim() == "0")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -399,16 +407,19 @@ pub fn parse_wmi_adapters(stdout: &str) -> Vec<GpuInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remapped_cuda_visibility_cannot_use_adapter_zero_budget() {
+        assert!(cuda_mapping_matches_primary(None));
+        assert!(cuda_mapping_matches_primary(Some("0,1")));
+        for value in ["1", "1,0", "-1", "", "GPU-unknown"] {
+            assert!(!cuda_mapping_matches_primary(Some(value)));
+        }
+    }
 
     // Captured from `nvidia-smi --query-gpu=index,name,memory.total,memory.used,
     // memory.free,driver_version,compute_cap --format=csv,noheader,nounits`
     // on an RTX 2050 laptop.
     const RTX_2050: &str = "0, NVIDIA GeForce RTX 2050, 4096, 512, 3584, 551.86, 8.6\n";
-
-    const DUAL_GPU: &str = "\
-0, NVIDIA GeForce RTX 4090, 24564, 1024, 23540, 550.54, 8.9
-1, NVIDIA GeForce GTX 1060, 6144, 5900, 244, 550.54, 6.1
-";
 
     // Older driver: compute_cap unsupported, memory.free not reported.
     const OLD_DRIVER: &str =
@@ -436,16 +447,14 @@ mod tests {
     }
 
     #[test]
-    fn picks_the_nvidia_gpu_with_the_most_free_vram() {
+    fn budgets_the_default_cuda_adapter_even_when_another_is_freer() {
         let caps = Capabilities {
-            gpus: parse_nvidia_smi(DUAL_GPU),
+            gpus: parse_nvidia_smi("0, NVIDIA GTX 1060, 6144, 5900, 244, 551.86, 6.1\n1, NVIDIA RTX 4090, 24576, 100, 24476, 551.86, 8.9"),
             ..Default::default()
         };
         let gpu = caps.primary_gpu().expect("a gpu");
-        assert_eq!(gpu.name, "NVIDIA GeForce RTX 4090");
-        assert_eq!(caps.free_vram_mb(), 23540.0);
-        // The nearly-full 1060 must not be chosen just because it is present.
-        assert_ne!(gpu.index, 1);
+        assert_eq!(gpu.index, 0);
+        assert_eq!(caps.free_vram_mb(), 244.0);
     }
 
     #[test]

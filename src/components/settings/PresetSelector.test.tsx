@@ -5,7 +5,7 @@ import { PresetSelector } from "./PresetSelector";
 
 vi.mock("../../services/tauriApi", () => ({
   tauriApi: {
-    previewProfile: vi.fn().mockResolvedValue({
+    getRuntimePlan: vi.fn().mockResolvedValue({
       preset: "auto",
       asr_model: "qwen3-asr-0.6b",
       asr_device: "cuda",
@@ -17,6 +17,8 @@ vi.mock("../../services/tauriApi", () => ({
       language: "en",
       streaming_enabled: true,
       inference_threads: 4,
+      context_size: 1024,
+      error: null,
       reasons: [],
     }),
   },

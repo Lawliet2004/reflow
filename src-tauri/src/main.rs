@@ -6,11 +6,60 @@ use reflow_lib::platform::PlatformSys;
 use std::env;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let (args, portable) = extract_portable(env::args().collect());
+    if portable {
+        if let Err(error) = PlatformSys::enable_portable() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
 
     if args.len() > 1 {
         let cmd = args[1].as_str();
         match cmd {
+            "--dictate" => {
+                let Some(text) = args.get(2) else {
+                    eprintln!("--dictate requires a text argument");
+                    std::process::exit(2);
+                };
+                if text.len() > 1024 * 1024 {
+                    eprintln!("Text exceeds the insertion limit");
+                    std::process::exit(2);
+                }
+                let settings =
+                    reflow_lib::settings::SettingsStore::new(PlatformSys::get_config_path()).get();
+                let target = reflow_lib::platform::foreground_hwnd();
+                match reflow_lib::injection::TextInjector::inject(
+                    text,
+                    settings.clipboard_restore_enabled,
+                    target,
+                ) {
+                    Ok(outcome) => {
+                        // The injector restores asynchronously after the paste chord.
+                        // Keep the headless process alive until its restore delay elapses.
+                        if settings.clipboard_restore_enabled
+                            && outcome.pasted
+                            && !outcome.fallback_copy
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(1100));
+                            if let Err(error) =
+                                reflow_lib::injection::TextInjector::retry_clipboard_restore()
+                            {
+                                eprintln!("Clipboard restoration failed: {error}");
+                                std::process::exit(1);
+                            }
+                        }
+                        if outcome.fallback_copy {
+                            eprintln!("Copied — paste with the displayed clipboard shortcut.");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
             "--status" | "status" => {
                 println!("{}", PlatformSys::generate_diagnostics_report());
                 return;
@@ -170,6 +219,10 @@ fn main() {
                 println!("\nUsage:");
                 println!("  reflow [OPTIONS]");
                 println!("\nOptions:");
+                println!(
+                    "  --portable      Store all app data beside the executable in reflow-data"
+                );
+                println!("  --dictate TEXT  Paste text into the current foreground app without opening UI");
                 println!("  --status        Display current hardware and model diagnostics");
                 println!("  --history-list  List latest local SQLite transcriptions");
                 println!("  --latency       Print the measured latency waterfall and p50/p95");
@@ -184,4 +237,48 @@ fn main() {
     }
 
     reflow_lib::run();
+}
+
+/// Portable is an independent option, except inside a command's value argument.
+fn extract_portable(arguments: Vec<String>) -> (Vec<String>, bool) {
+    let mut result = Vec::with_capacity(arguments.len());
+    let mut portable = false;
+    let mut value_next = false;
+    for (index, argument) in arguments.into_iter().enumerate() {
+        if index == 0 || value_next {
+            result.push(argument);
+            value_next = false;
+        } else if argument == "--portable" {
+            portable = true;
+        } else {
+            value_next = matches!(argument.as_str(), "--dictate" | "--bind" | "--benchmark");
+            result.push(argument);
+        }
+    }
+    (result, portable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn portable_combines_with_commands_without_consuming_literal_text() {
+        for arguments in [
+            vec!["reflow", "--portable", "--status"],
+            vec!["reflow", "--status", "--portable"],
+        ] {
+            let (args, portable) =
+                extract_portable(arguments.into_iter().map(String::from).collect());
+            assert!(portable);
+            assert_eq!(args, ["reflow", "--status"]);
+        }
+        let (args, portable) = extract_portable(
+            vec!["reflow", "--dictate", "--portable"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        );
+        assert!(!portable);
+        assert_eq!(args[2], "--portable");
+    }
 }

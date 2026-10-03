@@ -1,9 +1,26 @@
+fn default_sound_volume() -> f32 {
+    0.7
+}
+fn default_min_dictation_ms() -> u64 {
+    300
+}
+fn default_hud_contrast() -> String {
+    "standard".into()
+}
+fn default_paste_delay_ms() -> u64 {
+    30
+}
+fn default_inject_method() -> String {
+    "paste".into()
+}
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::expansion::{default_mode_id, default_modes, default_send_key};
+pub use super::expansion::{Hotkeys, Mode, OutputAction, Snippet};
 use crate::formatting::replacements::{CustomReplacements, ReplacementRule};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +29,14 @@ pub struct DictionaryTerm {
     pub term: String,
     pub preferred_spelling: String,
     pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplicationProfile {
+    pub process: String,
+    pub style: String,
+    #[serde(default)]
+    pub dictionary_terms: Vec<DictionaryTerm>,
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +183,7 @@ fn default_device_auto() -> String {
     "auto".into()
 }
 
-fn default_true() -> bool {
+pub(super) fn default_true() -> bool {
     true
 }
 
@@ -217,6 +242,9 @@ pub fn migrate_document(value: &mut serde_json::Value) -> u32 {
     if found_version < 4 {
         migrate_v3_to_v4(object);
     }
+    if found_version < 5 {
+        migrate_v4_to_v5(object);
+    }
 
     object.insert(
         "settings_version".into(),
@@ -273,7 +301,23 @@ fn migrate_v3_to_v4(object: &mut serde_json::Map<String, serde_json::Value>) {
 
 /// Sections that merge field-by-field instead of being replaced wholesale.
 fn is_nested_section(key: &str) -> bool {
-    matches!(key, "asr" | "refinement" | "streaming" | "memory_policy")
+    matches!(
+        key,
+        "asr" | "refinement" | "streaming" | "memory_policy" | "hotkeys"
+    )
+}
+
+fn migrate_v4_to_v5(object: &mut serde_json::Map<String, serde_json::Value>) {
+    let hotkey = object
+        .get("hotkey")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(crate::platform::default_hotkey()));
+    let mut hotkeys = serde_json::to_value(Hotkeys::default()).expect("hotkey defaults");
+    hotkeys["dictation"] = hotkey;
+    object.entry("hotkeys").or_insert(hotkeys);
+    object
+        .entry("modes")
+        .or_insert_with(|| serde_json::to_value(default_modes()).expect("mode defaults"));
 }
 
 fn set_nested(
@@ -439,7 +483,7 @@ fn migrate_v2_to_v3(object: &mut serde_json::Map<String, serde_json::Value>) {
 /// * 3 — ASR and refinement compute settings are separate nested sections.
 ///   A single `compute_backend` could not express "ASR on the GPU, refinement
 ///   on the CPU", which is the correct configuration on a 4 GB card.
-pub const CURRENT_SETTINGS_VERSION: u32 = 4;
+pub const CURRENT_SETTINGS_VERSION: u32 = 5;
 
 fn default_settings_version() -> u32 {
     // Absent means a pre-versioning config, which is schema 1.
@@ -448,6 +492,59 @@ fn default_settings_version() -> u32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default = "default_true")]
+    pub sounds_enabled: bool,
+    #[serde(default = "default_sound_volume")]
+    pub sounds_volume: f32,
+    #[serde(default)]
+    pub history_encryption: bool,
+    #[serde(default)]
+    pub excluded_apps: Vec<String>,
+    #[serde(default)]
+    pub duck_media: bool,
+    #[serde(default = "default_true")]
+    pub follow_default_mic: bool,
+    #[serde(default)]
+    pub voice_commands_enabled: bool,
+    #[serde(default = "default_min_dictation_ms")]
+    pub min_dictation_ms: u64,
+    #[serde(default)]
+    pub power_policy: super::expansion::PowerPolicy,
+    #[serde(default = "default_hud_contrast")]
+    pub hud_contrast: String,
+    #[serde(default = "default_paste_delay_ms")]
+    pub paste_delay_ms: u64,
+    #[serde(default = "default_inject_method")]
+    pub inject_method: String,
+    #[serde(default)]
+    pub append_space: bool,
+    #[serde(default = "default_true")]
+    pub capitalize_first: bool,
+    #[serde(default)]
+    pub meeting_mode: bool,
+    #[serde(default)]
+    pub meeting_monitor_device_id: Option<String>,
+
+    #[serde(default)]
+    pub notes_folder: String,
+    #[serde(default)]
+    pub dictionary_suggestions: Vec<crate::expansion_commands::DictionarySuggestion>,
+    #[serde(default)]
+    pub dismissed_corrections: Vec<String>,
+    #[serde(default)]
+    pub hotkeys: Hotkeys,
+    #[serde(default)]
+    pub output_action: OutputAction,
+    #[serde(default = "default_send_key")]
+    pub send_key: String,
+    #[serde(default = "default_modes")]
+    pub modes: Vec<Mode>,
+    #[serde(default = "default_mode_id")]
+    pub default_mode_id: String,
+    #[serde(default = "default_true")]
+    pub mode_triggers_enabled: bool,
+    #[serde(default)]
+    pub snippets: Vec<Snippet>,
     /// Schema version of the persisted document. See
     /// [`CURRENT_SETTINGS_VERSION`].
     #[serde(default = "default_settings_version")]
@@ -505,6 +602,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub memory_policy: MemoryPolicySettings,
     pub history_retention: String,
+    #[serde(default = "default_audio_retention")]
+    pub audio_retention: String,
     pub overlay_position: String,
     pub overlay_theme: String,
     #[serde(default = "default_app_theme")]
@@ -531,13 +630,13 @@ pub struct AppSettings {
     pub custom_replacements: Vec<ReplacementRule>,
     pub dictionary_terms: Vec<DictionaryTerm>,
     #[serde(default)]
+    pub application_profiles: Vec<ApplicationProfile>,
+    #[serde(default)]
     pub api_enabled: bool,
     #[serde(default = "default_api_bind")]
     pub api_bind: String,
     #[serde(default = "default_api_port")]
     pub api_port: u16,
-    #[serde(default)]
-    pub api_mdns: bool,
     #[serde(default)]
     pub api_inject_default: bool,
 }
@@ -622,10 +721,41 @@ fn default_developer_mode() -> bool {
     false
 }
 
+fn default_audio_retention() -> String {
+    "disabled".into()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             settings_version: CURRENT_SETTINGS_VERSION,
+            hotkeys: Hotkeys::default(),
+            output_action: OutputAction::default(),
+            send_key: default_send_key(),
+            modes: default_modes(),
+            default_mode_id: default_mode_id(),
+            mode_triggers_enabled: true,
+            snippets: Vec::new(),
+            sounds_enabled: true,
+            sounds_volume: 0.7,
+            history_encryption: false,
+            excluded_apps: Vec::new(),
+            duck_media: false,
+            follow_default_mic: true,
+            voice_commands_enabled: false,
+            min_dictation_ms: 300,
+            power_policy: Default::default(),
+            hud_contrast: "standard".into(),
+            paste_delay_ms: 30,
+            inject_method: "paste".into(),
+            append_space: false,
+            capitalize_first: true,
+            meeting_mode: false,
+            meeting_monitor_device_id: None,
+
+            notes_folder: String::new(),
+            dictionary_suggestions: Vec::new(),
+            dismissed_corrections: Vec::new(),
             hotkey: crate::platform::default_hotkey().into(),
             push_to_talk: true,
             auto_stop_silence_ms: 1500,
@@ -649,6 +779,7 @@ impl Default for AppSettings {
             streaming: StreamingSettings::default(),
             memory_policy: MemoryPolicySettings::default(),
             history_retention: "30_days".into(),
+            audio_retention: default_audio_retention(),
             overlay_position: "bottom_center".into(),
             overlay_theme: "dark".into(),
             app_theme: default_app_theme(),
@@ -659,6 +790,7 @@ impl Default for AppSettings {
             ui_font_scale: default_ui_font_scale(),
             developer_mode: false,
             active_profile: "Default".into(),
+            application_profiles: Vec::new(),
             launch_at_startup: false,
             start_minimized: false,
             offline_mode: true,
@@ -668,7 +800,6 @@ impl Default for AppSettings {
             api_enabled: false,
             api_bind: default_api_bind(),
             api_port: default_api_port(),
-            api_mdns: true,
             api_inject_default: false,
             custom_replacements: CustomReplacements::default_rules(),
             dictionary_terms: vec![
@@ -803,6 +934,39 @@ fn processing_mode_for_cleanup(level: &str) -> &'static str {
 }
 
 impl AppSettings {
+    pub fn for_application(&self, process: &str) -> Self {
+        fn name(process: &str) -> String {
+            process
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(process)
+                .trim()
+                .to_ascii_lowercase()
+                .trim_end_matches(".exe")
+                .to_owned()
+        }
+        let mut effective = self.clone();
+        if let Some(profile) = self
+            .application_profiles
+            .iter()
+            .find(|p| name(&p.process) == name(process))
+        {
+            if matches!(
+                profile.style.as_str(),
+                "faithful" | "neutral" | "decisive" | "email" | "chat"
+            ) {
+                effective.style = profile.style.clone();
+                effective.auto_style_from_app = false;
+            }
+            for term in profile.dictionary_terms.iter().take(60) {
+                effective
+                    .dictionary_terms
+                    .retain(|global| !global.term.eq_ignore_ascii_case(&term.term));
+                effective.dictionary_terms.push(term.clone());
+            }
+        }
+        effective
+    }
     /// Backwards-compatible effective cleanup level. Honors an explicit
     /// `cleanup_level`; otherwise falls back to the legacy `processing_mode`
     /// ("raw" / "flow" / anything else -> "light").
@@ -862,6 +1026,9 @@ impl AppSettings {
     /// [`Self::resolve_intent`] would compute, and stamp the current schema
     /// version. Idempotent.
     pub fn normalized(mut self) -> Self {
+        if crate::history::db::audio_retention_ms(&self.audio_retention).is_err() {
+            self.audio_retention = default_audio_retention();
+        }
         if !matches!(self.asr.runtime.as_str(), "python" | "native") {
             self.asr.runtime = default_asr_runtime();
         }
@@ -1004,6 +1171,12 @@ impl SettingsStore {
     }
 
     pub fn merge_update(&self, patch: serde_json::Value) -> Result<AppSettings, String> {
+        if let Some(policy) = patch.get("audio_retention") {
+            let policy = policy
+                .as_str()
+                .ok_or("Audio retention must be a supported duration.")?;
+            crate::history::db::audio_retention_ms(policy)?;
+        }
         let mut lock = self.settings.write();
         let mut merged_value = serde_json::to_value(&*lock)
             .map_err(|e| format!("Failed to serialize current settings: {e}"))?;
@@ -1037,6 +1210,11 @@ impl SettingsStore {
         // nested sections rather than dropping them silently.
         if let (Some(dst), Some(src)) = (merged_value.as_object_mut(), patch.as_object()) {
             apply_legacy_compute_patch(dst, src);
+            if let Some(hotkey) = src.get("hotkey") {
+                set_nested(dst, "hotkeys", "dictation", hotkey.clone());
+            } else if let Some(hotkey) = src.get("hotkeys").and_then(|v| v.get("dictation")) {
+                dst.insert("hotkey".into(), hotkey.clone());
+            }
         }
 
         let mut merged: AppSettings = serde_json::from_value(merged_value)
@@ -1060,6 +1238,7 @@ impl SettingsStore {
         }
 
         let merged = merged.normalized();
+        merged.validate_expansion()?;
         self.write_to_disk(&merged)?;
         *lock = merged.clone();
         Ok(merged)
@@ -1068,6 +1247,22 @@ impl SettingsStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn application_profile_matches_exact_process_and_preserves_global_preferences() {
+        let mut settings = super::AppSettings::default();
+        settings
+            .application_profiles
+            .push(super::ApplicationProfile {
+                process: "code.exe".into(),
+                style: "email".into(),
+                dictionary_terms: vec![],
+            });
+        let effective = settings.for_application("C:\\Apps\\CODE.EXE");
+        assert_eq!(effective.style, "email");
+        assert!(!effective.auto_style_from_app);
+        assert_eq!(settings.for_application("decode.exe").style, settings.style);
+        assert_ne!(settings.style, "email");
+    }
     use super::*;
 
     #[test]

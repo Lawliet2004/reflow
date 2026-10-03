@@ -1,11 +1,12 @@
 package com.reflow.android.ui
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,18 +21,25 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,17 +49,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.reflow.android.audio.DictationService
-import com.reflow.android.audio.PcmRecorder
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.reflow.android.audio.DictationPhase
+import com.reflow.android.audio.DictationViewModel
 import com.reflow.android.data.HistoryItem
 import com.reflow.android.data.Prefs
 import com.reflow.android.data.ServerConnection
-import com.reflow.android.net.DictationSocket
 import com.reflow.android.net.ReflowClient
 import com.reflow.android.net.parsePairUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 
 private val Zinc = darkColorScheme(
     primary = Color(0xFF6366F1),
@@ -94,6 +104,7 @@ fun ReflowApp(initialPairUri: String?) {
                 connection == null || tab == "pair" -> PairScreen(
                     initialPairUri = initialPairUri,
                     client = client,
+                    needsSecurePairing = prefs.needsSecurePairing,
                     onPaired = {
                         prefs.connection = it
                         connection = it
@@ -119,6 +130,7 @@ fun ReflowApp(initialPairUri: String?) {
 private fun PairScreen(
     initialPairUri: String?,
     client: ReflowClient,
+    needsSecurePairing: Boolean,
     onPaired: (ServerConnection) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -126,15 +138,17 @@ private fun PairScreen(
     var port by remember { mutableStateOf("7840") }
     var code by remember { mutableStateOf("") }
     var pairUri by remember { mutableStateOf(initialPairUri ?: "") }
+    var certificatePin by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
     fun applyPairUri(value: String) {
         pairUri = value
-        parsePairUri(value)?.let { (h, p, c) ->
+        parsePairUri(value)?.let { (h, p, c, fingerprint) ->
             host = h
             port = p.toString()
             code = c
+            certificatePin = fingerprint
         }
     }
 
@@ -142,8 +156,9 @@ private fun PairScreen(
         initialPairUri?.let { applyPairUri(it) }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Pair with your Windows or Linux desktop.", color = Color(0xFFA1A1AA), fontSize = 13.sp)
+        if (needsSecurePairing) Text("Your previous connection needs encrypted pairing. Copy a new pairing link from desktop Settings → Phone.", color = Color(0xFFFBBF24), fontSize = 13.sp)
         Text(
             "Paste the pair link from desktop Settings → Phone, or enter IP + code.",
             color = Color(0xFFA1A1AA),
@@ -164,6 +179,8 @@ private fun PairScreen(
         )
         OutlinedTextField(host, { host = it }, label = { Text("Desktop IP") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(port, { port = it }, label = { Text("Port") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(certificatePin, { certificatePin = it.trim().lowercase() }, label = { Text("Desktop certificate SHA-256") }, modifier = Modifier.fillMaxWidth())
+        Text("Use the fingerprint shown on your desktop. A pairing link fills it automatically. Legacy links must be replaced.", color = Color(0xFFA1A1AA), fontSize = 12.sp)
         if (error != null) Text(error!!, color = Color(0xFFF87171), fontSize = 12.sp)
         Button(
             enabled = !busy,
@@ -173,10 +190,12 @@ private fun PairScreen(
                 scope.launch {
                     try {
                         val conn = withContext(Dispatchers.IO) {
-                            client.pair(host.trim(), port.toIntOrNull() ?: 7840, code.trim(), "Android")
+                            val number = requireNotNull(port.toIntOrNull()) { "Enter a valid port" }
+                            client.pair(host.trim(), number, code.trim(), "Android", certificatePin.trim())
                         }
                         onPaired(conn)
                     } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         error = e.message
                     } finally {
                         busy = false
@@ -191,89 +210,78 @@ private fun PairScreen(
 private fun DictateScreen(prefs: Prefs, client: ReflowClient, conn: ServerConnection) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var listening by remember { mutableStateOf(false) }
-    var transcript by remember { mutableStateOf("Hold to talk") }
-    var error by remember { mutableStateOf<String?>(null) }
-    var socket by remember { mutableStateOf<DictationSocket?>(null) }
-    var recorder by remember { mutableStateOf<PcmRecorder?>(null) }
+    val session: DictationViewModel = viewModel()
+    val transcript = session.transcript
+    var actionError by remember { mutableStateOf<String?>(null) }
+    val latestConnection by rememberUpdatedState(conn)
+    val listening = session.phase == DictationPhase.Listening
+    val available = session.phase == DictationPhase.Idle
 
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!granted) error = "Microphone permission required"
+        if (!granted) session.permissionDenied()
     }
 
-    fun stopSession() {
-        recorder?.stop()
-        recorder = null
-        socket?.stop()
-        listening = false
-        context.stopService(Intent(context, DictationService::class.java))
-    }
+    DisposableEffect(session, conn.token) { onDispose { session.cancel() } }
 
-    fun startSession() {
+    val startSession by rememberUpdatedState(newValue = {
         val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         if (!hasMic) {
             permission.launch(Manifest.permission.RECORD_AUDIO)
-            return
-        }
-        error = null
-        transcript = "Listening…"
-        context.startForegroundService(Intent(context, DictationService::class.java))
-        val sock = client.openStream(
-            conn = conn,
-            language = prefs.language,
-            inject = prefs.injectOnDesktop,
-            onPartial = { transcript = it.fullText.ifBlank { "Listening…" } },
-            onFinal = {
-                transcript = it.text.ifBlank { transcript }
-                listening = false
-                recorder?.stop()
-                recorder = null
-                context.stopService(Intent(context, DictationService::class.java))
-            },
-            onError = { error = it; stopSession() },
-            onReady = { listening = true },
-        )
-        socket = sock
-        val rec = PcmRecorder { bytes -> sock.sendPcm(bytes) }
-        recorder = rec
-        rec.start()
-        listening = true
-    }
+            false
+        } else session.start(client, latestConnection, prefs.language, prefs.injectOnDesktop)
+    })
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
         Column {
-            Text(transcript, color = Color.White, fontSize = 18.sp)
-            if (error != null) Text(error!!, color = Color(0xFFF87171), fontSize = 12.sp)
+            Text(transcript.ifBlank { "Hold to talk" }, color = Color.White, fontSize = 18.sp)
+            Text(when (session.phase) {
+                DictationPhase.Idle -> "Ready"
+                DictationPhase.Connecting -> "Connecting to desktop…"
+                DictationPhase.Listening -> "Listening…"
+                DictationPhase.Processing -> "Desktop is transcribing…"
+            }, color = Color(0xFFA1A1AA), fontSize = 12.sp)
+            (actionError ?: session.error)?.let { Text(it, color = Color(0xFFF87171), fontSize = 12.sp) }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
             val hold = Modifier
                 .fillMaxWidth()
                 .height(72.dp)
                 .background(if (listening) Color(0xFFDC2626) else Color(0xFF4F46E5), RoundedCornerShape(20.dp))
-                .pointerInput(listening) {
+                .pointerInput(session) {
                     detectTapGestures(
                         onPress = {
-                            startSession()
-                            tryAwaitRelease()
-                            stopSession()
+                            if (startSession()) {
+                                try { tryAwaitRelease() } finally { session.release() }
+                            }
                         },
                     )
                 }
             Box(hold, contentAlignment = Alignment.Center) {
-                Text(if (listening) "Release to finish" else "Hold to talk", color = Color.White)
+                Text(when (session.phase) {
+                    DictationPhase.Idle -> "Hold to talk"
+                    DictationPhase.Connecting -> "Connecting… Release to finish"
+                    DictationPhase.Listening -> "Release to finish"
+                    DictationPhase.Processing -> "Processing…"
+                }, color = Color.White)
             }
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = {
+                TextButton(enabled = transcript.isNotBlank(), onClick = {
                     val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                     cm.setPrimaryClip(android.content.ClipData.newPlainText("reflow", transcript))
                 }) { Text("Copy") }
-                TextButton(onClick = {
-                    scope.launch(Dispatchers.IO) {
-                        runCatching { client.inject(conn, transcript) }
+                TextButton(enabled = transcript.isNotBlank() && available, onClick = {
+                    scope.launch {
+                        actionError = null
+                        try { withContext(Dispatchers.IO) { client.inject(conn, transcript) } }
+                        catch (failure: Exception) {
+                            if (failure is CancellationException) throw failure
+                            actionError = failure.message ?: "Could not paste on desktop"
+                        }
                     }
                 }) { Text("Paste on PC") }
+                if (!available) TextButton(onClick = { session.cancel() }) { Text("Cancel") }
             }
         }
     }
@@ -287,6 +295,7 @@ private fun HistoryScreen(client: ReflowClient, conn: ServerConnection) {
         try {
             items = withContext(Dispatchers.IO) { client.history(conn) }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             error = e.message
         }
     }
@@ -307,9 +316,20 @@ private fun HistoryScreen(client: ReflowClient, conn: ServerConnection) {
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun SettingsScreen(prefs: Prefs, onForget: () -> Unit) {
+    val context = LocalContext.current
+    val languages = remember {
+        val catalog = JSONArray(context.assets.open("languages.json").bufferedReader().use { it.readText() })
+        listOf("auto" to "Detect automatically") + (0 until catalog.length()).map {
+            val language = catalog.getJSONObject(it)
+            language.getString("code") to language.getString("name")
+        }
+    }
     var inject by remember { mutableStateOf(prefs.injectOnDesktop) }
-    var language by remember { mutableStateOf(prefs.language) }
+    var language by remember { mutableStateOf(prefs.language.takeIf { code -> languages.any { it.first == code } } ?: "auto") }
+    var expanded by remember { mutableStateOf(false) }
+    LaunchedEffect(language) { prefs.language = language }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Paste on computer when I stop", color = Color.White)
@@ -318,15 +338,22 @@ private fun SettingsScreen(prefs: Prefs, onForget: () -> Unit) {
                 prefs.injectOnDesktop = it
             })
         }
-        OutlinedTextField(
-            language,
-            {
-                language = it
-                prefs.language = it
-            },
-            label = { Text("Language (auto/en/hi/bn)") },
-            modifier = Modifier.fillMaxWidth(),
-        )
+        ExposedDropdownMenuBox(expanded, onExpandedChange = { expanded = !expanded }) {
+            OutlinedTextField(
+                value = languages.first { it.first == language }.second,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Speech language") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
+            )
+            ExposedDropdownMenu(expanded, onDismissRequest = { expanded = false }) {
+                languages.forEach { (code, name) ->
+                    DropdownMenuItem(text = { Text(name) }, onClick = { language = code; expanded = false })
+                }
+            }
+        }
+        Text("These languages are supported by desktop speech recognition and multilingual cleanup. Accuracy varies by language.", color = Color(0xFFA1A1AA), fontSize = 12.sp)
         Text("ASR stays on the desktop. This phone is only a microphone.", color = Color(0xFFA1A1AA), fontSize = 12.sp)
         Button(onClick = onForget) { Text("Forget this computer") }
     }

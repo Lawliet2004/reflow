@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde_json::json;
 
 use super::engine::{ASREngine, EngineStatus};
@@ -15,6 +15,10 @@ use crate::rewrite::FlowRuntime;
 
 const SAMPLE_RATE: usize = 16_000;
 const MAX_AUDIO_SAMPLES: usize = SAMPLE_RATE * 3600;
+
+#[cfg(test)]
+#[path = "native_cancellation_tests.rs"]
+mod cancellation_tests;
 
 pub struct NativeAsrEngine {
     runtime: Arc<FlowRuntime>,
@@ -26,6 +30,8 @@ pub struct NativeAsrEngine {
     warning: Option<String>,
     truncated_samples: usize,
     cancelled: Arc<AtomicBool>,
+    installation_active: Arc<Mutex<bool>>,
+    progress: Option<super::engine::ProgressTracker>,
 }
 
 impl Default for NativeAsrEngine {
@@ -43,28 +49,62 @@ impl Default for NativeAsrEngine {
             warning: None,
             truncated_samples: 0,
             cancelled: Arc::new(AtomicBool::new(false)),
+            installation_active: Arc::new(Mutex::new(true)),
+            progress: None,
         }
     }
 }
 
 impl NativeAsrEngine {
+    fn refresh_liveness(&self) {
+        let mut status = self.status.write();
+        if status.loaded && !self.runtime.status_ready() {
+            status.loaded = false;
+            status.error = Some("Native ASR server exited; reload the model to continue.".into());
+        }
+    }
+
     fn configure(&mut self, model_dir: &str) -> Result<&'static ModelManifest, String> {
         let dir = Path::new(model_dir);
         let manifest = crate::profile::manifest::NATIVE_ASR_MODELS
             .iter()
             .find(|m| dir.file_name().and_then(|n| n.to_str()) == Some(m.dir_name))
             .ok_or("Unknown native ASR model directory")?;
+        *self.installation_active.lock() = false;
         self.runtime.shutdown();
+        self.installation_active = Arc::new(Mutex::new(true));
         self.runtime = Arc::new(FlowRuntime::for_audio_model(
             dir.join(manifest.filename),
             dir.join(manifest.auxiliary_files[0].filename),
         ));
-        *self.status.write() = EngineStatus {
+        self.status = Arc::new(RwLock::new(EngineStatus {
             backend: "native ASR (not loaded)".into(),
             ..Default::default()
-        };
+        }));
         Ok(manifest)
     }
+}
+
+impl Drop for NativeAsrEngine {
+    fn drop(&mut self) {
+        *self.installation_active.lock() = false;
+        self.runtime.shutdown();
+    }
+}
+
+fn load_installed_native(
+    runtime: &FlowRuntime,
+    status: &RwLock<EngineStatus>,
+    manifest: &ModelManifest,
+    installation_active: &Mutex<bool>,
+) -> Result<(), String> {
+    // Hold the ownership gate through startup. Unload/reconfigure can then
+    // invalidate a pending download or shut down a load that already won.
+    let active = installation_active.lock();
+    if !*active {
+        return Ok(());
+    }
+    load_native(runtime, status, manifest, "auto")
 }
 
 fn load_native(
@@ -104,6 +144,9 @@ fn load_native(
 }
 
 impl ASREngine for NativeAsrEngine {
+    fn set_progress_tracker(&mut self, tracker: super::engine::ProgressTracker) {
+        self.progress = Some(tracker);
+    }
     fn initialize(&mut self) -> Result<(), String> {
         Ok(())
     }
@@ -138,16 +181,23 @@ impl ASREngine for NativeAsrEngine {
     }
 
     fn unload_model(&mut self) -> Result<(), String> {
+        *self.installation_active.lock() = false;
         self.runtime.shutdown();
-        self.status.write().loaded = false;
+        let mut state = self.status.read().clone();
+        state.loaded = false;
+        state.is_loading = false;
+        state.is_downloading = false;
+        self.status = Arc::new(RwLock::new(state));
         Ok(())
     }
 
     fn is_model_loaded(&self) -> bool {
+        self.refresh_liveness();
         self.status.read().loaded
     }
 
     fn start_stream(&mut self, language: &str, vocabulary: &[String]) -> Result<(), String> {
+        super::languages::language_name(language)?;
         if !self.is_model_loaded() {
             return Err("Native ASR model is not loaded".into());
         }
@@ -187,8 +237,16 @@ impl ASREngine for NativeAsrEngine {
             .base_url
             .clone()
             .ok_or("Native ASR server is not ready")?;
-        let http = reqwest::blocking::Client::builder()
+        // The actor is synchronous, but each HTTP decode has abortable async
+        // ownership. Dropping the selected future closes its connection when
+        // cancellation wins, instead of waiting for a 180-second response.
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Native ASR request executor: {error}"))?;
+        let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(180))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
         let mut texts = Vec::new();
@@ -196,16 +254,23 @@ impl ASREngine for NativeAsrEngine {
         if self.truncated_samples > 0 {
             warnings.push("Only the first 3600s of this dictation was transcribed.".to_string());
         }
-        for (index, range) in segment_ranges(&audio, SAMPLE_RATE * 8)
-            .into_iter()
-            .enumerate()
-        {
+        let ranges = segment_ranges(&audio, SAMPLE_RATE * 8);
+        if let Some(progress) = &self.progress {
+            progress.write().total = ranges.len();
+        }
+        for (index, range) in ranges.into_iter().enumerate() {
             if self.cancelled.load(Ordering::Acquire) {
                 return Ok(String::new());
+            }
+            if let Some(progress) = &self.progress {
+                progress.write().completed = index;
             }
             let samples = &audio[range];
             let rms = (samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32).sqrt();
             if rms < 0.004 {
+                if let Some(progress) = &self.progress {
+                    progress.write().completed = index + 1;
+                }
                 continue;
             }
             let data = base64::engine::general_purpose::STANDARD.encode(wav_bytes(samples)?);
@@ -219,52 +284,41 @@ impl ASREngine for NativeAsrEngine {
                 "max_tokens": 384,
                 "stream": false
             });
-            let language_name = match self.language.as_str() {
-                "en" => Some("English"),
-                "hi" => Some("Hindi"),
-                "zh" => Some("Chinese"),
-                "yue" => Some("Cantonese"),
-                "ar" => Some("Arabic"),
-                "de" => Some("German"),
-                "fr" => Some("French"),
-                "es" => Some("Spanish"),
-                "pt" => Some("Portuguese"),
-                "id" => Some("Indonesian"),
-                "it" => Some("Italian"),
-                "ko" => Some("Korean"),
-                "ru" => Some("Russian"),
-                "th" => Some("Thai"),
-                "vi" => Some("Vietnamese"),
-                "ja" => Some("Japanese"),
-                "tr" => Some("Turkish"),
-                "ms" => Some("Malay"),
-                "nl" => Some("Dutch"),
-                "sv" => Some("Swedish"),
-                "da" => Some("Danish"),
-                "fi" => Some("Finnish"),
-                "pl" => Some("Polish"),
-                "cs" => Some("Czech"),
-                "fil" => Some("Filipino"),
-                "fa" => Some("Persian"),
-                "el" => Some("Greek"),
-                "hu" => Some("Hungarian"),
-                "mk" => Some("Macedonian"),
-                "ro" => Some("Romanian"),
-                _ => None,
-            };
+            let language_name = super::languages::language_name(&self.language)?;
             if let Some(name) = language_name {
                 body["generation_prompt"] = json!(format!("language {name}<asr_text>"));
             }
-            let response: serde_json::Value = http
-                .post(format!("{url}/v1/chat/completions"))
-                .json(&body)
-                .send()
-                .and_then(|r| r.error_for_status())
-                .and_then(|r| r.json())
-                .map_err(|e| format!("Native ASR segment {}: {e}", index + 1))?;
+            let response = executor.block_on(async {
+                let request = async {
+                    http.post(format!("{url}/v1/chat/completions"))
+                        .json(&body)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .json::<serde_json::Value>()
+                        .await
+                };
+                let cancelled = async {
+                    while !self.cancelled.load(Ordering::Acquire) {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    _ = cancelled => Ok(None),
+                    response = request => response.map(Some),
+                }
+            });
+            // A cancellation racing with a network error still means the
+            // dictation was deliberately discarded, not that inference failed.
             if self.cancelled.load(Ordering::Acquire) {
                 return Ok(String::new());
             }
+            let Some(response) =
+                response.map_err(|e| format!("Native ASR segment {}: {e}", index + 1))?
+            else {
+                return Ok(String::new());
+            };
             let choice = response
                 .get("choices")
                 .and_then(|c| c.get(0))
@@ -288,6 +342,9 @@ impl ASREngine for NativeAsrEngine {
                 && !text.is_empty()
             {
                 texts.push(text);
+            }
+            if let Some(progress) = &self.progress {
+                progress.write().completed = index + 1;
             }
         }
         self.warning = (!warnings.is_empty()).then(|| warnings.join(" "));
@@ -314,10 +371,12 @@ impl ASREngine for NativeAsrEngine {
         self.warning.take()
     }
     fn engine_status(&mut self) -> EngineStatus {
+        self.refresh_liveness();
         self.status.read().clone()
     }
 
     fn install_model_dir(&mut self, model_dir: &str, repo: &str) -> Result<(), String> {
+        crate::network_policy::check_download()?;
         if self.status.read().is_downloading {
             return Err("A native ASR download is already running".into());
         }
@@ -328,10 +387,13 @@ impl ASREngine for NativeAsrEngine {
         let dir = PathBuf::from(model_dir);
         let runtime = Arc::clone(&self.runtime);
         let status = Arc::clone(&self.status);
+        let installation_active = Arc::clone(&self.installation_active);
         status.write().is_downloading = true;
         std::thread::spawn(move || {
-            let outcome = download_native(&dir, manifest, &status)
-                .and_then(|_| load_native(&runtime, &status, manifest, "auto"));
+            let outcome =
+                download_native(&dir, manifest, &status, &installation_active).and_then(|_| {
+                    load_installed_native(&runtime, &status, manifest, &installation_active)
+                });
             let mut state = status.write();
             state.is_downloading = false;
             if let Err(error) = outcome {
@@ -346,10 +408,12 @@ fn download_native(
     dir: &Path,
     manifest: &ModelManifest,
     status: &RwLock<EngineStatus>,
+    installation_active: &Mutex<bool>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60 * 60))
+        .redirect(crate::network_policy::redirect_policy())
         .build()
         .map_err(|e| e.to_string())?;
     let mut downloaded = 0u64;
@@ -359,26 +423,38 @@ fn download_native(
             .iter()
             .map(|f| (f.filename, f.sha256)),
     ) {
+        if !*installation_active.lock() {
+            return Err("Native ASR installation canceled".into());
+        }
         let dest = dir.join(filename);
         if dest.is_file() && verify_sha256(&dest, hash).is_ok() {
             downloaded += std::fs::metadata(&dest).map_err(|e| e.to_string())?.len();
             continue;
         }
         let part = dest.with_extension("gguf.part");
-        let mut response = client
-            .get(format!(
-                "https://huggingface.co/{}/resolve/{}/{}",
-                manifest.repo, manifest.revision, filename
-            ))
-            .send()
-            .and_then(|r| r.error_for_status())
-            .map_err(|e| e.to_string())?;
-        let mut file = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+        let mut response = crate::network_policy::send_download(client.get(format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            manifest.repo, manifest.revision, filename
+        )))?;
+        if !response.status().is_success() {
+            return Err(format!("Model download failed: HTTP {}", response.status()));
+        }
+        let mut file = {
+            let active = installation_active.lock();
+            if !*active {
+                return Err("Native ASR installation canceled".into());
+            }
+            std::fs::File::create(&part).map_err(|e| e.to_string())?
+        };
         let mut buffer = vec![0u8; 64 * 1024];
         loop {
             let count = response.read(&mut buffer).map_err(|e| e.to_string())?;
             if count == 0 {
                 break;
+            }
+            let active = installation_active.lock();
+            if !*active {
+                return Err("Native ASR installation canceled".into());
             }
             file.write_all(&buffer[..count])
                 .map_err(|e| e.to_string())?;
@@ -388,6 +464,12 @@ fn download_native(
         }
         file.flush().map_err(|e| e.to_string())?;
         drop(file);
+        // Serialize the final artifact commit with invalidation so a retired
+        // installer cannot replace files belonging to a newer installation.
+        let active = installation_active.lock();
+        if !*active {
+            return Err("Native ASR installation canceled".into());
+        }
         if let Err(error) = verify_sha256(&part, hash) {
             let _ = std::fs::remove_file(&part);
             return Err(format!(
@@ -480,6 +562,103 @@ fn parse_transcript(raw: &str) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configuring_a_new_model_isolates_retired_install_status() {
+        let mut engine = NativeAsrEngine::default();
+        let retired = Arc::clone(&engine.status);
+        engine
+            .configure(crate::profile::manifest::NATIVE_ASR_MODELS[0].dir_name)
+            .unwrap();
+        retired.write().error = Some("retired download failed".into());
+        retired.write().is_downloading = true;
+        let current = engine.engine_status();
+        assert!(current.error.is_none());
+        assert!(!current.is_downloading);
+    }
+
+    #[test]
+    fn unloading_isolates_retired_install_status() {
+        let mut engine = NativeAsrEngine::default();
+        let retired = Arc::clone(&engine.status);
+        retired.write().is_downloading = true;
+        engine.unload_model().unwrap();
+        retired.write().error = Some("retired download failed".into());
+        let current = engine.engine_status();
+        assert!(current.error.is_none());
+        assert!(!current.is_downloading);
+    }
+
+    #[test]
+    fn a_retired_install_cannot_reload_an_unloaded_or_reconfigured_engine() {
+        for reconfigure in [false, true] {
+            let mut engine = NativeAsrEngine::default();
+            let retired_runtime = Arc::clone(&engine.runtime);
+            let retired_status = Arc::clone(&engine.status);
+            let retired_gate = Arc::clone(&engine.installation_active);
+            let manifest = &crate::profile::manifest::NATIVE_ASR_MODELS[0];
+            if reconfigure {
+                engine.configure(manifest.dir_name).unwrap();
+            } else {
+                engine.unload_model().unwrap();
+            }
+            // With no model files, attempting runtime startup would fail. A
+            // retired completion must skip startup and leave both states alone.
+            load_installed_native(&retired_runtime, &retired_status, manifest, &retired_gate)
+                .unwrap();
+            assert!(!retired_runtime.status_ready());
+            assert!(retired_status.read().error.is_none());
+            assert!(!engine.engine_status().loaded);
+        }
+    }
+
+    fn stub_child(live: bool) -> std::process::Child {
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let mut command = std::process::Command::new("powershell");
+            command.args([
+                "-NoProfile",
+                "-Command",
+                if live {
+                    "Start-Sleep -Seconds 60"
+                } else {
+                    "exit 0"
+                },
+            ]);
+            command.creation_flags(0x08000000);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", if live { "sleep 60" } else { "exit 0" }]);
+            command
+        };
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn native_status_reports_an_exited_server_and_blocks_new_streams() {
+        let mut engine = NativeAsrEngine::default();
+        let mut child = stub_child(false);
+        child.wait().unwrap();
+        engine.runtime.attach_test_child(child);
+        *engine.runtime.client.write() = crate::rewrite::FlowClient::new_url(
+            "http://127.0.0.1:9".into(),
+            Duration::from_secs(1),
+        );
+        engine.status.write().loaded = true;
+        let status = engine.engine_status();
+        assert!(!status.loaded);
+        assert!(status.error.unwrap().contains("exited"));
+        assert!(!engine.is_model_loaded());
+        assert!(engine.start_stream("en", &[]).is_err());
+    }
     #[test]
     fn chat_audio_protocol_and_cap_warning() {
         use std::io::BufRead;
@@ -543,6 +722,7 @@ mod tests {
                 Duration::from_secs(2),
             );
             engine.status.write().loaded = true;
+            engine.runtime.attach_test_child(stub_child(true));
             let handle = crate::asr::AsrHandle::spawn(Box::new(engine), 8);
             handle
                 .start_stream_blocking(7, "en", &["Reflow".into()])

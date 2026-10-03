@@ -2,9 +2,10 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
@@ -12,6 +13,12 @@ use crate::audio::resampler::AudioResampler;
 use crate::profile::manifest::ASR_MODELS;
 
 const ASR_PUSH_CHUNK_SAMPLES: usize = 16_000;
+const CANCELLED_TRANSPORT: &str = "engine_cancelled: discarded dictation";
+const CANCEL_GRACE: Duration = Duration::from_millis(400);
+
+#[cfg(test)]
+#[path = "sidecar_transport_tests.rs"]
+mod transport_tests;
 
 /// Marker prefix for a sidecar read timeout.
 ///
@@ -91,9 +98,110 @@ fn audio_chunks(samples: &[f32]) -> impl Iterator<Item = &[f32]> {
     samples.chunks(ASR_PUSH_CHUNK_SAMPLES)
 }
 
+struct PipeWrite {
+    payload: PipePayload,
+    reply: std::sync::mpsc::Sender<Result<(), String>>,
+}
+
+enum PipePayload {
+    Bytes(Vec<u8>),
+    Command(Value),
+}
+
+/// One owner serializes complete protocol frames. Producers never acquire the
+/// pipe mutex, and at most two frames can wait behind the current write.
+struct SidecarWriter {
+    queue: std::sync::mpsc::SyncSender<PipeWrite>,
+    closed: Arc<AtomicBool>,
+    cancelled: AtomicBool,
+}
+
+impl SidecarWriter {
+    fn spawn(stdin: Arc<parking_lot::Mutex<ChildStdin>>) -> Result<Arc<Self>, String> {
+        let (queue, receiver) = std::sync::mpsc::sync_channel::<PipeWrite>(2);
+        let closed = Arc::new(AtomicBool::new(false));
+        let worker_closed = Arc::clone(&closed);
+        std::thread::Builder::new()
+            .name("asr-sidecar-writer".into())
+            .spawn(move || {
+                while !worker_closed.load(Ordering::Acquire) {
+                    let write = match receiver.recv_timeout(Duration::from_millis(100)) {
+                        Ok(write) => write,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
+                    if worker_closed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let bytes = match write.payload {
+                        PipePayload::Bytes(bytes) => bytes,
+                        PipePayload::Command(command) => match serde_json::to_vec(&command) {
+                            Ok(mut bytes) => {
+                                bytes.push(b'\n');
+                                bytes
+                            }
+                            Err(error) => {
+                                let _ = write.reply.send(Err(error.to_string()));
+                                continue;
+                            }
+                        },
+                    };
+                    if worker_closed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let result = {
+                        let mut stdin = stdin.lock();
+                        stdin.write_all(&bytes).and_then(|_| stdin.flush())
+                    }
+                    .map_err(|error| format!("Failed to write to sidecar stdin: {error}"));
+                    let failed = result.is_err();
+                    let _ = write.reply.send(result);
+                    if failed {
+                        worker_closed.store(true, Ordering::Release);
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| format!("Could not start ASR pipe writer: {error}"))?;
+        Ok(Arc::new(Self {
+            queue,
+            closed,
+            cancelled: AtomicBool::new(false),
+        }))
+    }
+
+    fn enqueue(&self, bytes: Vec<u8>) -> Result<Receiver<Result<(), String>>, String> {
+        self.enqueue_payload(PipePayload::Bytes(bytes))
+    }
+
+    fn enqueue_payload(
+        &self,
+        payload: PipePayload,
+    ) -> Result<Receiver<Result<(), String>>, String> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err("ASR sidecar writer is closed".into());
+        }
+        let (reply, receiver) = std::sync::mpsc::channel();
+        self.queue
+            .try_send(PipeWrite { payload, reply })
+            .map_err(|error| -> String {
+                match error {
+                    std::sync::mpsc::TrySendError::Full(_) => {
+                        "ASR sidecar write queue is full".into()
+                    }
+                    std::sync::mpsc::TrySendError::Disconnected(_) => {
+                        "ASR sidecar writer is disconnected".into()
+                    }
+                }
+            })?;
+        Ok(receiver)
+    }
+}
+
 pub struct Qwen3AsrSidecar {
     child: Option<Child>,
     stdin: Option<Arc<parking_lot::Mutex<ChildStdin>>>,
+    writer: Option<Arc<SidecarWriter>>,
     /// Lines produced by a dedicated reader thread. Reading through a channel
     /// rather than blocking on the pipe is what makes a bounded wait possible:
     /// `BufReader::read_line` has no timeout, so a wedged sidecar used to
@@ -138,6 +246,7 @@ pub struct Qwen3AsrSidecar {
     /// 180s is far more than a 5-second utterance needs, and far less than ten
     /// minutes of hands-free dictation needs.
     pushed_samples: usize,
+    progress: Option<super::engine::ProgressTracker>,
 }
 
 /// How many consecutive `status`/`ping` timeouts to absorb before telling the
@@ -159,6 +268,7 @@ impl Qwen3AsrSidecar {
         Self {
             child: None,
             stdin: None,
+            writer: None,
             responses: None,
             backend_name: "Qwen3-ASR (Local CUDA/CPU)".into(),
             detected_language: "en".into(),
@@ -173,10 +283,11 @@ impl Qwen3AsrSidecar {
             consecutive_probe_timeouts: 0,
             load_in_flight: false,
             pushed_samples: 0,
+            progress: None,
         }
     }
 
-    fn find_python() -> Option<String> {
+    pub(crate) fn find_python() -> Option<String> {
         let names: &[&str] = if cfg!(windows) {
             &["python", "python3"]
         } else {
@@ -184,28 +295,46 @@ impl Qwen3AsrSidecar {
         };
 
         for name in names {
-            let ok = Command::new(name)
-                .arg("-c")
-                .arg("import sys; sys.exit(0)")
-                .status()
-                .map(|status| status.success())
-                .unwrap_or(false);
-            if ok {
-                // The Windows Store python.exe stub "succeeds" then fails to run.
-                if let Ok(out) = Command::new(name)
-                    .arg("-c")
-                    .arg("import sys; print(sys.executable)")
-                    .output()
-                {
-                    let exe = String::from_utf8_lossy(&out.stdout).to_lowercase();
-                    if exe.contains("windowsapps") {
-                        continue;
-                    }
+            if let Some(out) = Self::bounded_python_probe(name, "import sys; print(sys.executable)")
+            {
+                let exe = String::from_utf8_lossy(&out).to_lowercase();
+                if !exe.contains("windowsapps") {
+                    return Some((*name).to_string());
                 }
-                return Some((*name).to_string());
             }
         }
         None
+    }
+
+    pub(crate) fn bounded_python_probe(python: &str, code: &str) -> Option<Vec<u8>> {
+        let mut command = Command::new(python);
+        command
+            .args(["-c", code])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = command.spawn().ok()?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let output = child.wait_with_output().ok()?;
+                    return status.success().then_some(output.stdout);
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
     }
 
     fn find_runtime_script(resource_dir: Option<&Path>) -> Option<PathBuf> {
@@ -287,6 +416,7 @@ impl Qwen3AsrSidecar {
     /// the sidecar, blew its budget, and killed the process before the model
     /// could finish loading — on every single launch.
     fn send_command_timeout(&mut self, payload: Value, timeout: Duration) -> Result<Value, String> {
+        let deadline = std::time::Instant::now() + timeout;
         let command = payload
             .get("cmd")
             .and_then(|v| v.as_str())
@@ -296,29 +426,27 @@ impl Qwen3AsrSidecar {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
 
-        {
-            let mut stdin = self
-                .stdin
-                .as_ref()
-                .ok_or("Subprocess stdin is not open")?
-                .lock();
-            let mut payload = payload;
-            if let Some(obj) = payload.as_object_mut() {
-                obj.insert("id".into(), Value::from(request_id));
-            }
-            let line = payload.to_string();
-            writeln!(&mut *stdin, "{}", line)
-                .map_err(|e| format!("Failed to write to sidecar stdin: {}", e))?;
-            stdin
-                .flush()
-                .map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
+        let mut payload = payload;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("id".into(), Value::from(request_id));
         }
+        // Serialization belongs to the supervised job: even a large external
+        // control payload cannot postpone the caller's deadline.
+        self.write_until(PipePayload::Command(payload), &command, deadline, timeout)?;
+        let mut cancellation_deadline = None;
 
         // The sidecar may interleave non-JSON chatter; skip blank lines but
         // keep the overall wait bounded by `timeout`.
-        let deadline = std::time::Instant::now() + timeout;
         loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let now = std::time::Instant::now();
+            let mut remaining = deadline.saturating_duration_since(now);
+            if command == "stop_stream" && self.transport_cancelled() {
+                let cancel_deadline = cancellation_deadline.get_or_insert(now + CANCEL_GRACE);
+                remaining = remaining.min(cancel_deadline.saturating_duration_since(now));
+                if remaining.is_zero() {
+                    return Err(self.abandon_cancelled_transport());
+                }
+            }
             if remaining.is_zero() {
                 return Err(self.on_command_timeout(&command, timeout));
             }
@@ -328,7 +456,11 @@ impl Qwen3AsrSidecar {
                     .as_ref()
                     .ok_or("Subprocess stdout reader is not open")?
                     .lock();
-                guard.recv_timeout(remaining)
+                guard.recv_timeout(if command == "stop_stream" {
+                    remaining.min(Duration::from_millis(20))
+                } else {
+                    remaining
+                })
             };
             match received {
                 Ok(line) if line.trim().is_empty() => continue,
@@ -337,6 +469,29 @@ impl Qwen3AsrSidecar {
                         Ok(v) => v,
                         Err(e) => return Err(format!("Invalid JSON response: {}: {}", e, line)),
                     };
+                    if parsed.get("event").and_then(Value::as_str) == Some("asr_progress") {
+                        if command == "stop_stream"
+                            && parsed.get("id").and_then(Value::as_u64) == Some(request_id)
+                            && !self.transport_cancelled()
+                        {
+                            if let Some(progress) = &self.progress {
+                                let mut progress = progress.write();
+                                progress.total = parsed
+                                    .get("total")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(0)
+                                    .min(1000)
+                                    as usize;
+                                progress.completed = parsed
+                                    .get("completed")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(0)
+                                    .min(progress.total as u64)
+                                    as usize;
+                            }
+                        }
+                        continue;
+                    }
                     // A reply carrying a different id belongs to a request we
                     // already gave up on. Drop it and keep waiting for ours.
                     match parsed.get("id").and_then(|v| v.as_u64()) {
@@ -347,17 +502,124 @@ impl Qwen3AsrSidecar {
                             );
                             continue;
                         }
-                        _ => return Ok(parsed),
+                        _ => {
+                            return if command == "stop_stream" && self.transport_cancelled() {
+                                Ok(json!({"id": request_id, "status": "ok", "text": ""}))
+                            } else {
+                                Ok(parsed)
+                            };
+                        }
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    return Err(self.on_command_timeout(&command, timeout));
+                    if std::time::Instant::now() < deadline {
+                        continue;
+                    }
+                    return if command == "stop_stream" && self.transport_cancelled() {
+                        Err(self.abandon_cancelled_transport())
+                    } else {
+                        Err(self.on_command_timeout(&command, timeout))
+                    };
                 }
                 Err(RecvTimeoutError::Disconnected) => {
+                    if command == "stop_stream" && self.transport_cancelled() {
+                        return Err(self.abandon_cancelled_transport());
+                    }
                     let err = "ASR sidecar closed its output pipe".to_string();
                     self.kill_child();
                     self.record_crash_and_check_breaker(&err);
                     return Err(err);
+                }
+            }
+        }
+    }
+
+    fn transport_cancelled(&self) -> bool {
+        self.writer
+            .as_ref()
+            .is_some_and(|writer| writer.cancelled.load(Ordering::Acquire))
+    }
+
+    fn abandon_cancelled_transport(&mut self) -> String {
+        self.kill_child();
+        self.fallback("ASR did not acknowledge cancellation; reload the model to continue.");
+        CANCELLED_TRANSPORT.into()
+    }
+
+    fn writer(&mut self) -> Result<Arc<SidecarWriter>, String> {
+        if let Some(writer) = &self.writer {
+            return Ok(Arc::clone(writer));
+        }
+        let stdin = Arc::clone(self.stdin.as_ref().ok_or("Subprocess stdin is not open")?);
+        let writer = SidecarWriter::spawn(stdin)?;
+        self.writer = Some(Arc::clone(&writer));
+        Ok(writer)
+    }
+
+    fn write_until(
+        &mut self,
+        payload: PipePayload,
+        command: &str,
+        deadline: std::time::Instant,
+        budget: Duration,
+    ) -> Result<(), String> {
+        let writer = self.writer()?;
+        let receiver = match writer.enqueue_payload(payload) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                self.kill_child();
+                self.record_crash_and_check_breaker(&error);
+                return Err(error);
+            }
+        };
+        let mut cancellation_deadline = None;
+        loop {
+            let now = std::time::Instant::now();
+            let mut remaining = deadline.saturating_duration_since(now);
+            let watch_cancellation = matches!(command, "stop_stream" | "push_audio");
+            if watch_cancellation && writer.cancelled.load(Ordering::Acquire) {
+                let cancel_deadline = cancellation_deadline.get_or_insert(now + CANCEL_GRACE);
+                remaining = remaining.min(cancel_deadline.saturating_duration_since(now));
+                if remaining.is_zero() {
+                    return Err(self.abandon_cancelled_transport());
+                }
+            }
+            match receiver.recv_timeout(if watch_cancellation {
+                remaining.min(Duration::from_millis(20))
+            } else {
+                remaining
+            }) {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) => {
+                    if watch_cancellation && writer.cancelled.load(Ordering::Acquire) {
+                        return Err(self.abandon_cancelled_transport());
+                    }
+                    self.kill_child();
+                    self.record_crash_and_check_breaker(&error);
+                    return Err(error);
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    if watch_cancellation && writer.cancelled.load(Ordering::Acquire) {
+                        return Err(self.abandon_cancelled_transport());
+                    }
+                    self.kill_child();
+                    let error = "ASR sidecar writer closed before completing its frame".to_string();
+                    self.record_crash_and_check_breaker(&error);
+                    return Err(error);
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if std::time::Instant::now() < deadline {
+                        continue;
+                    }
+                    if watch_cancellation && writer.cancelled.load(Ordering::Acquire) {
+                        return Err(self.abandon_cancelled_transport());
+                    }
+                    // A partially written frame cannot be retried safely, even for
+                    // read-only probes. Terminate first; do not lock the full pipe.
+                    let error = engine_timeout_error(command, budget);
+                    self.kill_child();
+                    self.record_crash_and_check_breaker(&error);
+                    return Err(error);
                 }
             }
         }
@@ -457,13 +719,10 @@ impl Qwen3AsrSidecar {
     }
 
     fn kill_child(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            writer.closed.store(true, Ordering::Release);
+        }
         if let Some(mut child) = self.child.take() {
-            if let Some(stdin) = self.stdin.take() {
-                let mut stdin = stdin.lock();
-                use std::io::Write;
-                let _ = writeln!(stdin, "{{\"cmd\":\"quit\"}}");
-                let _ = stdin.flush();
-            }
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -503,6 +762,9 @@ fn spawn_response_reader(
 }
 
 impl ASREngine for Qwen3AsrSidecar {
+    fn set_progress_tracker(&mut self, tracker: super::engine::ProgressTracker) {
+        self.progress = Some(tracker);
+    }
     fn set_resource_dir(&mut self, dir: PathBuf) {
         self.resource_dir = Some(dir);
     }
@@ -581,7 +843,13 @@ impl ASREngine for Qwen3AsrSidecar {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
-                .env("PYTHONUNBUFFERED", "1");
+                .env("PYTHONUNBUFFERED", "1")
+                .env(
+                    "REFLOW_NETWORK_POLICY",
+                    crate::platform::PlatformSys::get_app_dir().join("network-policy.json"),
+                )
+                .env("HF_HUB_DISABLE_TELEMETRY", "1")
+                .env("HF_HUB_DISABLE_XET", "1");
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -675,6 +943,7 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn install_model_dir(&mut self, model_dir: &str, repo: &str) -> Result<(), String> {
+        crate::network_policy::check_download()?;
         if self.use_fallback {
             return Err("ASR runtime unavailable".into());
         }
@@ -707,12 +976,9 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return self.fallback_mock.unload_model();
         }
-        let _ = self.send_command(json!({"cmd": "unload_model"}));
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-        }
-        self.stdin = None;
-        self.responses = None;
+        // The process owns all model allocations. Killing it frees them without
+        // waiting behind inference or a wedged input/output pipe.
+        self.kill_child();
         self.load_in_flight = false;
         self.status_cache = EngineStatus::default();
         Ok(())
@@ -726,6 +992,7 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn start_stream(&mut self, language: &str, vocabulary: &[String]) -> Result<(), String> {
+        super::languages::language_name(language)?;
         self.detected_language = if language == "auto" {
             "en".into()
         } else {
@@ -738,6 +1005,9 @@ impl ASREngine for Qwen3AsrSidecar {
 
         // New utterance, new audio budget.
         self.pushed_samples = 0;
+        if let Some(writer) = &self.writer {
+            writer.cancelled.store(false, Ordering::Release);
+        }
 
         let cmd = json!({
             "cmd": "start_stream",
@@ -769,11 +1039,7 @@ impl ASREngine for Qwen3AsrSidecar {
         }
 
         self.pushed_samples = self.pushed_samples.saturating_add(samples_16k_mono.len());
-        let mut stdin = self
-            .stdin
-            .as_ref()
-            .ok_or("Subprocess stdin is not open")?
-            .lock();
+        let deadline = std::time::Instant::now() + TIMEOUT_PUSH_AUDIO;
 
         // Keep each binary frame write bounded. This also protects callers that
         // submit a large buffer (for example external audio), while normal
@@ -788,15 +1054,20 @@ impl ASREngine for Qwen3AsrSidecar {
             header[5..9].copy_from_slice(&0u32.to_le_bytes()); // sequence_id
             header[9..13].copy_from_slice(&len.to_le_bytes()); // len
 
-            stdin
-                .write_all(&header)
-                .map_err(|e| format!("Failed to write binary frame header: {e}"))?;
-            stdin
-                .write_all(&pcm_bytes)
-                .map_err(|e| format!("Failed to write binary audio data: {e}"))?;
-            stdin
-                .flush()
-                .map_err(|e| format!("Failed to flush sidecar stdin: {e}"))?;
+            let mut frame = Vec::with_capacity(header.len() + pcm_bytes.len());
+            frame.extend_from_slice(&header);
+            frame.extend_from_slice(&pcm_bytes);
+            if let Err(error) = self.write_until(
+                PipePayload::Bytes(frame),
+                "push_audio",
+                deadline,
+                TIMEOUT_PUSH_AUDIO,
+            ) {
+                if error == CANCELLED_TRANSPORT {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
         }
 
         Ok(None)
@@ -854,6 +1125,10 @@ impl ASREngine for Qwen3AsrSidecar {
                     .unwrap_or_default();
                 Ok(text.to_string())
             }
+            Err(e) if e == CANCELLED_TRANSPORT => {
+                self.last_warning = None;
+                Ok(String::new())
+            }
             Err(e) => {
                 log::error!("stop_stream failed: {e}");
                 Err(e)
@@ -862,12 +1137,12 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn cancellation_signal(&self) -> Option<super::engine::InferenceCancellation> {
-        let stdin = Arc::clone(self.stdin.as_ref()?);
+        let writer = Arc::clone(self.writer.as_ref()?);
         Some(Arc::new(move || {
-            let mut stdin = stdin.lock();
-            let result = writeln!(&mut *stdin, "{{\"cmd\":\"cancel_stream\",\"id\":0}}")
-                .and_then(|_| stdin.flush());
-            if let Err(error) = result {
+            writer.cancelled.store(true, Ordering::Release);
+            // Never acquire the pipe lock on the caller's thread. The callback
+            // remains safe while audio submission holds a blocked OS write.
+            if let Err(error) = writer.enqueue(b"{\"cmd\":\"cancel_stream\",\"id\":0}\n".to_vec()) {
                 log::warn!("Could not interrupt ASR inference: {error}");
             }
         }))

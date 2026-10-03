@@ -9,6 +9,9 @@ pub const DEFAULT_AUDIO_RING_BUFFER_CAPACITY: usize = 60 * 16_000;
 pub struct AudioRingBuffer {
     buffer: VecDeque<f32>,
     capacity: usize,
+    overflowed: bool,
+    peak: f32,
+    total_samples: u64,
 }
 
 impl Default for AudioRingBuffer {
@@ -22,14 +25,24 @@ impl AudioRingBuffer {
         Self {
             buffer: VecDeque::with_capacity(capacity.max(1)),
             capacity: capacity.max(1),
+            overflowed: false,
+            peak: 0.0,
+            total_samples: 0,
         }
     }
 
     pub fn extend_from_slice(&mut self, samples: &[f32]) {
+        self.total_samples = self.total_samples.saturating_add(samples.len() as u64);
+        self.peak = samples
+            .iter()
+            .filter(|sample| sample.is_finite())
+            .map(|sample| sample.abs())
+            .fold(self.peak, f32::max);
         if samples.is_empty() {
             return;
         }
         if samples.len() >= self.capacity {
+            self.overflowed |= self.buffer.len() + samples.len() > self.capacity;
             self.buffer.clear();
             let start = samples.len() - self.capacity;
             self.buffer.extend(&samples[start..]);
@@ -38,6 +51,7 @@ impl AudioRingBuffer {
 
         let overflow = (self.buffer.len() + samples.len()).saturating_sub(self.capacity);
         if overflow > 0 {
+            self.overflowed = true;
             self.buffer.drain(..overflow);
         }
         self.buffer.extend(samples);
@@ -61,6 +75,20 @@ impl AudioRingBuffer {
 
     pub fn clear(&mut self) {
         self.buffer.clear();
+        self.overflowed = false;
+        self.peak = 0.0;
+        self.total_samples = 0;
+    }
+
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    pub fn peak(&self) -> f32 {
+        self.peak
+    }
+    pub fn total_samples(&self) -> u64 {
+        self.total_samples
     }
 
     pub fn capacity(&self) -> usize {

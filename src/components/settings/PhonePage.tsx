@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { AppSettings, ApiStatus } from "../../types";
 import { api } from "../../services/tauriApi";
 import { Section, Row, Toggle, qrSrc } from "./ui";
@@ -16,16 +16,32 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
   const [copiedPair, setCopiedPair] = useState<"code" | "uri" | null>(null);
   const [view, setView] = useState<PairView>("qr");
   const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [working, setWorking] = useState<string | null>(null);
+  const statusEpoch = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    let pending = false;
     const tick = () => {
+      if (pending) return;
+      pending = true;
+      const epoch = statusEpoch.current;
       api
         .getApiStatus()
         .then((status) => {
-          if (!cancelled) setApiStatus(status);
+          if (!cancelled && epoch === statusEpoch.current) {
+            setApiStatus(status);
+            setStatusError(null);
+          }
         })
-        .catch(() => {});
+        .catch(() => {
+          if (!cancelled && epoch === statusEpoch.current)
+            setStatusError("Could not refresh phone status. Retrying shortly.");
+        })
+        .finally(() => {
+          pending = false;
+        });
     };
     tick();
     const id = setInterval(tick, 2500);
@@ -34,6 +50,67 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
       clearInterval(id);
     };
   }, [settings.api_enabled, settings.api_bind, settings.api_port]);
+
+  const rotate = async () => {
+    statusEpoch.current += 1;
+    setWorking("rotate");
+    setError(null);
+    try {
+      setApiStatus(await api.rotatePairingCode());
+    } catch {
+      setError("Could not rotate the pairing code. Please try again.");
+    } finally {
+      statusEpoch.current += 1;
+      setWorking(null);
+    }
+  };
+
+  const revoke = async (id: string) => {
+    statusEpoch.current += 1;
+    setWorking(id);
+    setError(null);
+    try {
+      await api.revokeApiDevice(id);
+      setApiStatus((status) =>
+        status
+          ? { ...status, devices: status.devices.filter((device) => device.id !== id) }
+          : status,
+      );
+    } catch {
+      setError("Could not revoke this phone. It is still paired; please try again.");
+    } finally {
+      statusEpoch.current += 1;
+      setWorking(null);
+    }
+  };
+
+  const setPermission = async (
+    id: string,
+    permissions: { stream: boolean; history: boolean; injection: boolean },
+  ) => {
+    statusEpoch.current += 1;
+    setWorking(id);
+    setError(null);
+    try {
+      if (!(await api.setApiDevicePermissions(id, permissions)))
+        throw new Error("Device no longer paired");
+      setApiStatus((status) =>
+        status
+          ? {
+              ...status,
+              devices: status.devices.map((device) =>
+                device.id === id ? { ...device, permissions } : device,
+              ),
+            }
+          : status,
+      );
+    } catch (failure) {
+      setError(`Could not save phone permissions: ${String(failure)}`);
+    } finally {
+      statusEpoch.current += 1;
+      setWorking(null);
+    }
+  };
 
   const copyPair = async (kind: "code" | "uri", value: string) => {
     try {
@@ -55,6 +132,11 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
       {error && (
         <p role="alert" className="text-sm text-danger">
           {error}
+        </p>
+      )}
+      {statusError && (
+        <p role="alert" className="text-sm text-danger">
+          {statusError}
         </p>
       )}
       <Row label="Enable LAN API" hint="Let a phone on your network stream audio to this computer">
@@ -90,7 +172,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
       </Row>
 
       {apiStatus?.warning && (
-        <p className="text-[12px] text-muted leading-relaxed">{apiStatus.warning}</p>
+        <p className="text-xs text-muted leading-relaxed">{apiStatus.warning}</p>
       )}
 
       {settings.api_enabled && apiStatus && (
@@ -100,7 +182,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
               <button
                 key={v}
                 onClick={() => setView(v)}
-                className={`px-2.5 py-1 rounded-full text-[11.5px] font-semibold transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors cursor-pointer ${
                   view === v
                     ? "bg-accent-soft text-accent border border-accent-border"
                     : "bg-surface text-muted border border-line hover:text-ink hover:bg-base-2"
@@ -118,21 +200,17 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
                 alt="Pairing QR"
                 className="w-[160px] h-[160px] rounded-lg bg-white p-2 border border-line"
               />
-              <div className="min-w-0 flex-1 space-y-2 text-[12.5px] text-muted">
+              <div className="min-w-0 flex-1 space-y-2 text-sm text-muted">
                 <p className="text-ink">Open the Reflow app on your phone and scan this code.</p>
                 {apiStatus.pair_uri && (
                   <p className="text-muted">
-                    Or paste the link in <span className="kbd !text-[10.5px]">Pair</span>.
+                    Or paste the link in <span className="kbd !text-2xs">Pair</span>.
                   </p>
                 )}
                 <button
-                  className="btn btn-ghost !py-1.5 !px-2.5 !text-[12px]"
-                  onClick={() =>
-                    api
-                      .rotatePairingCode()
-                      .then(setApiStatus)
-                      .catch(() => {})
-                  }
+                  className="btn btn-ghost !py-1.5 !px-2.5 !text-xs"
+                  onClick={rotate}
+                  disabled={working !== null}
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   Rotate
@@ -143,23 +221,21 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
 
           {view === "code" && (
             <div className="space-y-2">
-              <p className="text-[11.5px] text-muted">Pairing code</p>
-              <p className="text-[28px] leading-none font-semibold tracking-[0.18em] text-ink">
+              <p className="text-xs text-muted">Pairing code</p>
+              <p className="text-2xl leading-none font-semibold tracking-[0.18em] text-ink">
                 {apiStatus.pairing_code ?? "——————"}
               </p>
               {apiStatus.pairing_expires_in_sec != null && (
-                <p className="text-[11.5px] text-muted">
-                  Expires in {apiStatus.pairing_expires_in_sec}s
-                </p>
+                <p className="text-xs text-muted">Expires in {apiStatus.pairing_expires_in_sec}s</p>
               )}
               <div className="flex flex-wrap gap-2 pt-1">
                 {apiStatus.pairing_code && (
                   <button
-                    className="btn btn-ghost !py-1.5 !px-2.5 !text-[12px]"
+                    className="btn btn-ghost !py-1.5 !px-2.5 !text-xs"
                     onClick={() => copyPair("code", apiStatus.pairing_code!)}
                   >
                     {copiedPair === "code" ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <Check className="w-3.5 h-3.5 text-success" />
                     ) : (
                       <Copy className="w-3.5 h-3.5" />
                     )}
@@ -167,13 +243,9 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
                   </button>
                 )}
                 <button
-                  className="btn btn-ghost !py-1.5 !px-2.5 !text-[12px]"
-                  onClick={() =>
-                    api
-                      .rotatePairingCode()
-                      .then(setApiStatus)
-                      .catch(() => {})
-                  }
+                  className="btn btn-ghost !py-1.5 !px-2.5 !text-xs"
+                  onClick={rotate}
+                  disabled={working !== null}
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   Rotate
@@ -184,9 +256,9 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
 
           {view === "link" && apiStatus.pair_uri && (
             <div>
-              <p className="text-[11.5px] text-muted mb-1">Pair link</p>
+              <p className="text-xs text-muted mb-1">Pair link</p>
               <div className="flex items-center gap-2">
-                <code className="field flex-1 !text-[11.5px] truncate">{apiStatus.pair_uri}</code>
+                <code className="field flex-1 !text-xs truncate">{apiStatus.pair_uri}</code>
                 <button
                   className="icon-btn border border-line"
                   onClick={() => copyPair("uri", apiStatus.pair_uri!)}
@@ -194,7 +266,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
                   aria-label="Copy pair link"
                 >
                   {copiedPair === "uri" ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <Check className="w-3.5 h-3.5 text-success" />
                   ) : (
                     <Copy className="w-3.5 h-3.5" />
                   )}
@@ -204,33 +276,79 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
           )}
 
           {apiStatus.listen_addrs.length > 0 && (
-            <p className="text-[11.5px] text-muted">
+            <p className="text-xs text-muted">
               Listening on {apiStatus.listen_addrs.join(", ")}:{apiStatus.port}
               {apiStatus.running ? "" : " · server starting…"}
             </p>
+          )}
+          {apiStatus.certificate_sha256 && (
+            <div className="space-y-2">
+              <p className="text-xs text-muted">
+                Desktop certificate fingerprint (SHA-256). Copy this into manual phone pairing, or
+                use the full pairing link.
+              </p>
+              <code className="block text-xs text-ink break-all select-all">
+                {apiStatus.certificate_sha256}
+              </code>
+              <button
+                className="btn btn-ghost"
+                onClick={() => copyPair("uri", apiStatus.certificate_sha256!)}
+              >
+                Copy fingerprint
+              </button>
+            </div>
           )}
         </div>
       )}
 
       <div>
-        <p className="text-[13px] font-medium text-ink mb-2">Paired devices</p>
+        <p className="text-sm font-medium text-ink mb-2">Paired devices</p>
         {(apiStatus?.devices ?? []).length === 0 ? (
-          <p className="text-[12px] text-muted">No phones paired yet.</p>
+          <p className="text-xs text-muted">No phones paired yet.</p>
         ) : (
           <div className="divide-y divide-line rounded-xl border border-line overflow-hidden">
             {(apiStatus?.devices ?? []).map((device) => (
               <div key={device.id} className="flex items-center gap-3 px-3 py-2.5">
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium text-ink truncate">{device.name}</p>
-                  <p className="text-[11px] text-muted">{device.created_at}</p>
+                  <p className="text-sm font-medium text-ink truncate">{device.name}</p>
+                  <p className="text-2xs text-muted">{device.created_at}</p>
+                  <div className="flex flex-wrap gap-3 pt-2 text-xs text-muted">
+                    {(
+                      [
+                        ["stream", "Stream audio"],
+                        ["history", "Read history"],
+                        ["injection", "Paste on desktop"],
+                      ] as const
+                    ).map(([key, label]) => {
+                      const permissions = device.permissions ?? {
+                        stream: true,
+                        history: false,
+                        injection: false,
+                      };
+                      return (
+                        <label key={key} className="flex items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            checked={permissions[key]}
+                            disabled={working !== null}
+                            aria-label={`${label} for ${device.name}`}
+                            onChange={(event) =>
+                              setPermission(device.id, {
+                                ...permissions,
+                                [key]: event.target.checked,
+                              })
+                            }
+                          />
+                          {label}
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
                 <button
-                  className="btn btn-danger !py-1 !px-2.5 !text-[12px]"
-                  onClick={async () => {
-                    await api.revokeApiDevice(device.id);
-                    const next = await api.getApiStatus();
-                    setApiStatus(next);
-                  }}
+                  className="btn btn-danger !py-1 !px-2.5 !text-xs"
+                  onClick={() => revoke(device.id)}
+                  disabled={working !== null}
                 >
                   Revoke
                 </button>

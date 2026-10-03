@@ -138,6 +138,13 @@ pub fn accept_rewrite(
         return None;
     }
 
+    if numeric_literals(original) != numeric_literals(trimmed)
+        || !preserves_identifiers(original, trimmed)
+        || !preserves_scripts(original, trimmed)
+    {
+        return None;
+    }
+
     if has_negation(original) && !has_negation(trimmed) {
         return None;
     }
@@ -153,6 +160,10 @@ pub fn accept_rewrite(
     let orig_tokens = tokenize(original);
     let cand_tokens = tokenize(trimmed);
     let max_len = orig_tokens.len().max(cand_tokens.len());
+    // Bound the quadratic comparison. Oversized changes retain the original.
+    if max_len > 8192 {
+        return (orig_tokens == cand_tokens).then(|| trimmed.to_string());
+    }
     if max_len > 0 {
         let distance = levenshtein(&orig_tokens, &cand_tokens);
         let ratio = distance as f32 / max_len as f32;
@@ -168,7 +179,7 @@ pub fn accept_rewrite(
     Some(trimmed.to_string())
 }
 
-fn looks_like_meta(text: &str) -> bool {
+pub(crate) fn looks_like_meta(text: &str) -> bool {
     let lower = text.trim().to_ascii_lowercase();
     if lower.contains("```") {
         return true;
@@ -185,6 +196,39 @@ fn looks_like_meta(text: &str) -> bool {
         .unwrap_or("")
         .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
     first == "sure"
+}
+
+/// Commands may legitimately change length, numbers and language.
+pub fn accept_task_output(original: &str, candidate: &str) -> Option<String> {
+    let text = candidate.trim();
+    let lower = text.to_ascii_lowercase();
+    let refused = [
+        "i cannot",
+        "i can't",
+        "i am unable",
+        "i'm unable",
+        "as an ai",
+        "sorry, i",
+        "i’m unable",
+        "i can’t",
+    ];
+    if text.is_empty()
+        || looks_like_meta(text)
+        || text.chars().count()
+            > original
+                .chars()
+                .count()
+                .saturating_mul(8)
+                .saturating_add(2400)
+                .min(32000)
+        || refused.iter().any(|prefix| lower.starts_with(prefix))
+        || lower.starts_with("instruction:")
+        || lower.starts_with("text:")
+    {
+        None
+    } else {
+        Some(text.to_owned())
+    }
 }
 
 /// `true` when the original speaks in the first person and the candidate has
@@ -216,6 +260,37 @@ fn drops_first_person(original: &str, candidate: &str) -> bool {
         "our",
         "ours",
         "ourselves",
+        "je",
+        "nous",
+        "ich",
+        "wir",
+        "yo",
+        "nosotros",
+        "eu",
+        "nós",
+        "ik",
+        "wij",
+        "io",
+        "noi",
+        "я",
+        "мы",
+        "मैं",
+        "हम",
+        "أنا",
+        "نحن",
+        "من",
+        "ما",
+        "saya",
+        "kami",
+        "aku",
+        "ako",
+        "ben",
+        "biz",
+        "我",
+        "私",
+        "저",
+        "나",
+        "ฉัน",
     ];
     let is_first_person = |text: &str| {
         tokenize(text)
@@ -245,9 +320,80 @@ fn reports_the_speaker(candidate: &str) -> bool {
 
 fn has_negation(text: &str) -> bool {
     let words = tokenize(text);
+    const NEGATIONS: &[&str] = &[
+        "not",
+        "never",
+        "don't",
+        "dont",
+        "nicht",
+        "kein",
+        "keine",
+        "pas",
+        "jamais",
+        "non",
+        "nunca",
+        "no",
+        "não",
+        "nunca",
+        "niet",
+        "geen",
+        "ikke",
+        "inte",
+        "ej",
+        "ei",
+        "en",
+        "nie",
+        "není",
+        "nikdy",
+        "нет",
+        "не",
+        "никогда",
+        "δεν",
+        "όχι",
+        "нема",
+        "не",
+        "नहीं",
+        "मत",
+        "tidak",
+        "bukan",
+        "tak",
+        "jangan",
+        "hindi",
+        "huwag",
+        "نہیں",
+        "نمی",
+        "نه",
+        "نیست",
+        "لا",
+        "ليس",
+        "لم",
+        "لن",
+        "hayır",
+        "değil",
+    ];
     if words
         .iter()
-        .any(|w| w == "not" || w == "never" || w == "don't" || w == "dont" || w.ends_with("n't"))
+        .any(|w| NEGATIONS.contains(&w.as_str()) || w.ends_with("n't"))
+    {
+        return true;
+    }
+    if [
+        "不",
+        "没",
+        "未",
+        "無",
+        "唔",
+        "冇",
+        "ない",
+        "ません",
+        "안",
+        "않",
+        "못",
+        "ไม่",
+        "không",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
     {
         return true;
     }
@@ -257,13 +403,77 @@ fn has_negation(text: &str) -> bool {
 }
 
 fn tokenize(text: &str) -> Vec<String> {
-    text.split_whitespace()
+    // Split CJK characters individually so punctuation edits do not replace an
+    // entire whitespace-free utterance. Keep words in space-delimited scripts.
+    let mut separated = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch as u32, 0x3400..=0x9fff | 0x3040..=0x30ff | 0xac00..=0xd7af | 0x0e00..=0x0e7f)
+        {
+            separated.push(' ');
+            separated.push(ch);
+            separated.push(' ');
+        } else {
+            separated.push(ch);
+        }
+    }
+    separated
+        .split_whitespace()
         .map(|word| {
             word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
-                .to_ascii_lowercase()
+                .to_lowercase()
         })
         .filter(|word| !word.is_empty())
         .collect()
+}
+
+fn preserves_scripts(original: &str, candidate: &str) -> bool {
+    let count = |text: &str| {
+        let mut scripts = [0usize; 8];
+        for ch in text.chars().filter(|c| c.is_alphabetic()) {
+            let script = match ch as u32 {
+                0x370..=0x3ff => Some(0),
+                0x400..=0x52f => Some(1),
+                0x600..=0x8ff => Some(2),
+                0x900..=0x97f => Some(3),
+                0x3400..=0x9fff => Some(4),
+                0x3040..=0x30ff => Some(5),
+                0xac00..=0xd7af => Some(6),
+                0xe00..=0xe7f => Some(7),
+                _ => None,
+            };
+            if let Some(script) = script {
+                scripts[script] += 1;
+            }
+        }
+        scripts
+    };
+    let original = count(original);
+    let candidate = count(candidate);
+    original
+        .iter()
+        .zip(candidate)
+        .all(|(before, after)| *before < 2 || after > 0)
+}
+
+fn numeric_literals(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && !matches!(c, '.' | ':' | '-' | '/' | ','))
+        .map(|s| s.trim_matches(|c: char| matches!(c, '.' | ':' | '-' | '/' | ',')))
+        .filter(|s| s.chars().any(|c| c.is_numeric()))
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn preserves_identifiers(original: &str, candidate: &str) -> bool {
+    original.split_whitespace().all(|word| {
+        let word =
+            word.trim_matches(|c: char| matches!(c, '.' | ',' | ';' | '!' | '?' | '(' | ')' | '"'));
+        let technical = word.contains('@')
+            || word.contains("://")
+            || word.contains('_')
+            || word.contains('\\')
+            || word.chars().filter(|c| c.is_uppercase()).count() > 1;
+        !technical || candidate.to_lowercase().contains(&word.to_lowercase())
+    })
 }
 
 fn levenshtein(a: &[String], b: &[String]) -> usize {
@@ -292,6 +502,62 @@ fn levenshtein(a: &[String], b: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_changed_numbers_dates_and_technical_entities() {
+        for (original, candidate) in [
+            (
+                "pay 125.50 on 2026-10-01 please",
+                "Pay 125.60 on 2026-10-01, please.",
+            ),
+            ("meet at 3:00 with the team", "Meet at 4:00 with the team."),
+            (
+                "send to alice@example.com today",
+                "Send to bob@example.com today.",
+            ),
+            (
+                "call get_user_name with the result",
+                "Call get_account_name with the result.",
+            ),
+        ] {
+            assert!(
+                accept_rewrite(original, candidate, "high").is_none(),
+                "{original}"
+            );
+        }
+        assert!(accept_rewrite(
+            "pay 125.50 on 2026-10-01 please",
+            "Pay 125.50 on 2026-10-01, please.",
+            "high"
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn accepts_cjk_punctuation_and_rejects_multilingual_negation_loss() {
+        assert!(
+            accept_rewrite("please यह send tomorrow", "Please send tomorrow.", "high").is_none()
+        );
+        assert!(accept_rewrite(
+            "今天我们一起发布这个版本",
+            "今天，我们一起发布这个版本。",
+            "medium"
+        )
+        .is_some());
+        for (original, candidate) in [
+            ("मैं यह नहीं चाहता", "मैं यह चाहता"),
+            ("我不想发布这个版本", "我想发布这个版本"),
+            ("je ne veux pas publier", "je veux publier"),
+            ("ich will das nicht senden", "ich will das senden"),
+            ("no quiero publicar esto", "quiero publicar esto"),
+            ("لا أريد نشر هذا", "أريد نشر هذا"),
+        ] {
+            assert!(
+                accept_rewrite(original, candidate, "high").is_none(),
+                "{original}"
+            );
+        }
+    }
 
     /// Skipping the LLM has to be safe in one direction only: never skip text
     /// that still needs work. These are the cases where polishing genuinely has
@@ -416,7 +682,7 @@ mod tests {
     #[test]
     fn high_allows_more_token_change_than_medium() {
         let orig = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
-        let cand = "alpha bravo charlie delta w1 w2 w3 w4 w5 w6";
+        let cand = "alpha bravo charlie delta whisky xray yankee zulu lima mike";
         assert!(accept_rewrite(orig, cand, CleanupLevel::Medium).is_none());
         assert!(accept_rewrite(orig, cand, CleanupLevel::High).is_some());
     }

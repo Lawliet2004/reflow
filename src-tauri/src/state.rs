@@ -45,6 +45,16 @@ pub struct SegmentTiming {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LatencyMetrics {
+    #[serde(default)]
+    pub llm_generation: Option<crate::rewrite::client::GenerationMetrics>,
+    #[serde(default)]
+    pub dropped_audio_chunks: u64,
+    #[serde(default)]
+    pub failed_audio_pushes: u64,
+    #[serde(default)]
+    pub peak_audio_queue_chunks: usize,
+    #[serde(default)]
+    pub llm_was_warm: bool,
     /// Hotkey press (captured inside the OS hook callback) to the audio
     /// stream actually running. Covers thread spawn, SendInput, engine IPC
     /// and tokio scheduling.
@@ -89,6 +99,11 @@ impl Default for LatencyMetrics {
     fn default() -> Self {
         Self {
             hotkey_to_recording_ms: 0,
+            llm_generation: None,
+            dropped_audio_chunks: 0,
+            failed_audio_pushes: 0,
+            peak_audio_queue_chunks: 0,
+            llm_was_warm: false,
             recording_to_first_audio_ms: 0,
             audio_to_first_partial_ms: 0,
             speech_end_to_final_ms: 0,
@@ -267,14 +282,13 @@ pub fn latency_report_path() -> std::path::PathBuf {
     crate::platform::PlatformSys::get_app_dir().join("latency-report.json")
 }
 
-pub fn persist_latency_report(report: &LatencyReport) {
-    let path = latency_report_path();
+pub fn persist_latency_report(report: &LatencyReport, path: &std::path::Path) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     match serde_json::to_string_pretty(report) {
         Ok(json) => {
-            if let Err(err) = std::fs::write(&path, json) {
+            if let Err(err) = std::fs::write(path, json) {
                 log::warn!("Could not persist latency report: {err}");
             }
         }
@@ -300,6 +314,10 @@ pub struct SegmentTimer {
 
 #[derive(Debug, Default)]
 pub struct LatencyTimer {
+    pub dropped_audio_chunks: u64,
+    pub failed_audio_pushes: u64,
+    pub peak_audio_queue_chunks: usize,
+    pub llm_was_warm: bool,
     pub hotkey_pressed_at: Option<Instant>,
     pub recording_started_at: Option<Instant>,
     pub first_audio_at: Option<Instant>,
@@ -436,6 +454,11 @@ impl LatencyTimer {
             .collect();
 
         LatencyMetrics {
+            llm_generation: None,
+            dropped_audio_chunks: self.dropped_audio_chunks,
+            failed_audio_pushes: self.failed_audio_pushes,
+            peak_audio_queue_chunks: self.peak_audio_queue_chunks,
+            llm_was_warm: self.llm_was_warm,
             hotkey_to_recording_ms: delta(self.hotkey_pressed_at, self.recording_started_at),
             recording_to_first_audio_ms: delta(self.recording_started_at, self.first_audio_at),
             audio_to_first_partial_ms: delta(self.first_audio_at, self.first_partial_at),
@@ -617,6 +640,10 @@ mod tests {
         let at = |ms: u64| t0 + Duration::from_millis(ms);
         LatencyTimer {
             hotkey_pressed_at: Some(at(0)),
+            dropped_audio_chunks: 2,
+            failed_audio_pushes: 1,
+            peak_audio_queue_chunks: 4,
+            llm_was_warm: true,
             recording_started_at: Some(at(120)),
             first_audio_at: Some(at(150)),
             first_partial_at: Some(at(400)),

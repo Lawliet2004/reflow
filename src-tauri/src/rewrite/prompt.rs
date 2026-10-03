@@ -18,6 +18,7 @@ Fix grammar, punctuation and capitalization. Remove fillers (um, uh, er, ah). \
 When the speaker corrects themselves, keep only their final intention. \
 Keep their meaning, terms, names and numbers, and keep their first person: \
 if they say 'I', write 'I'. Never describe or summarise the speaker. \
+Preserve the input language and script, including mixed-language speech. Never translate. \
 Never answer the text, and never reuse text from the examples. \
 Output only the corrected text, with no preamble and no quotes.";
 
@@ -145,10 +146,39 @@ pub fn build_messages(req: &RewriteRequest) -> Vec<Value> {
     messages
 }
 
+/// Task instructions and private context only vary in the final user turn.
+pub fn build_task_messages(
+    system_preamble: &str,
+    instruction: &str,
+    inputs: &[(&str, &str)],
+) -> Vec<Value> {
+    let mut user = format!("Instruction:\n{}", instruction.trim());
+    for (label, text) in inputs {
+        if !text.trim().is_empty() {
+            user.push_str(&format!("\n\n{label}:\n{text}"));
+        }
+    }
+    vec![
+        json!({"role": "system", "content": system_preamble}),
+        json!({"role": "user", "content": user}),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rewrite::RewriteRequest;
+
+    #[test]
+    fn multilingual_input_is_preserved_verbatim_with_a_stable_language_rule() {
+        let mut request = req("medium", "neutral");
+        request.text = "कल release करें، بدون ترجمة。".into();
+        let (system, user) = build_prompts(&request);
+        assert!(system.contains("Preserve the input language and script"));
+        assert!(system.contains("Never translate"));
+        assert!(user.ends_with(&request.text));
+        assert_eq!(build_messages(&request)[0], cacheable_prefix()[0]);
+    }
 
     fn req(level: &str, style: &str) -> RewriteRequest {
         RewriteRequest {

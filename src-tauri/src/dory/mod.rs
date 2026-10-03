@@ -27,11 +27,24 @@ pub enum Stage {
 pub enum CaptureKind {
     None,
     Microphone,
+    SystemMix,
     External,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionIntent {
+    #[default]
+    Dictate,
+    Command,
+    Assistant,
+    Note,
 }
 
 #[derive(Debug, Clone)]
 pub enum DoryEvent {
+    FileProgress(crate::file_jobs::FileProgress),
+    AssistantResponse(String),
     State(AppStateEnum),
     Partial(StreamingTranscriptPayload),
     AudioLevel(f32),

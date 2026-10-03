@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../services/tauriApi";
-import logoUrl from "../assets/logo.svg";
+import logoUrl from "../assets/logo.png";
 
 const WindowControls: React.FC = () => {
   const [isMaximized, setIsMaximized] = useState(false);
@@ -145,7 +145,7 @@ const WindowControls: React.FC = () => {
   );
 };
 
-export const TitleBar: React.FC = () => {
+export const TitleBar: React.FC<{ offline?: boolean }> = ({ offline }) => {
   const handleDoubleClick = async () => {
     if (!isTauri()) return;
     try {
@@ -160,7 +160,7 @@ export const TitleBar: React.FC = () => {
     <header
       data-tauri-drag-region
       onDoubleClick={handleDoubleClick}
-      className="h-10 w-full shrink-0 flex items-center justify-between bg-surface/80 backdrop-blur-md border-b border-line select-none z-50 text-ink shadow-[0_1px_2px_rgba(0,0,0,0.02)]"
+      className="titlebar h-10 w-full shrink-0 flex items-center justify-between bg-surface/80 backdrop-blur-md border-b border-line select-none z-50 text-ink"
     >
       <div className="flex items-center gap-2.5 px-3.5 h-full" data-tauri-drag-region>
         <img
@@ -171,14 +171,21 @@ export const TitleBar: React.FC = () => {
         />
         <span
           data-tauri-drag-region
-          className="text-[13px] font-semibold tracking-tight text-ink font-sans"
+          className="text-sm font-semibold tracking-tight text-ink font-sans"
         >
           Reflow
         </span>
-        {!isTauri() && (
-          <span className="text-[10px] text-muted">
-            Preview · dictation requires the desktop app
+        {offline && (
+          <span
+            role="status"
+            className="text-2xs text-accent"
+            title="Downloads are blocked; local recognition and cleanup remain available"
+          >
+            Airplane mode
           </span>
+        )}
+        {!isTauri() && (
+          <span className="text-2xs text-muted">Preview · dictation requires the desktop app</span>
         )}
       </div>
 

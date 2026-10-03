@@ -219,11 +219,46 @@ pub mod platform {
         sm: HotkeyStateMachine,
     }
 
-    static HOOK: OnceLock<Mutex<Option<HookState>>> = OnceLock::new();
+    static HOOK: OnceLock<Mutex<Vec<HookState>>> = OnceLock::new();
     static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+    static HOOK_STARTED: AtomicBool = AtomicBool::new(false);
 
-    fn state() -> &'static Mutex<Option<HookState>> {
-        HOOK.get_or_init(|| Mutex::new(None))
+    fn state() -> &'static Mutex<Vec<HookState>> {
+        HOOK.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    static CANCEL: OnceLock<Mutex<Option<ComboFn>>> = OnceLock::new();
+    fn cancel_callback() -> &'static Mutex<Option<ComboFn>> {
+        CANCEL.get_or_init(|| Mutex::new(None))
+    }
+    pub fn set_cancel(callback: Option<ComboFn>) {
+        *cancel_callback().lock().unwrap_or_else(|p| p.into_inner()) = callback;
+        if cancel_callback()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
+            ensure_hook();
+        }
+    }
+    fn ensure_hook() -> bool {
+        if !HOOK_STARTED.swap(true, Ordering::SeqCst)
+            && std::thread::Builder::new()
+                .name("mod-hotkey-hook".into())
+                .spawn(pump_thread)
+                .is_err()
+        {
+            HOOK_STARTED.store(false, Ordering::SeqCst);
+            return false;
+        }
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline
+            && HOOK_STARTED.load(Ordering::SeqCst)
+            && !HOOK_INSTALLED.load(Ordering::SeqCst)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        HOOK_INSTALLED.load(Ordering::SeqCst)
     }
 
     fn vk_family(vk: i32) -> Option<u8> {
@@ -245,27 +280,13 @@ pub mod platform {
         vk_family(vk).is_some_and(|f| st.required & f != 0)
     }
 
-    fn key_down(vk: VIRTUAL_KEY) -> bool {
-        unsafe { GetAsyncKeyState(i32::from(vk.0)) < 0 }
-    }
-
-    /// Physical modifier mask from the OS, not our HashSet (which desyncs
-    /// when we swallow a key-up). Extra keys like Ctrl must not count.
-    fn live_held() -> u8 {
-        let mut flags = 0u8;
-        if key_down(VK_LSHIFT) || key_down(VK_RSHIFT) {
-            flags |= MOD_SHIFT;
-        }
-        if key_down(VK_LCONTROL) || key_down(VK_RCONTROL) {
-            flags |= MOD_CTRL;
-        }
-        if key_down(VK_LMENU) || key_down(VK_RMENU) {
-            flags |= MOD_ALT;
-        }
-        if key_down(VK_LWIN) || key_down(VK_RWIN) {
-            flags |= MOD_WIN;
-        }
-        flags
+    /// WH_KEYBOARD_LL runs before GetAsyncKeyState reflects the current event.
+    /// The physical event set includes that event and excludes injected keys.
+    /// Swallowing an event never skips updating this set.
+    fn held_modifiers(down: &HashSet<i32>) -> u8 {
+        down.iter()
+            .filter_map(|&vk| vk_family(vk))
+            .fold(0, |mask, modifier| mask | modifier)
     }
 
     /// Cancels the Start menu / layout-switch that would fire when Win is held.
@@ -330,7 +351,7 @@ pub mod platform {
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(delay_ms));
                     let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
-                    if let Some(st) = guard.as_mut() {
+                    if let Some(st) = guard.iter_mut().find(|st| Arc::ptr_eq(&st.on_release, &cb)) {
                         let act = st.sm.on_timer_expired(generation);
                         if act == StateMachineAction::StopRecording {
                             drop(guard);
@@ -364,61 +385,59 @@ pub mod platform {
             let vk = kb.vkCode as i32;
             let injected = (kb.flags.0 & LLKHF_INJECTED) != 0;
 
-            let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(st) = guard.as_mut() {
-                let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-                let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
-
-                // Injected dummy keys (used to cancel the Start menu) must
-                // reach Windows, but they must not drive the combo state.
-                if injected && !allow_injected() {
-                    drop(guard);
-                    return CallNextHookEx(None, code, wparam, lparam);
+            let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+            let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+            if injected && !allow_injected() {
+                return CallNextHookEx(None, code, wparam, lparam);
+            }
+            if vk == i32::from(VK_ESCAPE.0) && is_down {
+                let callback = {
+                    cancel_callback()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                };
+                if let Some(cb) = callback {
+                    std::thread::spawn(move || cb(event_at));
                 }
-
+                // Escape is deliberately transparent.
+                return CallNextHookEx(None, code, wparam, lparam);
+            }
+            let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
+            let mut actions = Vec::new();
+            let mut swallow = false;
+            for st in guard.iter_mut() {
                 if is_down {
                     st.down.insert(vk);
                 } else if is_up {
                     st.down.remove(&vk);
                 }
-
-                if st.required.count_ones() >= 2 {
-                    // Exact match only: Ctrl+Win must not fire a Shift+Win
-                    // combo, even if Shift was left stuck in our HashSet.
-                    let held = live_held();
-                    let combo_matched = held == st.required;
-
-                    if !st.active && combo_matched {
-                        st.active = true;
-                        st.swallowed.insert(vk);
-                        let action = st.sm.on_combo_down(event_at);
-                        let on_combo = st.on_combo.clone();
-                        let on_release = st.on_release.clone();
-                        drop(guard);
-                        execute_action(action, event_at, &on_combo, &on_release);
-                        return LRESULT(1);
-                    }
-                    if st.active && !combo_matched {
-                        st.active = false;
-                        let swallow_this_up = st.swallowed.remove(&vk);
-                        st.swallowed.clear();
-                        let action = st.sm.on_combo_up(event_at);
-                        let on_combo = st.on_combo.clone();
-                        let on_release = st.on_release.clone();
-                        drop(guard);
-                        execute_action(action, event_at, &on_combo, &on_release);
-                        if swallow_this_up {
-                            return LRESULT(1);
-                        }
-                        return CallNextHookEx(None, code, wparam, lparam);
-                    }
+                let combo_matched = held_modifiers(&st.down) == st.required;
+                let action = if !st.active && combo_matched {
+                    st.active = true;
+                    st.swallowed.insert(vk);
+                    swallow = true;
+                    st.sm.on_combo_down(event_at)
+                } else if st.active && !combo_matched {
+                    st.active = false;
+                    swallow |= st.swallowed.remove(&vk);
+                    st.swallowed.clear();
+                    st.sm.on_combo_up(event_at)
+                } else {
                     if st.active && is_required_modifier(st, vk) && is_down {
                         st.swallowed.insert(vk);
-                        return LRESULT(1);
+                        swallow = true;
                     }
-                    // Let key-up events pass through so GetAsyncKeyState
-                    // reflects the true physical state for live_held().
-                }
+                    StateMachineAction::None
+                };
+                actions.push((action, st.on_combo.clone(), st.on_release.clone()));
+            }
+            drop(guard);
+            for (action, on_combo, on_release) in actions {
+                execute_action(action, event_at, &on_combo, &on_release);
+            }
+            if swallow {
+                return LRESULT(1);
             }
         }
         unsafe { CallNextHookEx(None, code, wparam, lparam) }
@@ -444,6 +463,7 @@ pub mod platform {
             let current = match install() {
                 Err(err) => {
                     log::error!("Failed to install keyboard hook: {err}");
+                    HOOK_STARTED.store(false, Ordering::SeqCst);
                     return;
                 }
                 Ok(h) => {
@@ -461,6 +481,7 @@ pub mod platform {
             log::warn!("Keyboard hook message loop exited");
             let _ = UnhookWindowsHookEx(current);
             HOOK_INSTALLED.store(false, Ordering::SeqCst);
+            HOOK_STARTED.store(false, Ordering::SeqCst);
         }
     }
 
@@ -471,7 +492,7 @@ pub mod platform {
         }
         {
             let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
-            *guard = Some(HookState {
+            guard.push(HookState {
                 required: required_modifiers,
                 on_combo,
                 on_release,
@@ -481,19 +502,12 @@ pub mod platform {
                 sm: HotkeyStateMachine::default(),
             });
         }
-        if !HOOK_INSTALLED.load(Ordering::SeqCst) {
-            std::thread::Builder::new()
-                .name("mod-hotkey-hook".into())
-                .spawn(pump_thread)
-                .is_ok()
-        } else {
-            true
-        }
+        ensure_hook()
     }
 
     pub fn reset_mode() {
         let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(st) = guard.as_mut() {
+        for st in guard.iter_mut() {
             st.sm.reset();
             st.active = false;
             st.swallowed.clear();
@@ -502,16 +516,46 @@ pub mod platform {
 
     pub fn clear_combo() {
         let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
-        *guard = None;
+        guard.clear();
     }
 
     pub const fn flags(shift: bool, ctrl: bool, alt: bool, win: bool) -> u8 {
         (shift as u8) | ((ctrl as u8) << 1) | ((alt as u8) << 2) | ((win as u8) << 3)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn modifier_mask_uses_current_press_and_release() {
+            let mut down = HashSet::new();
+            down.insert(i32::from(VK_LSHIFT.0));
+            assert_eq!(held_modifiers(&down), MOD_SHIFT);
+            down.insert(i32::from(VK_LWIN.0));
+            assert_eq!(held_modifiers(&down), MOD_SHIFT | MOD_WIN);
+            down.remove(&i32::from(VK_LWIN.0));
+            assert_eq!(held_modifiers(&down), MOD_SHIFT);
+        }
+
+        #[test]
+        fn extra_modifier_breaks_combo_and_both_sides_share_family() {
+            let mut down = HashSet::from([
+                i32::from(VK_LSHIFT.0),
+                i32::from(VK_RSHIFT.0),
+                i32::from(VK_LWIN.0),
+                i32::from(VK_LCONTROL.0),
+            ]);
+            assert_ne!(held_modifiers(&down), MOD_SHIFT | MOD_WIN);
+            down.remove(&i32::from(VK_LCONTROL.0));
+            down.remove(&i32::from(VK_LSHIFT.0));
+            assert_eq!(held_modifiers(&down), MOD_SHIFT | MOD_WIN);
+        }
+    }
 }
 
 #[cfg(windows)]
-pub use platform::{clear_combo, flags, reset_mode, set_combo};
+pub use platform::{clear_combo, flags, reset_mode, set_cancel, set_combo};
 
 #[cfg(not(windows))]
 pub mod platform {
@@ -519,6 +563,7 @@ pub mod platform {
     pub fn set_combo(_required: u8, _a: ComboFn, _b: ComboFn) -> bool {
         false
     }
+    pub fn set_cancel(_callback: Option<ComboFn>) {}
     pub fn clear_combo() {}
     pub fn reset_mode() {}
     pub const fn flags(_shift: bool, _ctrl: bool, _alt: bool, _win: bool) -> u8 {
@@ -527,7 +572,7 @@ pub mod platform {
 }
 
 #[cfg(not(windows))]
-pub use platform::{clear_combo, flags, reset_mode, set_combo};
+pub use platform::{clear_combo, flags, reset_mode, set_cancel, set_combo};
 
 #[cfg(test)]
 mod tests {

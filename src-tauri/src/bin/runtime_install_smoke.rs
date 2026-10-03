@@ -1,5 +1,7 @@
 // Standalone smoke test for the runtime installer. Invoked by
-// `cargo run --bin runtime_install_smoke`. This exists so that the
+// `cargo run --features runtime-install-smoke --bin runtime_install_smoke`.
+// The opt-in feature keeps this development executable out of installers.
+// This exists so that the
 // runtime install behavior can be verified on machines where the
 // `cargo test` test binary won't load (Windows DLL loader issues).
 //
@@ -142,6 +144,23 @@ fn run_live_download(failures: &mut u32) {
     use std::io::Read;
 
     println!("\nLive download test (REFLOW_RUNTIME_LIVE_TEST=1)");
+    let directory = reflow_lib::platform::PlatformSys::get_app_dir();
+    let offline = std::fs::read(directory.join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|settings| {
+            settings
+                .get("offline_mode")
+                .and_then(|value| value.as_bool())
+        })
+        .unwrap_or(true);
+    if let Err(error) = reflow_lib::network_policy::configure(offline, &directory)
+        .and_then(|_| reflow_lib::network_policy::check_download())
+    {
+        eprintln!("Live download blocked: {error}. Disable Offline mode in Reflow first.");
+        *failures += 1;
+        return;
+    }
 
     // Back up any existing runtime, then ensure ENV_OVERRIDE_BIN is unset
     // so the default download path is exercised.
@@ -160,9 +179,10 @@ fn run_live_download(failures: &mut u32) {
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
+        .redirect(reflow_lib::network_policy::redirect_policy())
         .build()
         .expect("client");
-    let mut resp = client.get(&spec.url).send().expect("GET");
+    let mut resp = reflow_lib::network_policy::send_download(client.get(&spec.url)).expect("GET");
     let status = resp.status();
     let http_ok = status.is_success();
     pass(

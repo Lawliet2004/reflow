@@ -29,17 +29,15 @@ export function CustomControls({ overrides, onChangeOverrides, className }: Cust
     <div className={cn("space-y-4", className)}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Sliders className="w-5 h-5 text-sky-500" />
-          <h3 className="font-semibold text-slate-900 dark:text-slate-100">
-            Manual Runtime Overrides
-          </h3>
+          <Sliders className="w-5 h-5 text-accent" />
+          <h3 className="font-semibold text-ink">Manual Runtime Overrides</h3>
         </div>
         <Button size="sm" variant="ghost" onClick={handleReset} className="text-xs">
           <RotateCcw className="w-3.5 h-3.5 mr-1" /> Reset to Defaults
         </Button>
       </div>
 
-      <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+      <div className="p-4 rounded-xl bg-surface border border-line space-y-4">
         {/* ASR Compute Device & Precision */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="ASR Compute Device" hint="Hardware backend targeting speech recognition">
@@ -51,7 +49,7 @@ export function CustomControls({ overrides, onChangeOverrides, className }: Cust
                   e.target.value === "auto" ? null : (e.target.value as ComputeDevice),
                 )
               }
-              className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              className="w-full px-3 py-2 text-sm bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent"
             >
               <option value="auto">Auto (Adaptive recommendation)</option>
               <option value="cuda">NVIDIA CUDA (GPU)</option>
@@ -69,7 +67,7 @@ export function CustomControls({ overrides, onChangeOverrides, className }: Cust
                   e.target.value === "auto" ? null : (e.target.value as Precision),
                 )
               }
-              className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              className="w-full px-3 py-2 text-sm bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent"
             >
               <option value="auto">Auto (Hardware native)</option>
               <option value="bf16">BF16 (Bfloat16 - Recommended)</option>
@@ -80,7 +78,7 @@ export function CustomControls({ overrides, onChangeOverrides, className }: Cust
         </div>
 
         {/* Refinement Device & GPU Offload */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-100 dark:border-slate-800">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-line-soft">
           <Field
             label="Refinement Compute Device"
             hint="Hardware backend for AI polish / punctuation"
@@ -93,7 +91,7 @@ export function CustomControls({ overrides, onChangeOverrides, className }: Cust
                   e.target.value === "auto" ? null : (e.target.value as ComputeDevice),
                 )
               }
-              className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              className="w-full px-3 py-2 text-sm bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent"
             >
               <option value="auto">Auto (Adaptive)</option>
               <option value="cuda">NVIDIA CUDA</option>
@@ -116,7 +114,7 @@ export function CustomControls({ overrides, onChangeOverrides, className }: Cust
                 onChange={(e) => updateField("refinement_gpu_layers", parseInt(e.target.value, 10))}
                 className="w-full accent-sky-500 cursor-pointer"
               />
-              <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300 w-8 text-right">
+              <span className="text-xs font-mono font-medium text-ink-2 w-8 text-right">
                 {gpuLayers}
               </span>
             </div>
@@ -124,7 +122,7 @@ export function CustomControls({ overrides, onChangeOverrides, className }: Cust
         </div>
 
         {/* Streaming Behavior */}
-        <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+        <div className="pt-2 border-t border-line-soft">
           <Field
             label="Live Partial Streaming"
             hint="Show immediate transcription tokens while holding the hotkey"
@@ -143,7 +141,7 @@ export function CustomControls({ overrides, onChangeOverrides, className }: Cust
                   e.target.value === "auto" ? null : e.target.value === "true",
                 )
               }
-              className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              className="w-full px-3 py-2 text-sm bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent"
             >
               <option value="auto">Auto (Enabled when hardware latency &lt; 250ms)</option>
               <option value="true">Force Always Enabled</option>

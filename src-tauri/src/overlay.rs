@@ -9,6 +9,31 @@ use crate::commands::AppContext;
 use crate::state::AppStateEnum;
 
 static OVERLAY_GEN: AtomicU64 = AtomicU64::new(0);
+static RESPONSE_FOCUS: Mutex<(isize, isize)> = Mutex::new((0, 0));
+
+fn response_target(foreground: isize, overlay: isize, previous: isize) -> isize {
+    if overlay != 0 && foreground == overlay && previous != 0 {
+        previous
+    } else {
+        foreground
+    }
+}
+
+pub fn dictation_target(foreground: isize) -> isize {
+    let (overlay, previous) = *RESPONSE_FOCUS.lock();
+    response_target(foreground, overlay, previous)
+}
+
+pub fn restore_dictation_focus() -> Result<(), String> {
+    let foreground = crate::platform::foreground_hwnd();
+    let target = dictation_target(foreground);
+    if target != foreground
+        && !crate::platform::focus_hwnd_and_confirm(target, Duration::from_millis(300))
+    {
+        return Err("Focus the application you want to dictate into, then try again.".into());
+    }
+    Ok(())
+}
 
 struct OverlayGeom {
     position: String,
@@ -27,8 +52,12 @@ fn overlay_geom() -> &'static Mutex<OverlayGeom> {
 
 /// A 200 × 40 capsule with four logical pixels around it for the shadow.
 /// The settled result uses the same size, so completion never moves the HUD.
-fn overlay_dims(_kind: &str) -> (f64, f64) {
-    (208.0, 48.0)
+fn overlay_dims(kind: &str) -> (f64, f64) {
+    if kind == "response" {
+        (320.0, 180.0)
+    } else {
+        (208.0, 48.0)
+    }
 }
 
 fn position_overlay_sized(app: &tauri::AppHandle, position: &str, kind: &str) {
@@ -99,6 +128,7 @@ pub fn show_overlay(app: &tauri::AppHandle, position: &str) {
     }
     position_overlay_sized(app, position, "listening");
     if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.set_focusable(false);
         let _ = window.set_ignore_cursor_events(true);
         let _ = window.set_always_on_top(true);
         show_without_activating(&window);
@@ -136,7 +166,40 @@ fn show_without_activating(window: &tauri::WebviewWindow) {
     let _ = window.show();
 }
 
+pub fn show_response(app: &tauri::AppHandle) {
+    OVERLAY_GEN.fetch_add(1, Ordering::SeqCst);
+    resize_overlay(app, "response");
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.set_focusable(true);
+        let _ = window.set_ignore_cursor_events(false);
+        #[cfg(windows)]
+        if let Ok(raw) = window.hwnd() {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+            };
+            unsafe {
+                let hwnd = HWND(raw.0);
+                let foreground = crate::platform::foreground_hwnd();
+                let mut focus = RESPONSE_FOCUS.lock();
+                if foreground != raw.0 as isize {
+                    *focus = (raw.0 as isize, foreground);
+                }
+                let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE.0 as isize));
+            }
+        }
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn hide_overlay(app: &tauri::AppHandle) {
+    let foreground = crate::platform::foreground_hwnd();
+    let target = dictation_target(foreground);
+    if target != foreground {
+        crate::platform::focus_hwnd(target);
+    }
     if let Some(window) = app.get_webview_window("overlay") {
         hide_native(&window);
         let _ = window.hide();
@@ -159,6 +222,9 @@ fn hide_native(window: &tauri::WebviewWindow) {
 }
 
 pub fn hide_overlay_later(app: tauri::AppHandle, delay_ms: u64) {
+    if overlay_geom().lock().kind == "response" {
+        return;
+    }
     resize_overlay(&app, "preview");
     let gen = OVERLAY_GEN.load(Ordering::SeqCst);
     tauri::async_runtime::spawn(async move {
@@ -180,6 +246,14 @@ pub fn hide_overlay_later(app: tauri::AppHandle, delay_ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::overlay_dims;
+
+    #[test]
+    fn a_focused_assistant_preserves_the_external_dictation_target() {
+        assert_eq!(super::response_target(22, 22, 11), 11);
+        assert_eq!(super::response_target(33, 22, 11), 33);
+        assert_eq!(super::response_target(0, 0, 11), 0);
+        assert_eq!(super::response_target(22, 22, 0), 22);
+    }
 
     #[test]
     fn capsule_geometry_is_stable_and_matches_the_initial_window() {

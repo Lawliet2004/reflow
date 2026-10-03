@@ -16,7 +16,7 @@ impl PlatformAdapter for WindowsAdapter {
     fn active_window() -> (String, String) {
         #[cfg(windows)]
         unsafe {
-            use windows::Win32::Foundation::MAX_PATH;
+            use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
             use windows::Win32::System::ProcessStatus::GetProcessImageFileNameW;
             use windows::Win32::System::Threading::{
                 OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -51,6 +51,7 @@ impl PlatformAdapter for WindowsAdapter {
                         proc_name = filename.to_string();
                     }
                 }
+                let _ = CloseHandle(process_handle);
             }
 
             (title, proc_name)

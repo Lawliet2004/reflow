@@ -4,6 +4,9 @@ coverage
 src-tauri/target
 # Tauri-generated schemas and bindings.
 src-tauri/gen
+android/.gradle
+android/.kotlin
+android/app/build
 package-lock.json
 
 # Tooling and planning artifacts, not project source.

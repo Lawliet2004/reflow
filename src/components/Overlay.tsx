@@ -77,7 +77,10 @@ export const Overlay: React.FC<OverlayProps> = ({
           )}
         </span>
 
-        <span className="hud-label" title={message}>
+        <span
+          className="hud-label"
+          title={phase === "listen" ? "Escape to cancel recording" : message}
+        >
           {label}
         </span>
 

@@ -20,6 +20,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-set-shadow",
     "core:window:allow-set-focus",
+    "core:window:allow-set-theme",
     "global-shortcut:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-register-all",

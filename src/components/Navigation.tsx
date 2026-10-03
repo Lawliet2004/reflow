@@ -1,9 +1,9 @@
 import React from "react";
-import { Mic, History, Settings, FolderOpen, Power, Cpu } from "lucide-react";
+import { Mic, History, Settings, FolderOpen, NotebookPen, Power, Cpu } from "lucide-react";
 import { AppState, ModelStatus, isModelReady } from "../types";
 import { api } from "../services/tauriApi";
 
-export type NavTab = "dictate" | "history" | "settings";
+export type NavTab = "dictate" | "history" | "notes" | "settings";
 
 interface NavigationProps {
   activeTab: NavTab;
@@ -14,6 +14,7 @@ interface NavigationProps {
 
 const ITEMS: { id: NavTab; label: string; icon: React.ReactNode }[] = [
   { id: "dictate", label: "Home", icon: <Mic className="w-4 h-4" /> },
+  { id: "notes", label: "Notes", icon: <NotebookPen className="w-4 h-4" /> },
   { id: "history", label: "History", icon: <History className="w-4 h-4" /> },
   { id: "settings", label: "Settings", icon: <Settings className="w-4 h-4" /> },
 ];
@@ -32,7 +33,7 @@ function modelBadgeLabel(status: ModelStatus | null): { label: string; tone: str
       tone: isGpu ? "text-accent font-semibold" : "text-muted",
     };
   }
-  return { label: "Loading", tone: "text-amber-600 dark:text-amber-400" };
+  return { label: "Loading", tone: "text-warning" };
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
@@ -42,7 +43,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   modelStatus,
 }) => {
   const badge = modelBadgeLabel(modelStatus);
-  const live = appState === "RECORDING" || appState === "PROCESSING";
+  const live = appState === "RECORDING" || appState === "PROCESSING" || appState === "INJECTING";
 
   return (
     <aside className="app-sidebar">
@@ -55,6 +56,7 @@ export const Navigation: React.FC<NavigationProps> = ({
               key={item.id}
               onClick={() => setActiveTab(item.id)}
               aria-label={item.label}
+              title={item.label}
               aria-current={active ? "page" : undefined}
               className={`sidebar-link ${active ? "is-active" : ""}`}
             >
@@ -68,7 +70,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       <div className="sidebar-footer mt-auto px-3 pt-4 space-y-1.5">
         {badge && (
           <div
-            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11.5px] font-semibold"
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-semibold"
             title="Speech model status"
           >
             <Cpu className="w-3.5 h-3.5 text-muted" />
@@ -77,7 +79,7 @@ export const Navigation: React.FC<NavigationProps> = ({
         )}
         <button
           onClick={() => api.openLogsFolder().catch(() => {})}
-          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] text-muted hover:text-ink hover:bg-base-2 transition-colors cursor-pointer"
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-muted hover:text-ink hover:bg-base-2 transition-colors cursor-pointer"
         >
           <FolderOpen className="w-3.5 h-3.5" />
           <span>Open logs</span>
@@ -85,8 +87,8 @@ export const Navigation: React.FC<NavigationProps> = ({
         <button
           onClick={() => api.quit().catch(() => {})}
           disabled={live}
-          title={live ? "Cannot quit while recording" : "Quit Reflow"}
-          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          title={live ? "Finish the current session before quitting" : "Quit Reflow"}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-danger hover:bg-danger/10 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Power className="w-3.5 h-3.5" />
           <span>Quit Reflow</span>

@@ -30,6 +30,148 @@ import time
 
 import numpy as np
 
+# Disable SDK telemetry and the native Xet transfer path: all downloads use the
+# journaled HTTP transport below. No background SDK connection is permitted.
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+_NETWORK_GUARD_READY = False
+_NETWORK_GUARD_LOCK = threading.Lock()
+_NETWORK_JOURNAL_LOCK = threading.Lock()
+_DOWNLOAD_HOSTS = frozenset((
+    "huggingface.co", "github.com", "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com", "cdn-lfs.huggingface.co",
+    "cdn-lfs-us-1.hf.co", "cdn-lfs-eu-1.hf.co", "cas-bridge.xethub.hf.co",
+))
+
+
+def require_network_online():
+    """Read on each request so a running sidecar immediately sees Airplane mode."""
+    policy_path = os.environ.get("REFLOW_NETWORK_POLICY")
+    try:
+        with open(policy_path, "r", encoding="utf-8") as file:
+            policy = json.load(file)
+        if policy.get("offline_mode") is not False:
+            raise RuntimeError("Offline mode is on")
+    except (OSError, TypeError, ValueError):
+        raise RuntimeError("Offline mode is on") from None
+
+
+def check_download_request(url):
+    from urllib.parse import urlsplit
+    require_network_online()
+    parsed = urlsplit(str(url))
+    if (parsed.scheme != "https" or parsed.port not in (None, 443) or parsed.hostname not in _DOWNLOAD_HOSTS
+            or parsed.username is not None or parsed.password is not None):
+        raise RuntimeError("Downloads are restricted to pinned artifact hosts")
+    return parsed.hostname
+
+
+def journal_network(host, count):
+    """Host + bytes + timestamp only: never tokens, queries, paths or content."""
+    from datetime import datetime, timezone
+    if host not in _DOWNLOAD_HOSTS:
+        return
+    policy_path = os.environ.get("REFLOW_NETWORK_POLICY")
+    if not policy_path:
+        return
+    line = json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(),
+                       "host": host, "bytes": count}, separators=(",", ":")) + "\n"
+    try:
+        with _NETWORK_JOURNAL_LOCK:
+            with open(os.path.join(os.path.dirname(policy_path), "network-journal.jsonl"),
+                      "a", encoding="utf-8") as file:
+                file.write(line)
+    except OSError as error:
+        print(f"Could not write network journal: {error}", file=sys.stderr)
+
+
+def install_network_guard():
+    """Use the pinned huggingface_hub 1.x public HTTP client factory."""
+    global _NETWORK_GUARD_READY
+    with _NETWORK_GUARD_LOCK:
+        if _NETWORK_GUARD_READY:
+            return
+        import httpx
+        from huggingface_hub import set_client_factory, set_async_client_factory
+
+        class JournalStream(httpx.SyncByteStream):
+            def __init__(self, stream, host):
+                self.stream, self.host, self.count, self.finished = stream, host, 0, False
+
+            def finish(self):
+                if not self.finished:
+                    self.finished = True
+                    journal_network(self.host, self.count)
+
+            def __iter__(self):
+                try:
+                    for chunk in self.stream:
+                        require_network_online()
+                        self.count += len(chunk)
+                        yield chunk
+                finally:
+                    self.finish()
+
+            def close(self):
+                try:
+                    self.stream.close()
+                finally:
+                    self.finish()
+
+        class JournalAsyncStream(httpx.AsyncByteStream):
+            def __init__(self, stream, host):
+                self.stream, self.host, self.count, self.finished = stream, host, 0, False
+
+            def finish(self):
+                if not self.finished:
+                    self.finished = True
+                    journal_network(self.host, self.count)
+
+            async def __aiter__(self):
+                try:
+                    async for chunk in self.stream:
+                        require_network_online()
+                        self.count += len(chunk)
+                        yield chunk
+                finally:
+                    self.finish()
+
+            async def aclose(self):
+                try:
+                    await self.stream.aclose()
+                finally:
+                    self.finish()
+
+        class JournalTransport(httpx.HTTPTransport):
+            def handle_request(self, request):
+                host = check_download_request(request.url)
+                try:
+                    response = super().handle_request(request)
+                except Exception:
+                    journal_network(host, 0)
+                    raise
+                response.stream = JournalStream(response.stream, host)
+                return response
+
+        class JournalAsyncTransport(httpx.AsyncHTTPTransport):
+            async def handle_async_request(self, request):
+                host = check_download_request(request.url)
+                try:
+                    response = await super().handle_async_request(request)
+                except Exception:
+                    journal_network(host, 0)
+                    raise
+                response.stream = JournalAsyncStream(response.stream, host)
+                return response
+
+        # trust_env=False prevents SDK proxy mounts from bypassing the transport.
+        set_client_factory(lambda: httpx.Client(transport=JournalTransport(),
+            follow_redirects=True, timeout=60.0, trust_env=False))
+        set_async_client_factory(lambda: httpx.AsyncClient(transport=JournalAsyncTransport(),
+            follow_redirects=True, timeout=60.0, trust_env=False))
+        _NETWORK_GUARD_READY = True
+
+
 _CANCEL_EVENT = threading.Event()
 
 
@@ -62,7 +204,6 @@ def unpack_binary_audio_frame(header: bytes) -> tuple:
 SAMPLE_RATE = 16000
 # Hold-to-talk buffers audio while the hotkey is down and transcribes once
 # on release — no live partials (those steal the GPU mid-utterance).
-LIVE_PARTIALS = False
 PARTIAL_MIN_NEW_AUDIO_S = 1.2
 PARTIAL_TAIL_S = 20.0
 # Ceiling on the total audio handed to segmented transcription.
@@ -85,20 +226,18 @@ MIN_PAD_S = 0.5
 PEAK_TARGET = 0.85
 SILENCE_RMS = 0.004
 
-# Task 16: pad audio up to a fixed set of durations instead of to whatever the
-# utterance happened to be. CUDA picks and tunes kernels per input shape, so an
-# unbucketed pipeline pays an autotune penalty on the first utterance of every
-# new length — which, with millisecond-resolution lengths, is every utterance.
-AUDIO_BUCKET_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
+# Longest audio handed to a single decode. Longer dictations are cut on silence.
+SEGMENT_MAX_S = 30.0
 
-# Buckets warmed at load time on CUDA. Covers the range real dictation lands in;
-# the 30 s bucket is left to be tuned lazily because warming it would add
-# noticeable startup time for an uncommon length.
-WARMUP_BUCKET_SECONDS_CUDA = (0.5, 2.0, 4.0, 8.0, 16.0)
+# Audio is padded to its own length, not to shape buckets. Bucketing only pays
+# off with cudnn.benchmark/torch.compile, neither of which runs here; measured
+# on an RTX 2050 it made a 9.4 s utterance ~15% slower (16 s pad) with an
+# identical prompt length.
+WARMUP_SECONDS = (1.0, 8.0)
 
-# CPU has no kernel autotune, so one small shape is enough to page the weights
-# in and JIT any lazily-initialised code.
-WARMUP_BUCKET_SECONDS_CPU = (0.5,)
+# Static KV-cache length for the CUDA-graph decoder: prompt (~13 audio tokens/s
+# for 30 s, plus text and up to 60 vocabulary terms) plus the 384-token cap.
+GRAPH_CACHE_LEN = 1280
 
 def expected_bytes_for(model_dir: str, model_id=None, expected_bytes=None) -> int:
     if expected_bytes is not None:
@@ -110,38 +249,10 @@ def expected_bytes_for(model_dir: str, model_id=None, expected_bytes=None) -> in
 
 MAX_VOCAB_TERMS = 60
 
-LANG_NAMES = {
-    "en": "English",
-    "hi": "Hindi",
-    "zh": "Chinese",
-    "yue": "Cantonese",
-    "ar": "Arabic",
-    "de": "German",
-    "fr": "French",
-    "es": "Spanish",
-    "pt": "Portuguese",
-    "id": "Indonesian",
-    "it": "Italian",
-    "ko": "Korean",
-    "ru": "Russian",
-    "th": "Thai",
-    "vi": "Vietnamese",
-    "ja": "Japanese",
-    "tr": "Turkish",
-    "ms": "Malay",
-    "nl": "Dutch",
-    "sv": "Swedish",
-    "da": "Danish",
-    "fi": "Finnish",
-    "pl": "Polish",
-    "cs": "Czech",
-    "fil": "Filipino",
-    "fa": "Persian",
-    "el": "Greek",
-    "hu": "Hungarian",
-    "mk": "Macedonian",
-    "ro": "Romanian",
-}
+# The catalogue is bundled beside the runtime and imported by Rust/React too.
+with open(os.path.join(os.path.dirname(__file__), "languages.json"), encoding="utf-8") as _languages_file:
+    LANG_NAMES = {item["code"]: item["name"] for item in json.load(_languages_file)}
+
 
 
 # Silence-trim analysis window. 512 samples at 16 kHz is 32 ms, hopping 16 ms,
@@ -161,9 +272,11 @@ def frame_energies(wav: np.ndarray) -> np.ndarray:
     if wav.size < FRAME_WIN:
         return np.zeros(0, dtype=np.float32)
     frames = np.lib.stride_tricks.sliding_window_view(wav, FRAME_WIN)[::FRAME_HOP]
-    # float64 accumulation keeps the result numerically identical to the
-    # per-frame `np.mean` the loop used.
-    return np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1)).astype(np.float32)
+    # Reduce directly over the overlapping view. Casting/squaring the view
+    # materializes two dense frame matrices (~1.84 GB for an hour of audio).
+    # einsum accumulates in float64 with only one scalar per frame as output.
+    squares = np.einsum("ij,ij->i", frames, frames, dtype=np.float64)
+    return np.sqrt(squares / FRAME_WIN).astype(np.float32)
 
 
 def max_new_tokens_for(voiced_seconds: float) -> int:
@@ -183,19 +296,6 @@ def max_new_tokens_for(voiced_seconds: float) -> int:
     seconds = max(0.0, float(voiced_seconds))
     estimate = int(seconds * 12.0) + 32
     return max(32, min(384, estimate))
-
-
-def bucket_for_seconds(seconds: float) -> float | None:
-    """Smallest bucket that fits `seconds`, or None if it exceeds them all.
-
-    Returning None means "do not pad": an utterance longer than the largest
-    bucket would otherwise be padded to a shape that costs more compute than
-    the audio needs.
-    """
-    for bucket in AUDIO_BUCKET_SECONDS:
-        if seconds <= bucket:
-            return bucket
-    return None
 
 
 def preprocess_waveform(samples: np.ndarray) -> tuple[np.ndarray, dict]:
@@ -381,7 +481,10 @@ class RuntimeState:
         self.pending_precision = "auto"
 
         # stream state
-        self.stream_audio = bytearray()   # full session PCM16
+        self.stream_audio = bytearray()   # bounded retained PCM16
+        self.stream_lock = threading.Lock()
+        self.stream_captured_bytes = 0
+        self.stream_active = False
         self.unprocessed = 0              # bytes appended since last partial run
         self.partial_text = ""
         self.detected_language = ""
@@ -391,13 +494,33 @@ class RuntimeState:
 
 STATE = RuntimeState()
 
-# Transcription requests for the single GPU worker: one job at a time,
-# newer jobs replace older pending ones (latest audio wins).
-_inf_lock = threading.Condition()
-_inf_job = None          # dict(audio=bytes, language=str|None, prompt=str|None, final=bool)
-_inf_result = None       # dict(text=str, language=str) for the last completed job
-_inf_busy = False
 
+def append_stream_audio(audio):
+    """Bound memory at ingress, retaining honest captured-duration metadata."""
+    with STATE.stream_lock:
+        if not STATE.stream_active:
+            return
+        STATE.stream_captured_bytes += len(audio)
+        remaining = max(0, int(FINAL_MAX_AUDIO_S * 2 * SAMPLE_RATE) - len(STATE.stream_audio))
+        retained = audio[:remaining]
+        STATE.stream_audio.extend(retained)
+        STATE.unprocessed += len(retained)
+
+
+def clear_stream_audio():
+    with STATE.stream_lock:
+        STATE.stream_active = False
+        STATE.stream_audio = bytearray()
+        STATE.stream_captured_bytes = 0
+        STATE.unprocessed = 0
+        STATE.partial_text = ""
+
+
+def decode_exhausted(generated, max_new, eos_token_id):
+    if int(generated.shape[1]) < max_new:
+        return False
+    eos_ids = eos_token_id if isinstance(eos_token_id, (list, tuple, set)) else [eos_token_id]
+    return int(generated[0, -1]) not in eos_ids
 
 class Qwen3AsrModel:
     """Holds the loaded model/processor. Owned by the loader thread."""
@@ -406,6 +529,87 @@ class Qwen3AsrModel:
         self.model = model
         self.processor = processor
         self.device = device
+        # CUDA-graph greedy decoder, or None (CPU, or capture failed).
+        self.decoder = None
+
+
+class GraphDecoder:
+    """Greedy decode from a static KV cache, replaying one captured CUDA graph
+    per token.
+
+    `model.generate` at batch size 1 is bound by Python dispatch and kernel
+    launches, not by the GPU: measured on an RTX 2050 + Ryzen 5 7535HS (Windows,
+    ~55 us per launch) the 0.6B decoder took ~180 ms/token, while its weights
+    stream in ~12 ms. Replaying a graph removes the per-op launch cost: 30
+    tokens went from 5.5 s to 0.86 s (BF16) and 8.2 s to 1.4 s (INT8), with the
+    same transcript. Output matches greedy `generate`; anything this cannot
+    serve (too long for the cache) returns None and the caller falls back.
+    """
+
+    def __init__(self, model, max_len: int = GRAPH_CACHE_LEN):
+        from transformers import StaticCache
+
+        torch = _torch()
+        cfg = model.config
+        cfg = cfg.get_text_config() if hasattr(cfg, "get_text_config") else cfg
+        self.model = model
+        self.max_len = max_len
+        self.cache = StaticCache(config=cfg, max_cache_len=max_len)
+        self.tok = torch.zeros((1, 1), dtype=torch.long, device="cuda")
+        self.pos = torch.zeros((1,), dtype=torch.long, device="cuda")
+        eos = model.generation_config.eos_token_id
+        self.eos = {e for e in (eos if isinstance(eos, (list, tuple)) else [eos]) if e is not None}
+        self.graph = None
+        self.out = None
+
+    def _step(self):
+        out = self.model(
+            input_ids=self.tok, past_key_values=self.cache, cache_position=self.pos, use_cache=True
+        )
+        return out.logits[:, -1].argmax(-1)
+
+    def _capture(self):
+        # Warm on a side stream first, as CUDA graph capture requires. The warm
+        # steps rewrite the KV slot at `pos` with the same token the first real
+        # step writes, so they do not disturb the cache.
+        torch = _torch()
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(3):
+                self._step()
+        torch.cuda.current_stream().wait_stream(side)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.out = self._step()
+        self.graph = graph
+
+    def generate(self, inputs, max_new: int, cancel: threading.Event):
+        """Token ids `[1, n]` (EOS included when reached), or None if the prompt
+        plus `max_new` does not fit the static cache."""
+        torch = _torch()
+        prompt_len = inputs["input_ids"].shape[1]
+        if prompt_len + max_new > self.max_len:
+            return None
+        self.cache.reset()
+        logits = self.model(
+            **inputs,
+            past_key_values=self.cache,
+            cache_position=torch.arange(prompt_len, device="cuda"),
+            use_cache=True,
+        ).logits
+        nxt = logits[:, -1].argmax(-1)
+        self.tok.copy_(nxt.view(1, 1))
+        self.pos.fill_(prompt_len)
+        ids = [int(nxt)]
+        if self.graph is None:
+            self._capture()
+        while len(ids) < max_new and ids[-1] not in self.eos and not cancel.is_set():
+            self.graph.replay()
+            ids.append(int(self.out))
+            self.tok.copy_(self.out.view(1, 1))
+            self.pos.add_(1)
+        return torch.tensor([ids], device="cuda")
 
 
 _MODEL = None          # type: Qwen3AsrModel | None
@@ -840,7 +1044,14 @@ def _try_load(model_dir: str, device: str, precision: str):
             from transformers import TorchAoConfig
             from torchao.quantization import Int4WeightOnlyConfig
 
-            kwargs["quantization_config"] = TorchAoConfig(Int4WeightOnlyConfig())
+            # The default PLAIN format in torchao 0.18 requires mslk. Use
+            # PyTorch's CUDA tinygemm kernels (Ampere+) instead, including on
+            # Windows. Packing is CUDA-only: .to(device) after loading is too
+            # late, so place each weight on CUDA before Transformers quantizes it.
+            kwargs["quantization_config"] = TorchAoConfig(Int4WeightOnlyConfig(
+                int4_packing_format="tile_packed_to_4d", version=2,
+            ))
+            kwargs["device_map"] = {"": device}
         except Exception as e:
             raise RuntimeError(
                 f"Int4 weight-only quantization is not available in this torchao "
@@ -862,8 +1073,10 @@ def _try_load(model_dir: str, device: str, precision: str):
         except Exception:
             pass
 
+    install_network_guard()
+
     with _MODEL_LOCK:
-        processor = AutoProcessor.from_pretrained(model_dir)
+        processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False)
         # Older Reflow installs omitted chat_template.jinja from the model
         # snapshot. Use Qwen's upstream multimodal template verbatim so both
         # string content and apply_transcription_request's list-form audio/text
@@ -874,12 +1087,18 @@ def _try_load(model_dir: str, device: str, precision: str):
             if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
                 processor.tokenizer.chat_template = processor.chat_template
         try:
-            model = AutoModelForMultimodalLM.from_pretrained(model_dir, **kwargs)
+            model = AutoModelForMultimodalLM.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False, **kwargs)
         except Exception as e:
-            if kwargs.get("attn_implementation") == "sdpa":
+            attention_error = str(e).lower()
+            if (
+                isinstance(e, ValueError)
+                and kwargs.get("attn_implementation") == "sdpa"
+                and ("sdpa" in attention_error or "scaled_dot_product_attention" in attention_error)
+                and ("does not support" in attention_error or "not supported" in attention_error)
+            ):
                 log_err(f"Loading with sdpa attention failed ({e}); falling back to eager attention")
                 kwargs["attn_implementation"] = "eager"
-                model = AutoModelForMultimodalLM.from_pretrained(model_dir, **kwargs)
+                model = AutoModelForMultimodalLM.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False, **kwargs)
             else:
                 raise
         if device != "cpu" or quant_kind is not None:
@@ -888,65 +1107,111 @@ def _try_load(model_dir: str, device: str, precision: str):
         model.eval()
         global _MODEL
         _MODEL = Qwen3AsrModel(model, processor, device)
+        if device == "cuda":
+            try:
+                _MODEL.decoder = GraphDecoder(model)
+            except Exception as e:
+                log_err(f"CUDA-graph decoder unavailable ({e}); using generate()")
         warmup_rtf = _warmup_model(_MODEL)
     return warmup_rtf
 
 
-def _warmup_model(wrapper: "Qwen3AsrModel") -> float | None:
-    """Compile CUDA kernels so the first real utterance is not 5–10s.
+def _run_decode(wrapper: "Qwen3AsrModel", inputs, max_new: int):
+    """Greedy-decode `inputs`; returns only the new token ids, shape [1, n].
 
-    Returns the measured real-time factor of the longest warmup shape, or None
-    if warmup could not run. The caller feeds it to the spill check: a warmup
-    that is an order of magnitude slower than expected is the clearest evidence
-    that memory landed in shared system RAM.
+    Prefers the captured CUDA-graph decoder; falls back to `model.generate`
+    on CPU, for inputs too long for the static cache, or if graph decode
+    fails — in which case the decoder is disabled so later utterances do not
+    keep paying for a broken path.
+    """
+    if wrapper.decoder is not None:
+        try:
+            ids = wrapper.decoder.generate(inputs, max_new, _CANCEL_EVENT)
+        except Exception as e:
+            log_err(f"CUDA-graph decode failed ({e}); disabling it")
+            wrapper.decoder = None
+            ids = None
+        if ids is not None:
+            return ids
+    stopping = [CancelStoppingCriteria(_CANCEL_EVENT)]
+    try:
+        from transformers.generation.stopping_criteria import StoppingCriteriaList
+
+        stopping = StoppingCriteriaList(stopping)
+    except Exception:
+        pass
+    out = wrapper.model.generate(
+        **inputs,
+        max_new_tokens=max_new,
+        do_sample=False,
+        use_cache=True,
+        stopping_criteria=stopping,
+    )
+    return out[:, inputs["input_ids"].shape[1]:]
+
+
+
+def _warmup_model(wrapper: "Qwen3AsrModel") -> float:
+    """Exercise the inference path so the first real utterance is not 5–10s.
+
+    On CUDA this also triggers the one-time CUDA-graph capture inside
+    `_run_decode`. Returns the measured real-time factor of the longest warmup
+    successful shape. Raises if no shape can run, so a broken inference path
+    cannot be reported as ready. The caller feeds the RTF to the spill
+    check: a warmup that is an order of magnitude slower than expected is the
+    clearest evidence that memory landed in shared system RAM.
     """
     torch = _torch()
     slowest_rtf = None
+    last_error = None
     try:
         device = next(iter(wrapper.model.parameters())).device
         dtype = next(iter(wrapper.model.parameters())).dtype
     except Exception as e:
-        log_err(f"Warmup skipped: {e}")
-        return None
+        raise RuntimeError(f"Inference warmup could not inspect the loaded model: {e}") from e
 
-    buckets = (
-        WARMUP_BUCKET_SECONDS_CUDA
-        if device.type == "cuda"
-        else WARMUP_BUCKET_SECONDS_CPU
-    )
-    for seconds in buckets:
+    if device.type == "cuda" and wrapper.decoder is not None:
+        # Untimed priming call: the graph capture runs here, not inside the
+        # timed shapes below where its one-time cost would fake a spill.
         try:
-            silence = np.zeros(int(seconds * SAMPLE_RATE), dtype=np.float32)
-            req = {
-                "audio": silence,
-                "processor_kwargs": {
-                    "audio_kwargs": {
-                        "sampling_rate": SAMPLE_RATE,
-                        # Pad to the bucket so the kernels compiled here are the
-                        # ones a real utterance of this length will use.
-                        "padding": "max_length",
-                        "max_length": int(seconds * SAMPLE_RATE),
-                    }
-                },
-            }
-            inputs = wrapper.processor.apply_transcription_request(**req)
-            inputs = inputs.to(device, dtype)
+            _warm_once(wrapper, device, dtype, 0.5)
+        except Exception as e:
+            log_err(f"Warmup priming skipped: {e}")
+    for seconds in WARMUP_SECONDS:
+        try:
             started = time.time()
-            with torch.inference_mode():
-                wrapper.model.generate(**inputs, max_new_tokens=8, do_sample=False)
+            _warm_once(wrapper, device, dtype, seconds)
             if device.type == "cuda":
                 torch.cuda.synchronize()
             elapsed = time.time() - started
             rtf = elapsed / seconds
-            log_err(f"Warmup {seconds:g}s bucket: {elapsed:.2f}s (rtf {rtf:.3f})")
-            # Report the largest bucket's RTF: it is the least dominated by
+            log_err(f"Warmup {seconds:g}s shape: {elapsed:.2f}s (rtf {rtf:.3f})")
+            # Report the largest shape's RTF: it is the least dominated by
             # fixed per-call overhead and so the most comparable to a baseline.
             slowest_rtf = rtf
         except Exception as e:
-            log_err(f"Warmup {seconds:g}s bucket skipped: {e}")
-    if slowest_rtf is not None:
-        log_err("Inference warmup done")
+            last_error = e
+            log_err(f"Warmup {seconds:g}s shape skipped: {e}")
+    if slowest_rtf is None:
+        raise RuntimeError(f"Inference warmup failed for every audio shape: {last_error}") from last_error
+    log_err("Inference warmup done")
     return slowest_rtf
+
+
+def _warm_once(wrapper: "Qwen3AsrModel", device, dtype, seconds: float):
+    torch = _torch()
+    silence = np.zeros(int(seconds * SAMPLE_RATE), dtype=np.float32)
+    req = {
+        "audio": silence,
+        "processor_kwargs": {
+            "audio_kwargs": {"sampling_rate": SAMPLE_RATE, "padding": "longest"}
+        },
+    }
+    inputs = wrapper.processor.apply_transcription_request(**req)
+    inputs = inputs.to(device, dtype)
+    with torch.inference_mode():
+        _run_decode(wrapper, inputs, 8)
+
 
 
 def build_attempts(
@@ -978,12 +1243,13 @@ def build_attempts(
     attempts: list = []
 
     if precision == "auto":
-        # INT8 halves the weights — accuracy-preserving and the only
-        # way the 1.7B model fits on a 4 GB card (e.g. RTX 2050).
-        if w * 0.55 + 700 * 1024 * 1024 <= vram:
-            attempts.append(("int8", "cuda", "int8"))
+        # BF16 first when it fits: measured ~35% faster than int8 (5.3s vs
+        # 7.3s on 10.5s of audio, RTX 2050) and full precision. INT8 remains
+        # the rung that lets the 1.7B model fit on a 4 GB card at all.
         if w * 1.25 <= vram:
             attempts.append(("bf16", "cuda", None))
+        if w * 0.55 + 700 * 1024 * 1024 <= vram:
+            attempts.append(("int8", "cuda", "int8"))
     elif precision == "int4":
         if w * 0.30 + 700 * 1024 * 1024 <= vram:
             attempts.append(("int4", "cuda", "int4"))
@@ -1029,10 +1295,25 @@ def load_model_blocking(
                 "Download them first (Model settings → Install)."
             )
 
-        if device == "cpu":
+        # Release the incumbent before measuring admission capacity: reloads
+        # otherwise count the old ASR model against the replacement's budget.
+        _unload_model_blocking()
+
+        def configure_cpu_threads():
             try:
                 import torch
-                torch.set_num_threads(max(1, os.cpu_count() or 4))
+
+                # Physical cores, not logical: intra-op threads only compute,
+                # so SMT siblings contend rather than help. psutil is not a
+                # declared dep — fall back to logical/2 (correct for SMT-2,
+                # which is what the target Windows/Linux x86 machines have).
+                try:
+                    import psutil
+
+                    cores = psutil.cpu_count(logical=False)
+                except Exception:
+                    cores = None
+                torch.set_num_threads(max(1, cores or (os.cpu_count() or 4) // 2))
             except Exception:
                 pass
 
@@ -1053,15 +1334,13 @@ def load_model_blocking(
                     f"(device total {live['total']:.0f} MB)"
                 )
             else:
-                # No nvidia-smi. Fall back to the nominal total but say so, so a
-                # subsequent spill verdict is interpretable.
+                # CUDA also exposes live free memory when nvidia-smi is absent.
+                # Nominal capacity would over-admit beside other GPU processes.
                 import torch
 
-                vram = torch.cuda.get_device_properties(0).total_memory
-                log_err(
-                    "nvidia-smi unavailable; budgeting against nominal total VRAM, "
-                    "which may over-admit"
-                )
+                free_bytes, _total_bytes = torch.cuda.mem_get_info(0)
+                vram = int(free_bytes)
+                log_err(f"nvidia-smi unavailable; CUDA reports {vram / (1024 * 1024):.0f} MB free VRAM")
         attempts = build_attempts(precision, device, vram, weights_bytes(model_dir))
 
         last_err = None
@@ -1069,6 +1348,8 @@ def load_model_blocking(
             try:
                 log_err(f"Loading Qwen3-ASR from {model_dir} on {target} ({label})")
                 _unload_model_blocking()
+                if target == "cpu":
+                    configure_cpu_threads()
                 # Sample free VRAM *before* the load so the spill check has a
                 # baseline. Reading it after and subtracting an estimate is
                 # exactly the mistake this whole task exists to avoid.
@@ -1204,11 +1485,13 @@ def _parse_transcript(processor, generated, raw_fallback: str = ""):
             text = processor.decode(generated, return_format="transcription_only")[0]
         except Exception:
             text = processor.batch_decode(generated, skip_special_tokens=True)[0]
-        text = (text or "").replace("<asr_text>", "").replace("</asr_text>", "").strip()
-        if text.lower().startswith("language "):
-            # "language English<rest>" leftover from a raw decode
-            parts = text.split("<asr_text>", 1)
-            text = parts[-1].strip() if parts else text
+        text = (text or "").strip()
+        # Split the raw metadata before removing its delimiter. Doing this in
+        # the opposite order leaves "language English" in the inserted text.
+        if text.lower().startswith("language ") and "<asr_text>" in text:
+            metadata, text = text.split("<asr_text>", 1)
+            lang = metadata[len("language "):].strip()
+        text = text.replace("<asr_text>", "").replace("</asr_text>", "").strip()
     return (text or "").strip(), (lang or "").strip()
 
 
@@ -1228,31 +1511,14 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
         log_err("No voiced audio after preprocess; skipping inference")
         return "", ""
 
-    # Task 16: pad to a fixed bucket rather than to the exact length.
-    #
-    # `padding: "longest"` keeps encoder work proportional to what was spoken,
-    # which is why it replaced the 30 s default — but it also means every
-    # utterance presents CUDA with a shape it has never seen, so the first
-    # inference at each new length pays a kernel-autotune penalty. Since audio
-    # lengths are effectively continuous, that is every utterance. Bucketing
-    # trades a little padding for a warm kernel cache: the buckets are all
-    # pre-compiled at load time.
-    bucket_s = bucket_for_seconds(stats["voiced_s"])
-    if bucket_s is None:
-        # Longer than the largest bucket. Padding up would cost more compute
-        # than the audio itself needs, so fall back to exact-length padding and
-        # accept the autotune cost for an uncommon case.
-        audio_kwargs = {
-            "sampling_rate": SAMPLE_RATE,
-            "padding": "longest",
-            "max_length": None,
-        }
-    else:
-        audio_kwargs = {
-            "sampling_rate": SAMPLE_RATE,
-            "padding": "max_length",
-            "max_length": int(bucket_s * SAMPLE_RATE),
-        }
+    # Pad to the utterance's own length ("longest"): encoder work stays
+    # proportional to what was spoken. Shape buckets were tried and measured
+    # slower — padding a 9.4 s utterance to 16 s cost ~15% extra decode time.
+    audio_kwargs = {
+        "sampling_rate": SAMPLE_RATE,
+        "padding": "longest",
+        "max_length": None,
+    }
 
     req = {
         "audio": samples,
@@ -1270,40 +1536,27 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
     target_dtype = next(iter(model.model.parameters())).dtype
     inputs = inputs.to(target_device, target_dtype)
 
-    input_len = inputs.get("input_ids").shape[1] if "input_ids" in inputs else 0
     max_new = max_new_tokens_for(stats["voiced_s"])
-
-    stopping_criteria = [CancelStoppingCriteria(_CANCEL_EVENT)]
-    try:
-        from transformers.generation.stopping_criteria import StoppingCriteriaList
-
-        stopping_criteria = StoppingCriteriaList(stopping_criteria)
-    except Exception:
-        pass
 
     t_gen = time.time()
     with torch.inference_mode():
-        output_ids = model.model.generate(
-            **inputs,
-            max_new_tokens=max_new,
-            do_sample=False,
-            use_cache=True,
-            stopping_criteria=stopping_criteria,
-        )
+        generated = _run_decode(model, inputs, max_new)
     gen_s = time.time() - t_gen
 
     if _CANCEL_EVENT.is_set():
         log_err("Inference cancelled mid-generation; discarding result")
         return "", ""
 
-    new_tokens = int(output_ids.shape[1] - input_len)
+    new_tokens = int(generated.shape[1])
     log_err(
         f"generate {new_tokens} tokens in {gen_s:.2f}s on {target_device} "
-        f"(cap {max_new}, audio {stats['voiced_s']:.2f}s, "
-        f"bucket {bucket_s if bucket_s else 'exact'}, rtf "
+        f"(cap {max_new}, audio {stats['voiced_s']:.2f}s, rtf "
         f"{gen_s / max(stats['voiced_s'], 1e-6):.3f})"
     )
-    if new_tokens >= max_new:
+    eos_ids = getattr(getattr(model.model, "generation_config", None), "eos_token_id", None)
+    if eos_ids is None:
+        eos_ids = getattr(getattr(model.model, "config", None), "eos_token_id", None)
+    if decode_exhausted(generated, max_new, eos_ids):
         # The cap, not an end-of-sequence token, ended generation. The
         # transcript is very likely truncated mid-sentence.
         STATE.decode_warning = (
@@ -1312,10 +1565,9 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
         )
         log_err(f"WARNING: {STATE.decode_warning}")
 
-    generated = output_ids[:, input_len:]
     text, lang = _parse_transcript(model.processor, generated)
     if looks_like_vocab_echo(text, prompt) or text.strip().lower().startswith("vocabulary:"):
-        log_err(f"Model echoed the vocabulary prompt ({text!r}); treating as no speech")
+        log_err("Model echoed the vocabulary prompt; treating as no speech")
         return "", lang
     return text, lang
 
@@ -1341,10 +1593,12 @@ def segment_audio(samples: np.ndarray, max_seconds=30.0, search_seconds=5.0):
     return segments
 
 
-def transcribe_segmented(pcm16: bytes, language_name, prompt):
+def transcribe_segmented(pcm16: bytes, language_name, prompt, progress=None):
     STATE.decode_warning = None
-    if len(pcm16) <= int(AUDIO_BUCKET_SECONDS[-1] * SAMPLE_RATE * 2):
+    if len(pcm16) <= int(SEGMENT_MAX_S * SAMPLE_RATE * 2):
+        if progress: progress(0, 1)
         text, language = transcribe_blocking(pcm16, language_name, prompt)
+        if progress and not _CANCEL_EVENT.is_set(): progress(1, 1)
         warning = STATE.decode_warning
         return text, language, [warning] if warning else []
     samples, stats = preprocess_waveform(pcm16_to_float32(pcm16))
@@ -1352,7 +1606,9 @@ def transcribe_segmented(pcm16: bytes, language_name, prompt):
         return "", "", []
     texts, warnings = [], []
     language = ""
-    for index, segment in enumerate(segment_audio(samples), 1):
+    segments = segment_audio(samples)
+    if progress: progress(0, len(segments))
+    for index, segment in enumerate(segments, 1):
         if _CANCEL_EVENT.is_set():
             return "", "", []
         STATE.decode_warning = None
@@ -1366,73 +1622,8 @@ def transcribe_segmented(pcm16: bytes, language_name, prompt):
             language = detected
         if STATE.decode_warning:
             warnings.append(f"Segment {index}: {STATE.decode_warning}")
+        if progress: progress(index, len(segments))
     return " ".join(texts), language, warnings
-
-
-def _inference_worker():
-    """Single consumer that performs partial transcriptions as audio arrives."""
-    global _inf_job, _inf_result, _inf_busy
-    while True:
-        with _inf_lock:
-            while _inf_job is None:
-                _inf_lock.wait()
-            job = _inf_job
-            _inf_job = None
-            _inf_busy = True
-
-        try:
-            if job.get("final"):
-                # finals are executed on the caller's thread; skip here
-                continue
-            text, lang = transcribe_blocking(
-                job["audio"], job.get("language"), job.get("prompt")
-            )
-            if text:
-                with _inf_lock:
-                    _inf_result = {"text": text, "language": lang}
-                    STATE.partial_text = text
-                    if lang:
-                        STATE.detected_language = lang
-                    STATE.unprocessed = 0
-        except Exception as e:
-            log_err(f"partial transcription failed: {e}")
-        finally:
-            with _inf_lock:
-                _inf_busy = False
-                _inf_lock.notify_all()
-
-
-def _maybe_kick_partial(language_name):
-    """Start a partial transcription if enough new audio arrived and worker is idle."""
-    global _inf_job, _inf_busy
-    with _inf_lock:
-        if _inf_busy or _MODEL is None:
-            return
-        new_audio_s = STATE.unprocessed / 2 / SAMPLE_RATE
-        if new_audio_s < PARTIAL_MIN_NEW_AUDIO_S:
-            return
-        total_s = len(STATE.stream_audio) / 2 / SAMPLE_RATE
-        tail_bytes = int(min(total_s, PARTIAL_TAIL_S) * 2 * SAMPLE_RATE)
-        audio = bytes(STATE.stream_audio[-tail_bytes:])
-        _inf_job = {
-            "audio": audio,
-            "language": language_name,
-            "prompt": STATE.vocabulary_prompt,
-            "final": False,
-        }
-        _inf_busy = True
-        _inf_lock.notify_all()
-
-
-def _wait_partial_idle(timeout_s: float) -> bool:
-    end = time.time() + timeout_s
-    with _inf_lock:
-        while _inf_busy:
-            remaining = end - time.time()
-            if remaining <= 0:
-                return False
-            _inf_lock.wait(remaining)
-    return True
 
 
 def _wait_model_ready(timeout_s: float = 240.0) -> bool:
@@ -1558,6 +1749,11 @@ def verify_weight_files(model_dir: str, weight_files):
 
 
 def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None, revision=None, weight_files=None):
+    try:
+        require_network_online()
+        install_network_guard()
+    except Exception as error:
+        return {"status": "error", "error": str(error)}
     if not revision or len(revision) != 40 or not weight_files:
         return {"status": "error", "error": "Pinned revision and weight checksums are required"}
     STATE.download_model_id = model_id
@@ -1605,7 +1801,6 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
 
 
 def handle(msg: dict) -> dict:
-    global _inf_result
     cmd = msg.get("cmd")
 
     if cmd == "ping":
@@ -1684,10 +1879,13 @@ def handle(msg: dict) -> dict:
         return {"status": "ok"}
 
     if cmd == "start_stream":
+        lang = msg.get("language", "auto")
+        if lang != "auto" and lang not in LANG_NAMES:
+            return {"status": "error", "error": "Unsupported dictation language. Choose a supported language or Auto-detect."}
         _CANCEL_EVENT.clear()
-        STATE.stream_audio = bytearray()
-        STATE.unprocessed = 0
-        STATE.partial_text = ""
+        clear_stream_audio()
+        with STATE.stream_lock:
+            STATE.stream_active = True
         STATE.detected_language = ""
         vocab = msg.get("vocabulary") or []
         if vocab:
@@ -1701,23 +1899,23 @@ def handle(msg: dict) -> dict:
 
     if cmd == "push_audio_b64":
         audio = base64.b64decode(msg.get("audio_b64", ""))
-        STATE.stream_audio.extend(audio)
-        STATE.unprocessed += len(audio)
-        if LIVE_PARTIALS:
-            _maybe_kick_partial(getattr(STATE, "stream_language", None))
+        append_stream_audio(audio)
         return {"status": "ok", "text": None}
 
     if cmd == "stop_stream":
         extra = msg.get("audio_b64")
         if extra:
             try:
-                STATE.stream_audio.extend(base64.b64decode(extra))
+                append_stream_audio(base64.b64decode(extra))
             except Exception as e:
                 log_err(f"stop_stream audio_b64 decode failed: {e}")
-        if not STATE.stream_audio:
+        with STATE.stream_lock:
+            STATE.stream_active = False
+            audio = bytes(STATE.stream_audio)
+            captured_bytes = STATE.stream_captured_bytes
+            STATE.stream_audio = bytearray()
+        if not audio:
             return {"status": "ok", "text": "", "language": ""}
-        if LIVE_PARTIALS:
-            _wait_partial_idle(2.0)
         if not _wait_model_ready():
             return {
                 "status": "error",
@@ -1728,23 +1926,24 @@ def handle(msg: dict) -> dict:
         # Dropping the end of what someone said and returning a confident-looking
         # transcript is worse than telling them it was cut.
         limit_bytes = int(FINAL_MAX_AUDIO_S * 2 * SAMPLE_RATE)
-        captured_s = len(STATE.stream_audio) / 2 / SAMPLE_RATE
+        captured_s = captured_bytes / 2 / SAMPLE_RATE
         truncated_s = 0.0
-        if len(STATE.stream_audio) > limit_bytes:
+        if captured_bytes > limit_bytes:
             truncated_s = captured_s - FINAL_MAX_AUDIO_S
             log_err(
                 f"WARNING: dictation was {captured_s:.1f}s, longer than the "
                 f"{FINAL_MAX_AUDIO_S:.0f}s dictation limit; the last "
                 f"{truncated_s:.1f}s will not be transcribed"
             )
-        audio = bytes(STATE.stream_audio[:limit_bytes])
         try:
+            progress = (lambda completed, total: _write_response({"event": "asr_progress", "id": msg["id"], "completed": completed, "total": total})) if msg.get("id") is not None else None
             text, lang, warnings = transcribe_segmented(
-                audio, getattr(STATE, "stream_language", None), STATE.vocabulary_prompt
+                audio, getattr(STATE, "stream_language", None), STATE.vocabulary_prompt,
+                **({"progress": progress} if progress else {})
             )
             if lang:
                 STATE.detected_language = lang
-            log_err(f"final transcript ({len(text)} chars, lang={lang or '-'}): {text[:180]!r}")
+            log_err(f"final transcript ({len(text)} chars, lang={lang or '-'})")
             response = {"status": "ok", "text": text, "language": lang}
             if truncated_s > 0.0:
                 # Surfaced to the user by the Rust side rather than buried in a
@@ -1762,14 +1961,10 @@ def handle(msg: dict) -> dict:
             log_err(f"final transcription failed: {e}")
             return {"status": "error", "error": str(e), "text": ""}
         finally:
-            STATE.stream_audio = bytearray()
-            STATE.unprocessed = 0
-            STATE.partial_text = ""
+            clear_stream_audio()
 
     if cmd == "cancel_stream":
-        STATE.stream_audio = bytearray()
-        STATE.unprocessed = 0
-        STATE.partial_text = ""
+        clear_stream_audio()
         return {"status": "ok"}
 
     return {"status": "error", "error": f"Unknown command: {cmd}"}
@@ -1831,6 +2026,8 @@ def _selftest() -> bool:
     # stream and trailing payload are both passed to final transcription.
     saved_stream_state = (
         STATE.stream_audio,
+        STATE.stream_active,
+        STATE.stream_captured_bytes,
         STATE.unprocessed,
         STATE.partial_text,
         STATE.loaded,
@@ -1840,9 +2037,10 @@ def _selftest() -> bool:
         STATE.vocabulary_prompt,
     )
     saved_transcriber = transcribe_blocking
-    saved_live_partials = LIVE_PARTIALS
     try:
         STATE.stream_audio = bytearray(b"prefix")
+        STATE.stream_active = True
+        STATE.stream_captured_bytes = 6
         STATE.unprocessed = 0
         STATE.partial_text = ""
         STATE.loaded = True
@@ -1854,7 +2052,6 @@ def _selftest() -> bool:
             str(len(audio)),
             "en",
         )
-        globals()["LIVE_PARTIALS"] = False
         response = handle(
             {
                 "cmd": "stop_stream",
@@ -1864,9 +2061,10 @@ def _selftest() -> bool:
         check("stop-stream-appends-audio", response.get("text") == "10")
     finally:
         globals()["transcribe_blocking"] = saved_transcriber
-        globals()["LIVE_PARTIALS"] = saved_live_partials
         (
             STATE.stream_audio,
+            STATE.stream_active,
+            STATE.stream_captured_bytes,
             STATE.unprocessed,
             STATE.partial_text,
             STATE.loaded,
@@ -1928,9 +2126,9 @@ def _selftest() -> bool:
     a = build_attempts("auto", "cuda", GB4, W17)
     check("attempts-1.7b-4gb-auto", a == [("int8", "cuda", "int8"), ("cpu", "cpu", None)])
 
-    # 1.7B on a 6 GB card, auto: both int8 and bf16 fit, int8 first.
+    # 1.7B on a 6 GB card, auto: both fit, bf16 first (measured faster).
     a = build_attempts("auto", "cuda", GB6, W17)
-    check("attempts-1.7b-6gb-auto", a == [("int8", "cuda", "int8"), ("bf16", "cuda", None), ("cpu", "cpu", None)])
+    check("attempts-1.7b-6gb-auto", a == [("bf16", "cuda", None), ("int8", "cuda", "int8"), ("cpu", "cpu", None)])
 
     # User pinned int4: only int4 + cpu fallback (no silent bf16 substitution).
     a = build_attempts("int4", "cuda", GB4, W17)
@@ -1952,9 +2150,9 @@ def _selftest() -> bool:
     a = build_attempts("bf16", "cuda", GB6, W17)
     check("attempts-1.7b-6gb-bf16", a == [("bf16", "cuda", None), ("cpu", "cpu", None)])
 
-    # 0.6B auto on a 4 GB card: bf16 fits, int8 also fits, int8 first.
+    # 0.6B auto on a 4 GB card: both fit, bf16 first.
     a = build_attempts("auto", "cuda", GB4, W06)
-    check("attempts-0.6b-4gb-auto", a == [("int8", "cuda", "int8"), ("bf16", "cuda", None), ("cpu", "cpu", None)])
+    check("attempts-0.6b-4gb-auto", a == [("bf16", "cuda", None), ("int8", "cuda", "int8"), ("cpu", "cpu", None)])
 
     # Garbage / case-dirty precision falls back to auto.
     a = build_attempts("POTATO", "cuda", GB6, W17)
@@ -2116,28 +2314,14 @@ def _selftest() -> bool:
     )
 
     # ---------------------------------------------------------------
-    # Task 16: shape bucketing.
+    # CUDA-graph decoder invariants (checked without a GPU).
     # ---------------------------------------------------------------
+    check("warmup-shapes-ascending", list(WARMUP_SECONDS) == sorted(WARMUP_SECONDS))
     check(
-        "buckets-are-ascending",
-        list(AUDIO_BUCKET_SECONDS) == sorted(AUDIO_BUCKET_SECONDS),
-    )
-    check(
-        "bucket-covers-typical-utterance",
-        bucket_for_seconds(5.0) == 8.0 and bucket_for_seconds(1.1) == 2.0,
-    )
-    check(
-        "bucket-exact-boundary-does-not-round-up",
-        bucket_for_seconds(4.0) == 4.0,
-    )
-    check(
-        "bucket-beyond-largest-is-unpadded",
-        bucket_for_seconds(45.0) is None,
-    )
-    check("bucket-zero-uses-smallest", bucket_for_seconds(0.0) == AUDIO_BUCKET_SECONDS[0])
-    check(
-        "warmup-covers-every-bucket-it-can",
-        set(WARMUP_BUCKET_SECONDS_CUDA) >= set(AUDIO_BUCKET_SECONDS[:-1]),
+        "graph-cache-covers-worst-case",
+        # A 30 s segment is ~390 audio tokens + ~80 text tokens + up to ~60
+        # vocabulary terms in the prompt, plus the decode cap.
+        GRAPH_CACHE_LEN >= 550 + max_new_tokens_for(SEGMENT_MAX_S),
     )
 
     # ---------------------------------------------------------------
@@ -2250,7 +2434,6 @@ def _command_worker():
 
 def main():
     log_err(f"Qwen3-ASR sidecar started (pid {os.getpid()}). Listening on stdin...")
-    threading.Thread(target=_inference_worker, name="asr-worker", daemon=True).start()
     threading.Thread(target=_command_worker, name="cmd-worker", daemon=True).start()
 
     def warm_imports_safe():
@@ -2284,10 +2467,7 @@ def main():
                 header = _read_exact(stream, 12)
                 _session_id, _seq_id, data_len = unpack_binary_audio_frame(header)
                 pcm_bytes = _read_exact(stream, data_len)
-                STATE.stream_audio.extend(pcm_bytes)
-                STATE.unprocessed += len(pcm_bytes)
-                if LIVE_PARTIALS:
-                    _maybe_kick_partial(getattr(STATE, "stream_language", None))
+                append_stream_audio(pcm_bytes)
             except Exception as e:
                 log_err(f"Binary audio frame read error: {e}")
                 break
@@ -2306,9 +2486,7 @@ def main():
             cmd = msg.get("cmd")
             if cmd == "cancel_stream":
                 _CANCEL_EVENT.set()
-                STATE.stream_audio = bytearray()
-                STATE.unprocessed = 0
-                STATE.partial_text = ""
+                clear_stream_audio()
                 _respond(msg, {"status": "ok"})
             elif cmd in ("ping", "status"):
                 # Fast lane. These are read-only probes that touch no torch and

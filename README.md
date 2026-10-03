@@ -6,6 +6,14 @@ Local-first desktop dictation with a focused workspace for your words.
 
 ## ✨ Features & Architecture
 
+- **Spoken snippets and custom modes**: exact text expansion, optional Jira/commit/medical presets, per-mode shortcuts, app/spoken triggers, local context permissions, output translation and six output destinations.
+- **Command, assistant and notes**: voice-edit selections; ask a stateless local assistant; capture manual or voice notes with search, pins and Markdown export. Correct history transcripts and review vocabulary suggestions.
+- **Local audio imports**: WAV, MP3, M4A/AAC, FLAC and Ogg, up to two hours. Cancellable transcription and TXT/SRT/VTT exports use actual audio segment offsets. Speaker metadata remains optional.
+- **Privacy controls**: airplane mode blocks artifact downloads; a local network ledger records outbound hosts/bytes. Optional OS-keyring AES-256-GCM encryption covers transcripts, selected command text, subtitle segments and retained audio; missing keys preserve the original database. Encrypted searches decrypt bounded pages.
+- **Desktop options**: usage statistics, pins/tags/filters, retry options, config transfer, offline model imports, sound cues, app exclusions, media ducking on Windows, battery policy, accessible HUD contrast, paste delay and type insertion.
+- **Meetings and assistant actions**: optional mic/system-audio recording, chunked local transcript summaries, and explicitly activated web-search/note proposals. See [meeting and assistant guide](docs/meeting-and-assistant.md).
+- **Local automation and portable mode**: revocable localhost token, authenticated dictation/session routes, `--dictate` and `--portable`. See [automation documentation](docs/local-automation.md), [offline transfer](docs/offline-transfer.md), and [expansion verification](docs/feature-expansion-verification.md).
+
 - **🔒 Offline & Local-First**: Recognition and cleanup run locally. Initial model and runtime downloads require internet access; audio is sent only to local runtimes.
 - **⚡ Real Qwen3-ASR on your GPU**:
   - Pick **0.6B** for lower latency or **1.7B** for the larger model. When the requested model exceeds the GPU memory budget, Reflow chooses a smaller installed model that fits and reports the downgrade. CPU is used when GPU acceleration is unavailable or no installed model fits.
@@ -13,6 +21,7 @@ Local-first desktop dictation with a focused workspace for your words.
   - Audio is buffered continuously and transcribed on release. Live partials are disabled (`LIVE_PARTIALS = False`). Long dictations use silence-aligned segments of at most 30 seconds, with a one-hour recording limit and visible truncation warnings.
   - Custom dictionary terms are passed to the model as recognition hotwords.
 - **🔒 Single instance**: launching Reflow twice focuses the running app instead of fighting over the global hotkey.
+- **Session foundations**: additive settings-v5 and history-v6 migrations preserve existing data, with independent session intents, mode and output contracts, and multiple shortcut bindings. Escape or the recording Cancel button discards the active session.
 - **🌊 Voice Activity Detection (VAD)**:
   - RMS energy detection drives the audio-level display and configurable silence auto-stop. Capture forwards all audio rather than discarding non-speech frames.
   - The ASR runtime trims surrounding silence before decoding.
@@ -29,6 +38,8 @@ Local-first desktop dictation with a focused workspace for your words.
 - **💾 Local SQLite History & Search**:
   - Searchable full-text transcription history.
   - Configurable data retention policies (1 day, 7 days, 30 days, 90 days, Forever).
+  - Separate audio retention in Settings → Advanced: don't save audio (default), 1 day, 1 week, 1 month (30 days), or Maximum (indefinitely). Expiry is measured from recording completion. Expired recordings are deleted while the app runs and at startup; Extract audio and Retry transcript disappear at expiry. Transcripts follow their own retention policy.
+  - Extract audio saves a WAV in Downloads. Retry transcript recognizes the saved recording again and applies the current cleanup settings. Deleting history also deletes its audio. Original/cleaned views remain available after audio expiry; no Undo AI edit action is shown.
   - Single item copy, original/cleaned comparison, deletion, and batch clear with confirmation.
 - **🖥️ Minimalist HUD & System Tray Utility**:
   - Borderless, semi-transparent floating overlay with a live waveform visualizer; the transcript appears when recognition finishes.
@@ -115,8 +126,8 @@ reflow/
 
 ### Prerequisites
 
-- **Node.js**: v18+ (tested on Node v24)
-- **Rust**: 1.77+ (tested on Rust 1.97)
+- **Node.js**: v22+ (tested on Node v24)
+- **Rust**: 1.88+ (tested on Rust 1.97)
 - **Python runtime**: Python 3.11+ on PATH with the exact packages in [model-runtime/requirements.txt](model-runtime/requirements.txt); tested on Python 3.11.9. NVIDIA acceleration needs a compatible CUDA torch build. Python is not required for the experimental native runtime.
 - **OS**: Windows 10/11 or Linux (X11 full support; Wayland best-effort)
 - An NVIDIA GPU is recommended for Python ASR; it otherwise uses the CPU. Model and precision selection depend on measured free memory.
@@ -144,13 +155,14 @@ The downloader pins llama.cpp stable **v0.5.0 / b11146**, with checksums for eac
 
 #### Installers
 
-Prebuilt installers are published in [GitHub Releases](https://github.com/Lawliet2004/reflow/releases):
+Check [GitHub Releases](https://github.com/Lawliet2004/reflow/releases) for available published installers:
 
 - **Windows**: download the `.msi` or NSIS `.exe` installer.
-- **macOS**: download the `.dmg` matching your Mac (Intel or Apple Silicon).
 - **Linux**: download the `.deb` package on Debian/Ubuntu, or the `.AppImage` on other distributions.
 
-The app is unsigned while the project is being developed, so macOS and Windows may show an unverified-developer warning on first launch.
+macOS installers are gated until native dictation, shortcuts and startup behavior have been verified. Windows installers are currently unsigned and may show an unverified-publisher warning.
+
+Installers include the Python runtime script, language metadata and pinned requirements file. The Python interpreter, its packages, speech models and experimental native runtime are installed separately; packaging does not make those dependencies available automatically.
 
 ```bash
 # 1. Install frontend dependencies
@@ -192,7 +204,7 @@ Linux notes:
 npm run tauri dev
 ```
 
-Linux packages produced by `npm run tauri build`: `.deb` and AppImage. Runtime: system `python3` plus the pinned requirements for the default Qwen sidecar (not bundled inside the AppImage), or the separately downloaded experimental native runtime and its models. Pushing a version tag such as `v0.1.0` runs the GitHub Actions release workflow and publishes Linux, Windows, and macOS installers.
+Linux packages produced by `npm run tauri build`: `.deb` and AppImage. Runtime: system `python3` plus the pinned requirements for the default Qwen sidecar (not bundled inside the AppImage), or the separately downloaded experimental native runtime and its models. Pushing a version tag runs the GitHub Actions checks and creates a draft release with Windows and Linux installers. Publishing the draft is a separate release step.
 
 ### Android companion
 

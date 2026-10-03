@@ -14,6 +14,9 @@ import {
 } from "../../types";
 import { api } from "../../services/tauriApi";
 import { ModelNotice } from "../ModelNotice";
+import { PresetSelector } from "./PresetSelector";
+import { RuntimeInventoryPanel } from "./RuntimeInventoryPanel";
+import { CalibrationPanel } from "./CalibrationPanel";
 import { Section, Row, Toggle } from "./ui";
 import {
   Check,
@@ -34,7 +37,7 @@ import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
 interface Props {
   intelligence: IntelligenceHub;
   settings: AppSettings;
-  onUpdateSettings: (s: Partial<AppSettings>) => void;
+  onUpdateSettings: (s: Partial<AppSettings>) => Promise<boolean>;
   modelStatus: ModelStatus | null;
   onReloadModel: () => void;
   intelligenceDownload: IntelligenceDownloadEvent | null;
@@ -49,8 +52,8 @@ interface Props {
 const FORMAT_SIZE = (mb: number) => (mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`);
 
 const MODELS: { id: "0.6b" | "1.7b"; title: string; desc: string }[] = [
-  { id: "0.6b", title: "0.6B · Realtime", desc: "Instant latency · fits all GPUs & CPU" },
-  { id: "1.7b", title: "1.7B · High Accuracy", desc: "Maximum precision · auto-fits 4 GB+ GPUs" },
+  { id: "0.6b", title: "0.6B · Faster", desc: "Smaller model · speed depends on your hardware" },
+  { id: "1.7b", title: "1.7B · Higher accuracy", desc: "Larger model · requires more memory" },
 ];
 
 type Precision = "auto" | "int4" | "int8" | "bf16";
@@ -60,8 +63,8 @@ const PRECISIONS: {
   desc: string;
 }[] = [
   { id: "auto", title: "Auto", desc: "Picks the best fit for your GPU" },
-  { id: "int4", title: "4-bit", desc: "Lowest VRAM · small accuracy hit" },
-  { id: "int8", title: "8-bit", desc: "Half the VRAM · near-lossless" },
+  { id: "int4", title: "4-bit", desc: "Lowest weight memory · measure speed and quality" },
+  { id: "int8", title: "8-bit", desc: "Lower weight memory · speed varies by hardware" },
   { id: "bf16", title: "16-bit", desc: "Full precision · needs the most VRAM" },
 ];
 
@@ -172,11 +175,15 @@ export const ModelPage: React.FC<Props> = ({
       : "cpu";
 
   const change = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
-    onUpdateSettings({ [key]: value } as Partial<AppSettings>);
+    onUpdateSettings({
+      [key]: value,
+      ...(key === "asr" ? { preset: "custom" } : {}),
+    } as Partial<AppSettings>);
 
   const handleSelectRefinementDevice = (device: "cpu" | "gpu") => {
     if (device === "gpu" && !refinementGpuAvailable) return;
     onUpdateSettings({
+      preset: "custom",
       refinement: {
         ...settings.refinement,
         device: device === "gpu" ? "vulkan" : "cpu",
@@ -193,7 +200,7 @@ export const ModelPage: React.FC<Props> = ({
 
   const handleSelectModel = async (id: "0.6b" | "1.7b") => {
     if (settings.asr.model === id) return;
-    await change("asr", { ...settings.asr, model: id });
+    if (!(await change("asr", { ...settings.asr, model: id }))) return;
     try {
       const status = await api.getModelStatus();
       if (!status.installed) {
@@ -213,9 +220,24 @@ export const ModelPage: React.FC<Props> = ({
     }
   };
 
+  const installSelectedModel = async () => {
+    setInstallingModel(settings.asr.model);
+    try {
+      await api.installModel(settings.asr.model);
+    } catch (error) {
+      intelligence.notifyToast(
+        "error",
+        "Could not download the speech model. Check your connection and available disk space.",
+      );
+      console.error("Speech model install failed:", error);
+    } finally {
+      setInstallingModel(null);
+    }
+  };
+
   const handleSelectPrecision = async (id: Precision) => {
     if (settings.asr.precision === id) return;
-    await change("asr", { ...settings.asr, precision: id });
+    if (!(await change("asr", { ...settings.asr, precision: id }))) return;
     // The choice is already persisted to AppSettings, so a future launch
     // will honor it. Reload now so the new precision is live without
     // requiring a restart.
@@ -223,6 +245,10 @@ export const ModelPage: React.FC<Props> = ({
       try {
         await api.reloadModel();
       } catch (e) {
+        intelligence.notifyToast(
+          "error",
+          "Could not reload the speech model with this precision. Please try again.",
+        );
         console.error("Precision reload error:", e);
       }
     }
@@ -273,14 +299,29 @@ export const ModelPage: React.FC<Props> = ({
 
   return (
     <Section icon={<Cpu className="w-4 h-4" />} title="Speech model">
+      <PresetSelector
+        selectedPreset={settings.preset}
+        capabilities={capabilities}
+        onSelectPreset={(preset) => {
+          void (async () => {
+            if (!(await onUpdateSettings({ preset }))) return;
+            try {
+              await api.reloadModel();
+              await intelligence.refresh();
+            } catch (error) {
+              intelligence.notifyToast("error", String(error));
+            }
+          })();
+        }}
+      />
       {/* Why the running model may not be the one selected below. */}
       <ModelNotice notice={modelStatus?.asr_selection_notice} />
       {showGpuHint && (
         <div
-          className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 space-y-1.5"
+          className="rounded-xl border border-warning/40 bg-warning/10 p-3 space-y-1.5"
           role="status"
         >
-          <div className="flex items-start gap-2 text-[12.5px] text-amber-700 dark:text-amber-300">
+          <div className="flex items-start gap-2 text-sm text-warning">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <div>
               <p className="font-semibold">GPU detected, but ASR is using CPU.</p>
@@ -290,7 +331,7 @@ export const ModelPage: React.FC<Props> = ({
               </p>
             </div>
           </div>
-          <pre className="text-[11.5px] font-mono bg-surface-2 border border-amber-500/30 rounded-md px-2 py-1.5 overflow-x-auto whitespace-pre">
+          <pre className="text-xs font-mono bg-surface-2 border border-warning/30 rounded-md px-2 py-1.5 overflow-x-auto whitespace-pre">
             {modelStatus?.asr_gpu_hint}
           </pre>
         </div>
@@ -302,6 +343,8 @@ export const ModelPage: React.FC<Props> = ({
             <button
               key={m.id}
               onClick={() => handleSelectModel(m.id)}
+              disabled={installingModel !== null || downloading}
+              aria-pressed={active}
               className={`text-left rounded-xl border p-3.5 transition-all cursor-pointer ${
                 active
                   ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
@@ -309,7 +352,7 @@ export const ModelPage: React.FC<Props> = ({
               }`}
             >
               <div className="flex items-center justify-between">
-                <p className={`text-[13px] font-semibold ${active ? "text-accent" : "text-ink"}`}>
+                <p className={`text-sm font-semibold ${active ? "text-accent" : "text-ink"}`}>
                   {m.title}
                 </p>
                 {active && (
@@ -318,9 +361,9 @@ export const ModelPage: React.FC<Props> = ({
                   </div>
                 )}
               </div>
-              <p className="text-[11.5px] text-muted mt-1 leading-snug">{m.desc}</p>
+              <p className="text-xs text-muted mt-1 leading-snug">{m.desc}</p>
               {installingModel === m.id && (
-                <p className="text-[11px] text-accent mt-2 flex items-center gap-1.5 font-medium">
+                <p className="text-2xs text-accent mt-2 flex items-center gap-1.5 font-medium">
                   <Loader2 className="w-3 h-3 animate-spin" />
                   Downloading{" "}
                   {modelStatus?.is_downloading && active
@@ -340,7 +383,7 @@ export const ModelPage: React.FC<Props> = ({
             : downloading || loading
               ? "border-line bg-surface-2"
               : modelStatus?.error
-                ? "border-rose-500/30 bg-rose-500/10"
+                ? "border-danger/30 bg-danger/10"
                 : "border-line bg-surface-2"
         }`}
       >
@@ -366,10 +409,10 @@ export const ModelPage: React.FC<Props> = ({
               </div>
             )}
             <div className="min-w-0">
-              <p className="text-[13px] font-semibold text-ink truncate">
+              <p className="text-sm font-semibold text-ink truncate">
                 {modelStatus?.name || "Qwen3-ASR Engine"}
               </p>
-              <p className="text-[11.5px] text-muted truncate">
+              <p className="text-xs text-muted truncate">
                 {modelReady
                   ? modelStatus?.backend
                   : downloading
@@ -380,10 +423,13 @@ export const ModelPage: React.FC<Props> = ({
                             ? backendLabel
                             : `Loading ${settings.asr.model === "1.7b" ? "1.7B" : "0.6B"} model`
                         }`
-                      : (modelStatus?.error ?? "Initializing model…")}
+                      : (modelStatus?.error ??
+                        (modelStatus?.installed
+                          ? "Model is not loaded"
+                          : "Speech model is not installed"))}
               </p>
               {precisionLabel && (
-                <p className="text-[10.5px] text-accent mt-0.5 font-medium">{precisionLabel}</p>
+                <p className="text-2xs text-accent mt-0.5 font-medium">{precisionLabel}</p>
               )}
             </div>
           </div>
@@ -393,6 +439,7 @@ export const ModelPage: React.FC<Props> = ({
               title="Reload speech model"
               aria-label="Reload speech model"
               onClick={onReloadModel}
+              disabled={loading || downloading || installingModel !== null}
             >
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
@@ -409,114 +456,135 @@ export const ModelPage: React.FC<Props> = ({
         )}
 
         {modelStatus?.error && (
-          <p className="text-[11.5px] text-rose-500 mt-2 leading-relaxed font-medium">
+          <p className="text-xs text-danger mt-2 leading-relaxed font-medium">
             {modelStatus.error}
           </p>
         )}
+        {modelStatus && !modelStatus.installed && !downloading && (
+          <button
+            className="btn btn-primary mt-3"
+            onClick={installSelectedModel}
+            disabled={installingModel !== null}
+          >
+            <Download className="w-4 h-4" />
+            {installingModel ? "Downloading…" : "Download speech model"}
+          </button>
+        )}
       </div>
 
-      <Row
-        label="Speech runtime"
-        hint="Native is an experimental Python-free runtime; download its model files separately."
-      >
-        <select
-          className="field"
-          value={settings.asr.runtime}
-          disabled={modelStatus?.is_downloading}
-          onChange={async (e) => {
-            const runtime = e.target.value as AsrSettings["runtime"];
-            await change("asr", { ...settings.asr, runtime });
-            try {
-              const status = await api.getModelStatus();
-              if (status.installed) await api.reloadModel();
-            } catch (error) {
-              intelligence.notifyToast(
-                "error",
-                "Could not switch speech runtime. Check the model and runtime downloads.",
-              );
-              console.error("Runtime switch error:", error);
+      {settings.preset === "custom" ? (
+        <>
+          <Row
+            label="Speech runtime"
+            hint="Native is an experimental Python-free runtime; download its model files separately."
+          >
+            <select
+              className="field"
+              value={settings.asr.runtime}
+              disabled={modelStatus?.is_downloading}
+              onChange={async (e) => {
+                const runtime = e.target.value as AsrSettings["runtime"];
+                if (!(await change("asr", { ...settings.asr, runtime }))) return;
+                try {
+                  const status = await api.getModelStatus();
+                  if (status.installed) await api.reloadModel();
+                } catch (error) {
+                  intelligence.notifyToast(
+                    "error",
+                    "Could not switch speech runtime. Check the model and runtime downloads.",
+                  );
+                  console.error("Runtime switch error:", error);
+                }
+              }}
+            >
+              <option value="python">Python (default)</option>
+              <option value="native">Native (experimental)</option>
+            </select>
+          </Row>
+
+          <Row
+            label="Compute backend"
+            hint={
+              settings.asr.runtime === "native"
+                ? "Native uses Vulkan when a compatible GPU is present"
+                : "Auto uses CUDA when a compatible GPU is present"
             }
-          }}
-        >
-          <option value="python">Python (default)</option>
-          <option value="native">Native (experimental)</option>
-        </select>
-      </Row>
+          >
+            <select
+              className="field"
+              value={settings.asr.device}
+              onChange={(e) =>
+                change("asr", { ...settings.asr, device: e.target.value as AsrSettings["device"] })
+              }
+            >
+              <option value="auto">Auto (GPU prioritized)</option>
+              <option value="cuda">
+                GPU only ({settings.asr.runtime === "native" ? "Vulkan" : "CUDA"})
+              </option>
+              <option value="cpu">CPU only</option>
+            </select>
+          </Row>
 
-      <Row
-        label="Compute backend"
-        hint={
-          settings.asr.runtime === "native"
-            ? "Native uses Vulkan when a compatible GPU is present"
-            : "Auto uses CUDA when a compatible GPU is present"
-        }
-      >
-        <select
-          className="field"
-          value={settings.asr.device}
-          onChange={(e) =>
-            change("asr", { ...settings.asr, device: e.target.value as AsrSettings["device"] })
-          }
-        >
-          <option value="auto">Auto (GPU prioritized)</option>
-          <option value="gpu">
-            GPU only ({settings.asr.runtime === "native" ? "Vulkan" : "CUDA"})
-          </option>
-          <option value="cpu">CPU only</option>
-        </select>
-      </Row>
-
-      {settings.asr.runtime === "python" && (
-        <div>
-          <div className="flex items-center justify-between gap-6 mb-1.5">
-            <div className="min-w-0">
-              <p className="text-[13px] text-ink font-medium">Model precision</p>
-              <p className="text-[11.5px] text-muted mt-0.5 leading-relaxed">
-                Lower precision uses less VRAM; 16-bit is the most accurate. The choice is
-                remembered across launches.
-              </p>
-            </div>
-          </div>
-          <div className="grid grid-cols-4 gap-2">
-            {PRECISIONS.map((p) => {
-              const active = settings.asr.precision === p.id;
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => handleSelectPrecision(p.id)}
-                  className={`text-left rounded-lg border p-2.5 transition-all cursor-pointer ${
-                    active
-                      ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
-                      : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <p
-                      className={`text-[12.5px] font-semibold ${active ? "text-accent" : "text-ink"}`}
+          {settings.asr.runtime === "python" && (
+            <div>
+              <div className="flex items-center justify-between gap-6 mb-1.5">
+                <div className="min-w-0">
+                  <p className="text-sm text-ink font-medium">Model precision</p>
+                  <p className="text-xs text-muted mt-0.5 leading-relaxed">
+                    Lower precision uses less VRAM; 16-bit is the most accurate. The choice is
+                    remembered across launches.
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {PRECISIONS.map((p) => {
+                  const active = settings.asr.precision === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => handleSelectPrecision(p.id)}
+                      disabled={downloading || installingModel !== null}
+                      aria-pressed={active}
+                      className={`text-left rounded-lg border p-2.5 transition-all cursor-pointer ${
+                        active
+                          ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
+                          : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
+                      }`}
                     >
-                      {p.title}
-                    </p>
-                    {active && (
-                      <div className="w-3.5 h-3.5 rounded-full bg-accent text-white flex items-center justify-center">
-                        <Check className="w-2 h-2 stroke-[3]" />
+                      <div className="flex items-center justify-between">
+                        <p
+                          className={`text-sm font-semibold ${active ? "text-accent" : "text-ink"}`}
+                        >
+                          {p.title}
+                        </p>
+                        {active && (
+                          <div className="w-3.5 h-3.5 rounded-full bg-accent text-white flex items-center justify-center">
+                            <Check className="w-2 h-2 stroke-[3]" />
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                  <p className="text-[10.5px] text-muted mt-0.5 leading-snug">{p.desc}</p>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                      <p className="text-2xs text-muted mt-0.5 leading-snug">{p.desc}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-      <Row label="Keep model loaded" hint="Pre-warms the model in memory at startup">
-        <Toggle
-          on={settings.asr.keep_loaded}
-          onChange={(v) => change("asr", { ...settings.asr, keep_loaded: v })}
-          ariaLabel="Keep model loaded"
-        />
-      </Row>
+          <Row label="Keep model loaded" hint="Pre-warms the model in memory at startup">
+            <Toggle
+              on={settings.asr.keep_loaded}
+              onChange={(v) => change("asr", { ...settings.asr, keep_loaded: v })}
+              ariaLabel="Keep model loaded"
+            />
+          </Row>
+        </>
+      ) : (
+        <p className="text-sm text-muted">
+          Speech runtime, precision and compute settings are managed automatically. Select Custom
+          above to tune them manually.
+        </p>
+      )}
 
       {modelStatus?.installed && !confirmRemove && (
         <button className="btn btn-danger w-full mt-2" onClick={() => setConfirmRemove(true)}>
@@ -525,8 +593,8 @@ export const ModelPage: React.FC<Props> = ({
         </button>
       )}
       {modelStatus?.installed && confirmRemove && (
-        <div className="p-3 rounded-xl border border-rose-500/30 bg-rose-500/10 space-y-2">
-          <div className="flex items-start gap-2 text-[12.5px] text-rose-700 dark:text-rose-300">
+        <div className="p-3 rounded-xl border border-danger/30 bg-danger/10 space-y-2">
+          <div className="flex items-start gap-2 text-sm text-danger">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <p>
               This deletes the {settings.asr.model.toUpperCase()} weights from your computer. You'll
@@ -535,7 +603,7 @@ export const ModelPage: React.FC<Props> = ({
           </div>
           <div className="flex items-center gap-2">
             <button
-              className="btn btn-danger !py-1.5 !px-3 !text-[12.5px]"
+              className="btn btn-danger !py-1.5 !px-3 !text-sm"
               onClick={removeModel}
               disabled={removing}
             >
@@ -543,7 +611,7 @@ export const ModelPage: React.FC<Props> = ({
               {removing ? "Removing…" : "Yes, remove"}
             </button>
             <button
-              className="btn btn-ghost !py-1.5 !px-3 !text-[12.5px]"
+              className="btn btn-ghost !py-1.5 !px-3 !text-sm"
               onClick={() => setConfirmRemove(false)}
             >
               Cancel
@@ -555,16 +623,16 @@ export const ModelPage: React.FC<Props> = ({
       <div className="pt-4 border-t border-line space-y-3">
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-accent" />
-          <h3 className="text-[13.5px] font-semibold text-ink">Intelligence &amp; Flow Engine</h3>
+          <h3 className="text-sm font-semibold text-ink">Intelligence &amp; Flow Engine</h3>
         </div>
-        <p className="text-[12px] text-muted -mt-1">
+        <p className="text-xs text-muted -mt-1">
           Stage 2 LLM post-processing. Download the GGUF weights for the tier you want to enable.
         </p>
 
         {(["smart_flow", "deep_context"] as IntelligenceTier[]).map((tier) => {
           const meta = INTELLIGENCE_TIERS[tier];
           const state = tierState(tier);
-          const ggufInstalled = state !== null && state.installed;
+          const ggufInstalled = state?.weights_installed ?? state?.installed ?? false;
           const runtimeInstalled = flowStatus?.runtime_installed ?? false;
           const installed = ggufInstalled && runtimeInstalled;
           const showRuntimeMissing = ggufInstalled && !runtimeInstalled;
@@ -594,18 +662,18 @@ export const ModelPage: React.FC<Props> = ({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-[13px] font-semibold text-ink">{meta.label}</p>
+                    <p className="text-sm font-semibold text-ink">{meta.label}</p>
                     {isActive && (
-                      <span className="text-[9.5px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-accent text-white">
+                      <span className="text-2xs font-bold tracking-wider px-1.5 py-0.5 rounded bg-accent text-white">
                         ACTIVE
                       </span>
                     )}
                   </div>
-                  <p className="text-[11.5px] text-muted mt-0.5 break-all">{meta.modelFile}</p>
+                  <p className="text-xs text-muted mt-0.5 break-all">{meta.modelFile}</p>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between gap-3 text-[11.5px] text-muted">
+              <div className="flex items-center justify-between gap-3 text-xs text-muted">
                 <span>
                   <span className="text-ink font-medium">{FORMAT_SIZE(meta.downloadSizeMB)}</span>{" "}
                   download ·{" "}
@@ -613,13 +681,13 @@ export const ModelPage: React.FC<Props> = ({
                   RAM
                 </span>
                 {installed && (
-                  <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-300 font-semibold">
+                  <span className="inline-flex items-center gap-1 text-success font-semibold">
                     <ShieldCheck className="w-3.5 h-3.5" />
                     Installed
                   </span>
                 )}
                 {showRuntimeMissing && (
-                  <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-300 font-semibold">
+                  <span className="inline-flex items-center gap-1 text-warning font-semibold">
                     <AlertTriangle className="w-3.5 h-3.5" />
                     Weights only
                   </span>
@@ -639,7 +707,7 @@ export const ModelPage: React.FC<Props> = ({
               </div>
 
               {installed && flowStatus?.ready && isActive && (
-                <div className="text-[11px] text-muted bg-base-2/60 border border-line rounded-md px-2.5 py-1.5 leading-snug">
+                <div className="text-2xs text-muted bg-base-2/60 border border-line rounded-md px-2.5 py-1.5 leading-snug">
                   Loaded on {flowStatus.backend || "runtime"}
                   {flowStatus.n_gpu_layers !== undefined && (
                     <>
@@ -655,7 +723,7 @@ export const ModelPage: React.FC<Props> = ({
               )}
 
               {showRuntimeMissing && (
-                <p className="text-[11px] text-amber-600 dark:text-amber-300 leading-snug">
+                <p className="text-2xs text-warning leading-snug">
                   Weights are downloaded, but the <code>llama-server</code> runtime is missing from{" "}
                   <code>~/AppData/Roaming/reflow/bin/</code>. The tier can&rsquo;t run until the
                   runtime is installed.
@@ -663,7 +731,7 @@ export const ModelPage: React.FC<Props> = ({
               )}
               {downloading && (
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[11px] text-muted">
+                  <div className="flex items-center justify-between text-2xs text-muted">
                     <span>Downloading weights</span>
                     <span>
                       {intelligenceDownload?.progress_pct ?? 0}% ·{" "}
@@ -682,7 +750,7 @@ export const ModelPage: React.FC<Props> = ({
               )}
               {runtimeDownloadActive && runtimeDownload && (
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[11px] text-muted">
+                  <div className="flex items-center justify-between text-2xs text-muted">
                     <span>Installing {runtimeDownload.kind_label ?? "runtime"} runtime</span>
                     <span>
                       {runtimeDownload.progress_pct}% · {runtimeDownload.speed_mbps.toFixed(1)} MB/s
@@ -695,25 +763,23 @@ export const ModelPage: React.FC<Props> = ({
                     />
                   </div>
                   {runtimeDownloadError && (
-                    <p className="text-[10.5px] text-rose-600 dark:text-rose-300 leading-snug">
-                      {runtimeDownloadError}
-                    </p>
+                    <p className="text-2xs text-danger leading-snug">{runtimeDownloadError}</p>
                   )}
                 </div>
               )}
               {showRuntimeMissing && !runtimeDownloadActive && runtimeDownloadError && (
-                <p className="text-[10.5px] text-rose-600 dark:text-rose-300 leading-snug">
+                <p className="text-2xs text-danger leading-snug">
                   Last install attempt failed: {runtimeDownloadError}
                 </p>
               )}
               {confirmRemoveIntelligence === tier && (
-                <div className="p-2.5 rounded-lg border border-rose-500/30 bg-rose-500/10 space-y-1.5">
-                  <p className="text-[11.5px] text-rose-700 dark:text-rose-300">
+                <div className="p-2.5 rounded-lg border border-danger/30 bg-danger/10 space-y-1.5">
+                  <p className="text-xs text-danger">
                     Delete the downloaded weights for {meta.label}? You can re-download later.
                   </p>
                   <div className="flex items-center gap-2">
                     <button
-                      className="btn btn-danger !py-1 !px-2.5 !text-[11.5px]"
+                      className="btn btn-danger !py-1 !px-2.5 !text-xs"
                       onClick={() => handleRemoveIntelligence(tier)}
                       disabled={isRemoving}
                     >
@@ -721,7 +787,7 @@ export const ModelPage: React.FC<Props> = ({
                       {isRemoving ? "Removing…" : "Yes, remove"}
                     </button>
                     <button
-                      className="btn btn-ghost !py-1 !px-2.5 !text-[11.5px]"
+                      className="btn btn-ghost !py-1 !px-2.5 !text-xs"
                       onClick={() => setConfirmRemoveIntelligence(null)}
                     >
                       Cancel
@@ -733,7 +799,7 @@ export const ModelPage: React.FC<Props> = ({
               <div className="flex items-center justify-end gap-2 pt-1 border-t border-line/60">
                 {installed ? (
                   <button
-                    className="btn btn-ghost !py-1 !px-2.5 !text-[11.5px]"
+                    className="btn btn-ghost !py-1 !px-2.5 !text-xs"
                     onClick={() => setConfirmRemoveIntelligence(tier)}
                     disabled={isRemoving}
                   >
@@ -743,7 +809,7 @@ export const ModelPage: React.FC<Props> = ({
                 ) : showRuntimeMissing ? (
                   <>
                     <button
-                      className="btn btn-primary !py-1 !px-2.5 !text-[11.5px]"
+                      className="btn btn-primary !py-1 !px-2.5 !text-xs"
                       onClick={onInstallRuntime}
                       disabled={runtimeDownloadActive}
                     >
@@ -755,7 +821,7 @@ export const ModelPage: React.FC<Props> = ({
                       Install runtime
                     </button>
                     <button
-                      className="btn btn-ghost !py-1 !px-2.5 !text-[11.5px]"
+                      className="btn btn-ghost !py-1 !px-2.5 !text-xs"
                       onClick={() => setConfirmRemoveIntelligence(tier)}
                       disabled={isRemoving}
                     >
@@ -765,7 +831,7 @@ export const ModelPage: React.FC<Props> = ({
                   </>
                 ) : downloading || runtimeDownloadActive ? null : (
                   <button
-                    className="btn btn-primary !py-1 !px-2.5 !text-[11.5px]"
+                    className="btn btn-primary !py-1 !px-2.5 !text-xs"
                     onClick={() => handleInstallIntelligence(tier)}
                     disabled={installingIntelligence === tier}
                   >
@@ -785,9 +851,9 @@ export const ModelPage: React.FC<Props> = ({
         <div className="pt-1 space-y-2">
           <div className="flex items-center gap-2">
             <Cpu className="w-3.5 h-3.5 text-muted" />
-            <p className="text-[12.5px] text-ink font-medium">Stage 2 processor</p>
+            <p className="text-sm text-ink font-medium">Stage 2 processor</p>
           </div>
-          <p className="text-[11.5px] text-muted leading-snug">
+          <p className="text-xs text-muted leading-snug">
             Choose CPU or GPU. GPU offload is tuned automatically for the lowest expected latency
             while reserving enough VRAM for speech recognition and the desktop.
           </p>
@@ -806,7 +872,7 @@ export const ModelPage: React.FC<Props> = ({
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <Cpu className="w-4 h-4 text-muted" />
-                  <p className="text-[12.5px] font-semibold text-ink">CPU</p>
+                  <p className="text-sm font-semibold text-ink">CPU</p>
                 </div>
                 {refinementDevice === "cpu" && (
                   <div className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center">
@@ -814,7 +880,7 @@ export const ModelPage: React.FC<Props> = ({
                   </div>
                 )}
               </div>
-              <p className="text-[10.5px] text-muted mt-1 leading-snug">
+              <p className="text-2xs text-muted mt-1 leading-snug">
                 Keeps every refinement layer in system memory.
               </p>
             </button>
@@ -839,7 +905,7 @@ export const ModelPage: React.FC<Props> = ({
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <Zap className="w-4 h-4 text-muted" />
-                  <p className="text-[12.5px] font-semibold text-ink">GPU</p>
+                  <p className="text-sm font-semibold text-ink">GPU</p>
                 </div>
                 {refinementDevice === "gpu" && (
                   <div className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center">
@@ -847,7 +913,7 @@ export const ModelPage: React.FC<Props> = ({
                   </div>
                 )}
               </div>
-              <p className="text-[10.5px] text-muted mt-1 leading-snug">
+              <p className="text-2xs text-muted mt-1 leading-snug">
                 {!capabilities
                   ? (capabilitiesError ?? "Checking GPU support…")
                   : refinementGpuAvailable
@@ -857,7 +923,7 @@ export const ModelPage: React.FC<Props> = ({
             </button>
           </div>
           {refinementDevice === "gpu" && (
-            <p className="text-[10.5px] text-muted leading-snug">
+            <p className="text-2xs text-muted leading-snug">
               {flowStatus?.ready && flowStatus.mode === "gpu"
                 ? `${flowStatus.n_gpu_layers ?? 0} layers are currently offloaded to the GPU.`
                 : flowStatus?.ready && flowStatus.mode === "cpu"
@@ -867,6 +933,8 @@ export const ModelPage: React.FC<Props> = ({
           )}
         </div>
       </div>
+      <RuntimeInventoryPanel busy={runtimeDownloadActive} />
+      <CalibrationPanel />
     </Section>
   );
 };

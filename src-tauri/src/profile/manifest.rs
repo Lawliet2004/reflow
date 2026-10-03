@@ -224,6 +224,29 @@ impl ModelManifest {
         self.devices.contains(&device) && self.precisions.contains(&precision)
     }
 
+    /// The precisions this model can actually be loaded at on `device`, best
+    /// first. Empty when the model cannot run on the device at all.
+    ///
+    /// On the CPU the Python runtime never quantizes — quantized weights cost
+    /// RAM without buying throughput — so a Python model's CPU list is fp32
+    /// alone. A native GGUF file is already quantized, so its CPU load
+    /// legitimately reports its own (int8) precision rather than fp32.
+    pub fn supported_precisions_on(&self, device: Device) -> Vec<Precision> {
+        if !self.devices.contains(&device) {
+            return Vec::new();
+        }
+        if device == Device::Cpu && self.precisions.contains(&Precision::Fp32) {
+            return vec![Precision::Fp32];
+        }
+        self.precisions.to_vec()
+    }
+
+    /// `true` when `precision` can actually be loaded on `device`, under the
+    /// same CPU caveat as [`Self::supported_precisions_on`].
+    pub fn supports_load(&self, device: Device, precision: Precision) -> bool {
+        self.supported_precisions_on(device).contains(&precision)
+    }
+
     pub fn supports_language(&self, language: &str) -> bool {
         let want = language.trim().to_ascii_lowercase();
         if want.is_empty() || want == "auto" {
@@ -272,7 +295,12 @@ pub const ASR_MODELS: &[ModelManifest] = &[
         // INT8 is offered but is not expected to help at batch size 1: the
         // dequantization overhead outweighs the bandwidth saving when BF16
         // already fits. Task 17 settles that with numbers.
-        precisions: &[Precision::Bf16, Precision::Int8, Precision::Fp32],
+        precisions: &[
+            Precision::Bf16,
+            Precision::Int8,
+            Precision::Int4,
+            Precision::Fp32,
+        ],
         devices: &[Device::Cuda, Device::Cpu],
         languages: &["en"],
         overhead_mb: 900.0,

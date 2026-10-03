@@ -38,8 +38,8 @@ fn guessed_lan_ip() -> Option<String> {
     socket.local_addr().ok().map(|addr| addr.ip().to_string())
 }
 
-pub fn pair_uri(host: &str, port: u16, code: &str) -> String {
-    format!("reflow://pair?host={host}&port={port}&code={code}&v=1")
+pub fn pair_uri(host: &str, port: u16, code: &str, fingerprint: &str) -> String {
+    format!("reflow://pair?host={host}&port={port}&code={code}&v=2&cert_sha256={fingerprint}")
 }
 
 pub fn qr_svg(payload: &str) -> Option<String> {
@@ -73,8 +73,9 @@ mod tests {
 
     #[test]
     fn pair_uri_shape() {
-        let uri = pair_uri("192.168.1.5", 7840, "123456");
+        let uri = pair_uri("192.168.1.5", 7840, "123456", &"a".repeat(64));
         assert!(uri.contains("host=192.168.1.5"));
         assert!(uri.contains("code=123456"));
+        assert!(uri.contains("v=2&cert_sha256="));
     }
 }

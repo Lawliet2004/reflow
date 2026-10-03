@@ -10,7 +10,7 @@ impl RetentionCleaner {
             "7_days" | "7" => Some(7),
             "30_days" | "30" => Some(30),
             "90_days" | "90" => Some(90),
-            "disabled" => return store.clear_all(),
+            "disabled" => return store.clear_transcript_history(),
             "indefinite" | "forever" | "0" | "none" | "" => None,
             _ => None,
         };
@@ -44,6 +44,13 @@ mod tests {
             character_count: 4,
             model_version: "v1".into(),
             processing_mode: "light".into(),
+            audio_available: false,
+            audio_expires_at: None,
+            command_input: None,
+            kind: "dictation".into(),
+            source: "dictation".into(),
+            pinned: false,
+            tags: String::new(),
         }
     }
 

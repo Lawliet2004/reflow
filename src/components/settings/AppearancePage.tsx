@@ -108,8 +108,8 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                     </span>
                   )}
                 </div>
-                <h3 className="text-[13px] font-semibold text-ink">{item.title}</h3>
-                <p className="text-[11px] text-muted mt-0.5 leading-relaxed">{item.desc}</p>
+                <h3 className="text-sm font-semibold text-ink">{item.title}</h3>
+                <p className="text-2xs text-muted mt-0.5 leading-relaxed">{item.desc}</p>
               </button>
             );
           })}
@@ -117,8 +117,8 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
 
         {/* Accent Color Palette */}
         <div className="pt-4 border-t border-line">
-          <p className="text-[13px] font-semibold text-ink mb-1">Accent color</p>
-          <p className="text-[11.5px] text-muted mb-3">
+          <p className="text-sm font-semibold text-ink mb-1">Accent color</p>
+          <p className="text-xs text-muted mb-3">
             Customizes buttons, waveform visualizer, focus rings, and active tags
           </p>
           <div className="flex flex-wrap items-center gap-3">
@@ -143,7 +143,7 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                   >
                     {isSelected && <Check className="w-2.5 h-2.5 text-white stroke-[3]" />}
                   </span>
-                  <span className="text-[12px] font-medium text-ink">{c.label}</span>
+                  <span className="text-xs font-medium text-ink">{c.label}</span>
                 </button>
               );
             })}

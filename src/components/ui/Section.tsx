@@ -19,11 +19,9 @@ export const Section: React.FC<SectionProps> = ({
   <section className={cn("settings-section", className)}>
     <div className="mb-5 flex items-center gap-2.5">
       {icon && <div className="flex h-6 w-6 items-center justify-center text-muted">{icon}</div>}
-      <h2 className="text-[14.5px] font-semibold tracking-tight text-ink">{title}</h2>
+      <h2 className="text-base font-semibold tracking-tight text-ink">{title}</h2>
     </div>
-    {description && (
-      <p className="-mt-2 mb-4 text-[12.5px] leading-relaxed text-muted">{description}</p>
-    )}
+    {description && <p className="-mt-2 mb-4 text-sm leading-relaxed text-muted">{description}</p>}
     <div className="space-y-4">{children}</div>
   </section>
 );
@@ -51,11 +49,11 @@ export const Row: React.FC<RowProps> = ({ label, hint, children, className }) =>
   return (
     <div className={cn("settings-row flex items-center justify-between gap-6 py-1", className)}>
       <div className="min-w-0">
-        <p id={id} className="text-[13px] font-medium text-ink">
+        <p id={id} className="text-sm font-medium text-ink">
           {label}
         </p>
         {hint && (
-          <p id={`${id}-hint`} className="mt-0.5 text-[11.5px] leading-relaxed text-muted">
+          <p id={`${id}-hint`} className="mt-0.5 text-xs leading-relaxed text-muted">
             {hint}
           </p>
         )}

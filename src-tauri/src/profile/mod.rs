@@ -5,6 +5,7 @@
 //! every hardware class in the validation matrix is reproducible from a fixture.
 
 pub mod manifest;
+pub mod measurements;
 pub mod resolver;
 
 pub use manifest::{

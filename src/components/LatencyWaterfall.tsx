@@ -88,6 +88,26 @@ export const LatencyWaterfall: React.FC<WaterfallProps> = ({ metrics, percentile
 
   return (
     <section aria-label="Latency waterfall" className="text-xs">
+      {hasMeasurement && (
+        <p className="text-muted mb-3">
+          Queue peak: {metrics.peak_audio_queue_chunks ?? 0} chunks · Dropped:{" "}
+          {metrics.dropped_audio_chunks ?? 0} · Failed transfers: {metrics.failed_audio_pushes ?? 0}{" "}
+          · Writing runtime:{" "}
+          {metrics.rewrite_ms ? (metrics.llm_was_warm ? "warm" : "cold start") : "not used"}
+        </p>
+      )}
+      {metrics.llm_generation && (
+        <p className="text-muted mb-3">
+          Writing: {metrics.llm_generation.prompt_tokens} input tokens ·{" "}
+          {metrics.llm_generation.output_tokens} output tokens
+          {metrics.llm_generation.prompt_ms != null &&
+            ` · Prompt ${Math.round(metrics.llm_generation.prompt_ms)} ms`}
+          {metrics.llm_generation.decode_ms != null &&
+            ` · Decode ${Math.round(metrics.llm_generation.decode_ms)} ms`}
+          {Boolean(metrics.llm_generation.decode_ms) &&
+            ` · ${((metrics.llm_generation.output_tokens * 1000) / metrics.llm_generation.decode_ms!).toFixed(1)} tokens/s`}
+        </p>
+      )}
       <header className="flex items-baseline justify-between gap-3">
         <h3 className="font-medium">Latency waterfall</h3>
         {hasMeasurement ? (

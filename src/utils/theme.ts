@@ -1,4 +1,35 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AccentColor, AppSettings, AppTheme, UIFontScale } from "../types";
+
+/** Windows 11 reports platformVersion >= 13 through UA client hints (WebView2). */
+async function isWindows11(): Promise<boolean> {
+  const ua = (
+    navigator as Navigator & {
+      userAgentData?: {
+        platform: string;
+        getHighEntropyValues(hints: string[]): Promise<{ platformVersion?: string }>;
+      };
+    }
+  ).userAgentData;
+  if (ua?.platform !== "Windows") return false;
+  const { platformVersion } = await ua.getHighEntropyValues(["platformVersion"]);
+  return parseInt(platformVersion ?? "0", 10) >= 13;
+}
+
+/**
+ * Desktop-only window chrome: Mica is painted by the OS behind a transparent
+ * window (see `windowEffects` in tauri.conf.json) and follows the *window*
+ * theme, so pin that to the app theme or dark text would land on light Mica.
+ * `.mica` is only added on Windows 11; elsewhere the body stays opaque.
+ */
+export async function syncWindowChrome(theme: AppTheme): Promise<void> {
+  try {
+    await getCurrentWindow().setTheme(theme === "system" ? null : theme);
+    document.documentElement.classList.toggle("mica", await isWindows11());
+  } catch {
+    /* Cosmetic only; the opaque background remains. */
+  }
+}
 
 let systemDarkMedia: MediaQueryList | null = null;
 let currentListener: ((e: MediaQueryListEvent) => void) | null = null;

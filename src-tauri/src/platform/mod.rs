@@ -1,4 +1,7 @@
 mod adapter;
+mod keys;
+pub use crate::injection::injector::capture_selection;
+pub use keys::{send_key, simulate_copy, type_text};
 pub mod sys;
 
 #[cfg(target_os = "linux")]
@@ -183,4 +186,35 @@ mod tests {
             Some(("vim".into(), "foot".into()))
         );
     }
+}
+
+pub mod media;
+
+pub fn open_browser(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
+    if !matches!(parsed.scheme(), "https" | "http") || url.len() > 8192 {
+        return Err("Unsupported browser URL".into());
+    }
+    #[cfg(windows)]
+    let result = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", url])
+            .creation_flags(0x08000000)
+            .spawn()
+    };
+    #[cfg(target_os = "linux")]
+    let result = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    return Err("Opening browser URLs is unavailable".into());
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    result
+        .map(|mut child| {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        })
+        .map_err(|e| e.to_string())
 }

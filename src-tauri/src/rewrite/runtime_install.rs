@@ -130,8 +130,13 @@ pub fn runtime_kind_path() -> PathBuf {
 }
 
 pub fn installed_runtime_kind() -> Option<String> {
-    if std::env::var(ENV_OVERRIDE_BIN).is_ok() {
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok_and(|path| !path.is_empty()) {
         return Some("Custom".into());
+    }
+    if let Some(manifest) =
+        super::runtime_inventory::active_manifest(&PlatformSys::get_app_dir().join("bin"))
+    {
+        return (!manifest.kind.is_empty() && manifest.kind != "Unknown").then_some(manifest.kind);
     }
     std::fs::read_to_string(runtime_kind_path())
         .ok()
@@ -143,7 +148,7 @@ pub fn runtime_matches(compute_backend: &str) -> bool {
     if !llama_server_bin().is_file() {
         return false;
     }
-    if std::env::var(ENV_OVERRIDE_BIN).is_ok() {
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok_and(|path| !path.is_empty()) {
         return true;
     }
     let Some(expected) = pick_runtime_spec(compute_backend) else {
@@ -174,7 +179,7 @@ pub fn runtime_flavor_conflicts(compute_backend: &str) -> bool {
         // own `BinaryMissing` check.
         return false;
     }
-    if std::env::var(ENV_OVERRIDE_BIN).is_ok() {
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok_and(|path| !path.is_empty()) {
         return false;
     }
     let (Some(expected), Some(installed)) =
@@ -261,12 +266,16 @@ pub fn llama_server_bin() -> PathBuf {
             return p;
         }
     }
+    let root = PlatformSys::get_app_dir().join("bin");
+    if let Some(binary) = super::runtime_inventory::active_binary(&root) {
+        return binary;
+    }
     let name = if cfg!(windows) {
         "llama-server.exe"
     } else {
         "llama-server"
     };
-    PlatformSys::get_app_dir().join("bin").join(name)
+    root.join(name)
 }
 
 // Per-platform asset constructors — only the current target's
@@ -372,6 +381,7 @@ pub fn install_runtime(
     ctx: AppContext,
     spec: LlamaRuntimeSpec,
 ) -> Result<(), String> {
+    crate::network_policy::require_online(ctx.settings_store.get().offline_mode)?;
     // Re-entry guard. Drop the lock before spawning the worker, otherwise
     // re-entry detection is meaningless.
     {
@@ -420,8 +430,8 @@ pub fn auto_install_if_missing(
         return;
     }
     // The binary might be present but broken (corrupt download, wrong arch,
-    // missing DLL). Re-installing over the top is safe — the installer
-    // atomically renames the extracted file into place.
+    // missing DLL). Keep the installed runtime until the archive is verified,
+    // and stop its process before replacing its executable and shared libraries.
     if let Some(spec) = pick_runtime_spec(compute_backend) {
         // Best-effort: if a download is already in flight, ignore.
         let _ = install_runtime(app.clone(), ctx.clone(), spec);
@@ -464,9 +474,6 @@ fn run_install_worker(
         return Err(format!("Could not create bin dir: {err}"));
     }
 
-    let dest = llama_server_bin();
-    let _ = std::fs::remove_file(&dest);
-
     // Stage 1: download the archive into a temp file.
     let temp_archive =
         PlatformSys::get_logs_dir().join(format!("llama-runtime-{}.partial", std::process::id()));
@@ -493,30 +500,16 @@ fn run_install_worker(
 
     emit_event(app, spec, RuntimePhase::Extracting, 100, 0.0, None, None);
 
-    // Stage 3: extract just the `llama-server` binary.
-    let extracted_to = match spec.archive_kind {
-        ArchiveKind::Zip => extract_zip(&final_archive, &bin_dir, &spec.binary_basename)?,
-        ArchiveKind::TarGz => extract_tar_gz(&final_archive, &bin_dir, &spec.binary_basename)?,
-    };
+    // A new immutable generation is extracted, hashed, and smoke-tested while
+    // the current runtime continues serving. No live DLL is overwritten.
+    let generation = stage_archive(&final_archive, &bin_dir, spec)?;
+    let extracted_to = super::runtime_inventory::entry_binary(&bin_dir, &generation)?;
+    promote_for_context(ctx, || {
+        super::runtime_inventory::promote(&bin_dir, &generation.id)
+    })?;
 
     // Stage 4: clean up the archive; we only need the binary.
     let _ = std::fs::remove_file(&final_archive);
-
-    // Stage 5: make the binary executable on Unix and strip macOS
-    // quarantine bits if we can.
-    make_executable(&extracted_to)?;
-    if cfg!(target_os = "macos") {
-        let _ = std::process::Command::new("xattr")
-            .arg("-d")
-            .arg("com.apple.quarantine")
-            .arg(&extracted_to)
-            .output();
-    }
-
-    // Stage 6: record which flavor occupies the shared binary path. Write the
-    // marker only after extraction and permission fixes have succeeded.
-    std::fs::write(runtime_kind_path(), format!("{}\n", spec.kind_label))
-        .map_err(|err| format!("Could not record runtime kind: {err}"))?;
 
     // Stage 7: tell the frontend we are done, and shut the runtime so
     // the next dictation picks up the new binary.
@@ -529,11 +522,6 @@ fn run_install_worker(
         None,
         Some(extracted_to.display().to_string()),
     );
-
-    ctx.flow_runtime.shutdown();
-    if ctx.asr_runtime.lock().as_str() == "native" {
-        ctx.asr_handle.unload_model_blocking()?;
-    }
 
     // Touch the Arc to make the borrow checker happy on shutdown.
     let _ = Arc::strong_count(&ctx.active_runtime_downloads);
@@ -548,7 +536,7 @@ fn run_install_worker(
 /// actual reason — DNS failure, connection reset, TLS rejection — lives one or
 /// two levels down in the chain. Reporting only the top layer left users with
 /// an error that named the URL and nothing else.
-fn error_chain(err: &dyn std::error::Error) -> String {
+pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
     let mut out = err.to_string();
     let mut source = err.source();
     while let Some(cause) = source {
@@ -574,17 +562,19 @@ fn send_with_retry(
     client: &reqwest::blocking::Client,
     url: &str,
     resume_from: u64,
-) -> Result<reqwest::blocking::Response, String> {
+) -> Result<crate::network_policy::DownloadResponse, String> {
+    let parsed_url = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
+    crate::network_policy::check_download_url(&parsed_url)?;
     let mut last_err = String::new();
     for attempt in 1..=DOWNLOAD_ATTEMPTS {
         let mut request = client.get(url);
         if resume_from > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
         }
-        match request.send() {
+        match crate::network_policy::send_download(request) {
             Ok(response) => return Ok(response),
             Err(err) => {
-                last_err = error_chain(&err);
+                last_err = err;
                 log::warn!(
                     "Runtime download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed for {url}: {last_err}"
                 );
@@ -609,6 +599,7 @@ fn download_with_resume(
     temp_path: &Path,
     final_path: &Path,
 ) -> Result<(), String> {
+    crate::network_policy::check_download()?;
     let resume_from: u64 = std::fs::metadata(temp_path).map(|m| m.len()).unwrap_or(0);
 
     let client = reqwest::blocking::Client::builder()
@@ -616,6 +607,7 @@ fn download_with_resume(
         // Without this, a black-holed connection sits in the handshake until
         // the 30-minute body timeout instead of failing fast enough to retry.
         .connect_timeout(std::time::Duration::from_secs(30))
+        .redirect(crate::network_policy::redirect_policy())
         .build()
         .map_err(|e| format!("HTTP client init failed: {e}"))?;
 
@@ -732,6 +724,242 @@ pub fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn digest_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn smoke_command(
+    mut command: std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use std::process::Stdio;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let deadline = Instant::now() + timeout;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Runtime smoke check failed to start: {e}"))?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("Runtime --version exited with {status}; missing or incompatible dependencies"))
+                }
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Runtime --version exceeded its smoke-check deadline".into());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Runtime smoke-check wait failed: {error}"));
+            }
+        }
+    }
+}
+
+fn smoke_version(binary: &Path) -> Result<(), String> {
+    let mut command = std::process::Command::new(binary);
+    command.arg("--version");
+    if let Some(dir) = binary.parent() {
+        command.current_dir(dir);
+    }
+    smoke_command(command, std::time::Duration::from_secs(10))
+}
+
+fn stage_archive(
+    archive: &Path,
+    root: &Path,
+    spec: &LlamaRuntimeSpec,
+) -> Result<super::runtime_inventory::RuntimeManifest, String> {
+    use super::runtime_inventory::{RuntimeFile, RuntimeManifest};
+    // This helper also verifies integrity when exercised outside the downloader.
+    verify_sha256(archive, &spec.sha256)?;
+    let generations = root.join("runtimes");
+    std::fs::create_dir_all(&generations).map_err(|e| e.to_string())?;
+    let suffix = uuid::Uuid::new_v4();
+    let id = format!(
+        "{}-{}-{suffix}",
+        PINNED_LLAMA_TAG,
+        sanitize_for_filename(&spec.kind_label)
+    );
+    let staging = generations.join(format!(".staging-{suffix}"));
+    std::fs::create_dir(&staging).map_err(|e| e.to_string())?;
+    let outcome = (|| {
+        let binary = match spec.archive_kind {
+            ArchiveKind::Zip => extract_zip(archive, &staging, &spec.binary_basename)?,
+            ArchiveKind::TarGz => extract_tar_gz(archive, &staging, &spec.binary_basename)?,
+        };
+        make_executable(&binary)?;
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("xattr")
+                .args(["-d", "com.apple.quarantine"])
+                .arg(&binary)
+                .output();
+        }
+        smoke_version(&binary)?;
+        let mut files = vec![];
+        for entry in std::fs::read_dir(&staging).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                return Err("Runtime generation contains a non-file payload".into());
+            }
+            let filename = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "Runtime filename is not UTF-8")?;
+            super::runtime_inventory::safe_name(&filename)?;
+            files.push(RuntimeFile {
+                filename,
+                sha256: digest_file(&entry.path())?,
+                bytes: entry.metadata().map_err(|e| e.to_string())?.len(),
+            });
+        }
+        files.sort_by(|a, b| a.filename.cmp(&b.filename));
+        let manifest = RuntimeManifest {
+            id: id.clone(),
+            version: PINNED_LLAMA_TAG.into(),
+            kind: spec.kind_label.clone(),
+            asset: spec.asset_name.clone(),
+            archive_sha256: spec.sha256.clone(),
+            binary: spec.binary_basename.clone(),
+            files,
+        };
+        std::fs::write(
+            staging.join("runtime-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::rename(&staging, generations.join(&id))
+            .map_err(|e| format!("Could not finalize runtime generation: {e}"))?;
+        Ok(manifest)
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_dir_all(staging);
+    }
+    outcome
+}
+
+fn promote_for_context(
+    ctx: &AppContext,
+    promote: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let _session = ctx
+        .session_operation
+        .try_lock()
+        .map_err(|_| "Wait for the active dictation before activating a runtime.".to_string())?;
+    if !matches!(
+        *ctx.state_enum.read(),
+        crate::state::AppStateEnum::Ready | crate::state::AppStateEnum::Idle
+    ) {
+        return Err("Runtime is staged; finish the active dictation before activating it.".into());
+    }
+    let maintenance = super::runtime_inventory::Maintenance::begin()?;
+    // New ensure calls fail while pending, so unloading the actor cannot wait
+    // behind a launch blocked on the promotion's exclusive lock.
+    ctx.flow_runtime.shutdown();
+    if ctx.asr_runtime.lock().as_str() == "native" {
+        ctx.asr_handle.unload_model_blocking()?;
+    }
+    let exclusive = maintenance.exclusive();
+    let outcome = promote();
+    drop(exclusive);
+    drop(maintenance);
+    outcome
+}
+
+pub fn get_runtime_inventory() -> Vec<super::runtime_inventory::RuntimeEntry> {
+    let root = PlatformSys::get_app_dir().join("bin");
+    let mut entries = super::runtime_inventory::inventory(&root);
+    if let Ok(binary) = std::env::var(ENV_OVERRIDE_BIN) {
+        if !binary.is_empty() {
+            for entry in &mut entries {
+                entry.active = false;
+                entry.rollback_available = false;
+            }
+            let healthy = Path::new(&binary).is_file();
+            entries.push(super::runtime_inventory::RuntimeEntry {
+                id: "custom".into(),
+                version: "external".into(),
+                kind: "Custom".into(),
+                binary_path: binary,
+                active: true,
+                rollback_available: false,
+                healthy,
+                error: (!healthy).then(|| "Custom runtime launcher is missing".into()),
+            });
+        }
+    }
+    entries
+}
+
+pub fn rollback_runtime(
+    ctx: &AppContext,
+) -> Result<Vec<super::runtime_inventory::RuntimeEntry>, String> {
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok_and(|path| !path.is_empty()) {
+        return Err("Remove REFLOW_LLAMA_BIN before rolling back the managed runtime.".into());
+    }
+    let root = PlatformSys::get_app_dir().join("bin");
+    let expected_pointer = super::runtime_inventory::read_pointer(&root)?;
+    let previous = super::runtime_inventory::rollback_target(&root)?;
+    smoke_version(&super::runtime_inventory::entry_binary(&root, &previous)?)?;
+    promote_for_context(ctx, || {
+        if super::runtime_inventory::read_pointer(&root)? != expected_pointer {
+            return Err(
+                "Runtime inventory changed during rollback verification; retry rollback.".into(),
+            );
+        }
+        super::runtime_inventory::rollback(&root)
+    })?;
+    Ok(get_runtime_inventory())
+}
+
+pub fn repair_runtime(app: AppHandle, ctx: AppContext) -> Result<(), String> {
+    crate::network_policy::require_online(ctx.settings_store.get().offline_mode)?;
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok_and(|path| !path.is_empty()) {
+        return Err("Remove REFLOW_LLAMA_BIN before repairing the managed runtime.".into());
+    }
+    let backend = ctx.settings_store.get().refinement.device;
+    let spec =
+        pick_runtime_spec(&backend).ok_or("No runtime package is available for this platform")?;
+    {
+        let mut active = ctx.active_runtime_downloads.lock();
+        if !active.insert(RUNTIME_LOCK_KEY.to_string()) {
+            return Err("A runtime download is already in progress".into());
+        }
+    }
+    let outcome = run_install_worker(&app, &ctx, &spec);
+    if let Err(error) = &outcome {
+        emit_error(&app, &spec, error.clone());
+    }
+    ctx.active_runtime_downloads.lock().remove(RUNTIME_LOCK_KEY);
+    outcome
+}
+
 /// Extract a zip archive to `dest_dir`. Returns the path of the
 /// extracted launcher (i.e. `llama-server.exe` or `llama-server`).
 /// Any companion DLLs in the same archive (e.g. `llama-server-impl.dll`
@@ -740,6 +968,33 @@ pub fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
 fn extract_zip(archive: &Path, dest_dir: &Path, binary_basename: &str) -> Result<PathBuf, String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("Open zip: {e}"))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("Read zip: {e}"))?;
+    let mut payload_names = std::collections::HashSet::new();
+    let mut has_launcher = false;
+    for index in 0..zip.len() {
+        let entry = zip
+            .by_index(index)
+            .map_err(|e| format!("Zip entry {index}: {e}"))?;
+        let name = entry.name().rsplit('/').next().unwrap_or_default();
+        if !is_runtime_payload(name) {
+            continue;
+        }
+        super::runtime_inventory::safe_name(name)?;
+        if entry.is_dir() || !payload_names.insert(name.to_ascii_lowercase()) {
+            return Err(format!("Ambiguous runtime archive payload: {name}"));
+        }
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err(format!("Runtime ZIP payload cannot be a symlink: {name}"));
+        }
+        has_launcher |= name == binary_basename;
+    }
+    if !has_launcher {
+        return Err(format!(
+            "Archive did not contain a '{binary_basename}' entry"
+        ));
+    }
     let mut launcher: Option<PathBuf> = None;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| format!("Zip entry {i}: {e}"))?;
@@ -751,6 +1006,7 @@ fn extract_zip(archive: &Path, dest_dir: &Path, binary_basename: &str) -> Result
         if !is_runtime_payload(&stripped) {
             continue;
         }
+        super::runtime_inventory::safe_name(&stripped)?;
         let out_path = dest_dir.join(&stripped);
         let mut out =
             std::fs::File::create(&out_path).map_err(|e| format!("Create extracted file: {e}"))?;
@@ -771,14 +1027,13 @@ fn extract_tar_gz(
     let gz = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(gz);
     let mut launcher: Option<PathBuf> = None;
+    let mut aliases = Vec::new();
+    let mut payload_names = std::collections::HashSet::new();
     for entry in tar
         .entries()
         .map_err(|e| format!("Read tar entries: {e}"))?
     {
         let mut entry = entry.map_err(|e| format!("Tar entry: {e}"))?;
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
         let path = entry
             .path()
             .map_err(|e| format!("Tar path: {e}"))?
@@ -790,6 +1045,41 @@ fn extract_tar_gz(
         if !is_runtime_payload(&file_name) {
             continue;
         }
+        super::runtime_inventory::safe_name(&file_name)?;
+        if !payload_names.insert(file_name.to_ascii_lowercase()) {
+            return Err(format!("Ambiguous runtime archive payload: {file_name}"));
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_symlink() || kind.is_hard_link() {
+            let target = entry
+                .link_name()
+                .map_err(|e| e.to_string())?
+                .ok_or("Runtime library alias has no target")?;
+            if target.components().any(|component| {
+                !matches!(
+                    component,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            }) {
+                return Err("Runtime library alias points outside its archive".into());
+            }
+            let target = target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("Runtime library alias target is invalid")?
+                .to_string();
+            super::runtime_inventory::safe_name(&target)?;
+            if !is_runtime_payload(&target) {
+                return Err("Runtime alias targets a non-runtime payload".into());
+            }
+            aliases.push((file_name, target));
+            continue;
+        }
+        if !kind.is_file() {
+            return Err(format!(
+                "Runtime payload is not a regular file: {file_name}"
+            ));
+        }
         let out_path = dest_dir.join(&file_name);
         let mut out =
             std::fs::File::create(&out_path).map_err(|e| format!("Create extracted file: {e}"))?;
@@ -797,6 +1087,29 @@ fn extract_tar_gz(
         if file_name == binary_basename {
             launcher = Some(out_path);
         }
+    }
+    // Materialize shared-library aliases as verified file copies. This works
+    // without Windows symlink privileges and retains Unix SONAME filenames.
+    while !aliases.is_empty() {
+        let before = aliases.len();
+        let mut unresolved = Vec::new();
+        for (name, target) in aliases {
+            let source = dest_dir.join(&target);
+            if !source.is_file() {
+                unresolved.push((name, target));
+                continue;
+            }
+            let destination = dest_dir.join(&name);
+            std::fs::copy(&source, &destination)
+                .map_err(|e| format!("Runtime alias copy failed: {e}"))?;
+            if name == binary_basename {
+                launcher = Some(destination);
+            }
+        }
+        if unresolved.len() == before {
+            return Err("Runtime aliases have missing or cyclic targets".into());
+        }
+        aliases = unresolved;
     }
     launcher.ok_or_else(|| format!("Archive did not contain a '{}' entry", binary_basename))
 }
@@ -894,6 +1207,164 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unusable_staged_launcher_preserves_the_active_pointer_and_cleans_staging() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-runtime-stage-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join(super::super::runtime_inventory::binary_name()),
+            b"working incumbent",
+        )
+        .unwrap();
+        super::super::runtime_inventory::write_pointer(
+            &root,
+            &super::super::runtime_inventory::RuntimePointer {
+                current: "legacy".into(),
+                previous: None,
+            },
+        )
+        .unwrap();
+        let pointer = std::fs::read(root.join("runtime-active.json")).unwrap();
+        let archive = root.join("invalid-launcher.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let binary = super::super::runtime_inventory::binary_name();
+        zip.start_file(binary, zip::write::FileOptions::default())
+            .unwrap();
+        zip.write_all(b"not an executable").unwrap();
+        zip.finish().unwrap();
+        let spec = LlamaRuntimeSpec {
+            asset_name: "fixture.zip".into(),
+            url: String::new(),
+            sha256: digest_file(&archive).unwrap(),
+            archive_kind: ArchiveKind::Zip,
+            binary_basename: binary.into(),
+            approx_bytes: 1,
+            kind_label: "CPU".into(),
+        };
+        let result = stage_archive(&archive, &root, &spec);
+        let unchanged = std::fs::read(root.join("runtime-active.json")).unwrap() == pointer;
+        let remaining = std::fs::read_dir(root.join("runtimes")).unwrap().count();
+        let incumbent = std::fs::read(root.join(binary)).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(result.is_err());
+        assert!(unchanged);
+        assert_eq!(remaining, 0);
+        assert_eq!(incumbent, b"working incumbent");
+    }
+
+    #[test]
+    fn runtime_smoke_check_reaps_a_hung_process() {
+        #[cfg(windows)]
+        let command = {
+            let mut command = std::process::Command::new("powershell");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let command = {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "exec sleep 60"]);
+            command
+        };
+        let started = Instant::now();
+        let result = smoke_command(command, std::time::Duration::from_millis(100));
+        assert!(result.unwrap_err().contains("deadline"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "smoke fixture must not survive its timeout"
+        );
+    }
+
+    #[test]
+    fn tar_shared_library_alias_is_retained_as_a_runtime_dependency() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-runtime-tar-{}", uuid::Uuid::new_v4()));
+        let dest = root.join("bin");
+        std::fs::create_dir_all(&dest).unwrap();
+        let archive = root.join("runtime.tar.gz");
+        let gzip = flate2::write::GzEncoder::new(
+            std::fs::File::create(&archive).unwrap(),
+            flate2::Compression::default(),
+        );
+        let mut tar = tar::Builder::new(gzip);
+        for (name, bytes) in [
+            ("llama-server", b"launcher".as_slice()),
+            ("libggml.so.1.0", b"library".as_slice()),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o755);
+            header.set_size(bytes.len() as u64);
+            header.set_cksum();
+            tar.append_data(&mut header, name, bytes).unwrap();
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_link(&mut header, "libggml.so.1", "libggml.so.1.0")
+            .unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+        let result = extract_tar_gz(&archive, &dest, "llama-server");
+        let alias = std::fs::read(dest.join("libggml.so.1"));
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(result.is_ok());
+        assert_eq!(
+            alias.unwrap(),
+            b"library",
+            "versioned library aliases are required by the dynamic loader"
+        );
+    }
+
+    #[test]
+    fn zip_payload_name_cannot_escape_the_staging_directory() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-runtime-zip-path-{}", uuid::Uuid::new_v4()));
+        let dest = root.join("bin");
+        std::fs::create_dir_all(&dest).unwrap();
+        let archive = root.join("unsafe.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        for name in ["llama-server.exe", "..\\escaped.dll"] {
+            zip.start_file(name, zip::write::FileOptions::default())
+                .unwrap();
+            zip.write_all(b"fixture").unwrap();
+        }
+        zip.finish().unwrap();
+        let result = extract_zip(&archive, &dest, "llama-server.exe");
+        let escaped = root.join("escaped.dll").exists();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            result.is_err(),
+            "unsafe flattened archive filename must be rejected"
+        );
+        assert!(!escaped);
+    }
+
+    #[test]
+    fn incomplete_archive_does_not_overwrite_an_existing_runtime_dependency() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-runtime-red-{}", uuid::Uuid::new_v4()));
+        let dest = root.join("bin");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("ggml.dll"), b"working old runtime").unwrap();
+        let archive = root.join("broken.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("ggml.dll", zip::write::FileOptions::default())
+            .unwrap();
+        zip.write_all(b"incomplete replacement").unwrap();
+        zip.finish().unwrap();
+        let result = extract_zip(&archive, &dest, "llama-server.exe");
+        let preserved = std::fs::read(dest.join("ggml.dll")).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(result.is_err());
+        assert_eq!(
+            preserved, b"working old runtime",
+            "failed extraction destroyed a dependency of the active runtime"
+        );
+    }
+
+    #[test]
     fn runtime_lock_key_is_stable() {
         assert_eq!(RUNTIME_LOCK_KEY, "llama-runtime");
     }
@@ -971,31 +1442,23 @@ mod tests {
     /// failure is a genuine transport error rather than an HTTP status. The
     /// message must name the attempt count and carry the underlying cause.
     #[test]
-    fn send_with_retry_reports_attempts_and_the_underlying_cause() {
+    fn send_with_retry_preserves_transport_causes_and_rejects_unpinned_requests() {
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(std::time::Duration::from_millis(250))
             .timeout(std::time::Duration::from_secs(2))
             .build()
             .expect("client");
-
-        // Port 1 on loopback: refused immediately, no network required.
-        let err = send_with_retry(&client, "http://127.0.0.1:1/nothing.zip", 0)
-            .expect_err("a refused connection must not succeed");
-
-        assert!(
-            err.contains(&DOWNLOAD_ATTEMPTS.to_string()),
-            "message should say how many attempts were made: {err}"
-        );
-        assert!(
-            err.contains("127.0.0.1:1"),
-            "message should name the URL: {err}"
-        );
-        // The whole point of `error_chain`: something more specific than
-        // reqwest's opaque outer layer has to reach the user.
-        assert!(
-            err.len() > "Download request failed".len() + 40,
-            "message should carry a cause, not just the outer layer: {err}"
-        );
+        // A local refused connection is safe and exercises the cause chain.
+        let error = client
+            .get("http://127.0.0.1:1/nothing.zip")
+            .send()
+            .unwrap_err();
+        let cause = error_chain(&error);
+        assert!(cause.contains("127.0.0.1:1"));
+        assert!(cause.len() > error.to_string().len());
+        // Production retries must fail immediately for a blocked request.
+        let error = send_with_retry(&client, "http://127.0.0.1:1/nothing.zip", 0).unwrap_err();
+        assert!(error == crate::network_policy::OFFLINE_ERROR || error.contains("restricted"));
     }
 
     #[test]

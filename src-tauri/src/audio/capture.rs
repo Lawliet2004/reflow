@@ -2,7 +2,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -14,15 +14,21 @@ pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,
     pub is_default: bool,
+    #[serde(default)]
+    pub is_monitor: bool,
     pub sample_rate: u32,
     pub channels: u16,
 }
 
 pub struct AudioCaptureEngine {
-    current_stream: Option<Stream>,
-    is_recording: Arc<AtomicBool>,
-    audio_level: Arc<Mutex<f32>>,
-    last_device_name: Arc<Mutex<String>>,
+    pub(super) current_stream: Option<Stream>,
+    pub(super) system_stream: Option<Stream>,
+    pub(super) meeting_thread: Option<std::thread::JoinHandle<()>>,
+    pub(super) is_recording: Arc<AtomicBool>,
+    pub(super) audio_level: Arc<Mutex<f32>>,
+    pub(super) last_device_name: Arc<Mutex<String>>,
+    pub(super) dropped_chunks: Arc<AtomicU64>,
+    pub(super) stream_error: Arc<Mutex<Option<String>>>,
 }
 
 unsafe impl Send for AudioCaptureEngine {}
@@ -70,17 +76,24 @@ pub(crate) fn score_input_device_name(name: &str) -> i32 {
     10
 }
 
-fn resolve_input_device(host: &Host, device_id: Option<&str>) -> Result<(Device, String), String> {
+pub(super) fn resolve_input_device(
+    host: &Host,
+    device_id: Option<&str>,
+) -> Result<(Device, String), String> {
     if let Some(id) = device_id {
         if id != "default" {
-            if let Some(dev) = host
+            let mut matching = host
                 .input_devices()
                 .map_err(|e| e.to_string())?
-                .find(|d| d.name().map(|n| n == id).unwrap_or(false))
-            {
+                .filter(|d| d.name().map(|n| n == id).unwrap_or(false));
+            if let Some(dev) = matching.next() {
+                if matching.next().is_some() {
+                    return Err("Several microphones have this name. Select System default and choose the input in your operating system's sound settings.".into());
+                }
                 let name = dev.name().unwrap_or_else(|_| id.to_string());
                 return Ok((dev, name));
             }
+            return Err("The selected microphone is unavailable. Reconnect it or choose another input in Audio settings.".into());
         }
     }
 
@@ -89,10 +102,8 @@ fn resolve_input_device(host: &Host, device_id: Option<&str>) -> Result<(Device,
         .as_ref()
         .and_then(|d| d.name().ok())
         .unwrap_or_default();
-    if !default_name.is_empty() && score_input_device_name(&default_name) >= 0 {
-        if let Some(dev) = default {
-            return Ok((dev, default_name));
-        }
+    if let Some(dev) = default {
+        return Ok((dev, default_name));
     }
 
     let mut ranked: Vec<(i32, String, Device)> = Vec::new();
@@ -106,11 +117,6 @@ fn resolve_input_device(host: &Host, device_id: Option<&str>) -> Result<(Device,
     // Highest score first.
     ranked.sort_by_key(|(score, _, _)| std::cmp::Reverse(*score));
     if let Some((score, name, dev)) = ranked.into_iter().next() {
-        if score < 0 {
-            return Err(format!(
-                "No usable microphone found (best candidate '{name}' is a virtual/Hands-Free endpoint)."
-            ));
-        }
         log::info!(
             "Default capture '{default_name}' looks unusable; using '{name}' (score {score})"
         );
@@ -138,6 +144,12 @@ fn pick_input_config(device: &Device) -> Result<SupportedStreamConfig, String> {
     Ok(default)
 }
 
+impl Drop for AudioCaptureEngine {
+    fn drop(&mut self) {
+        self.stop_capture();
+    }
+}
+
 impl Default for AudioCaptureEngine {
     fn default() -> Self {
         Self::new()
@@ -148,9 +160,13 @@ impl AudioCaptureEngine {
     pub fn new() -> Self {
         Self {
             current_stream: None,
+            system_stream: None,
+            meeting_thread: None,
             is_recording: Arc::new(AtomicBool::new(false)),
             audio_level: Arc::new(Mutex::new(0.0)),
             last_device_name: Arc::new(Mutex::new(String::new())),
+            dropped_chunks: Arc::new(AtomicU64::new(0)),
+            stream_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -162,8 +178,16 @@ impl AudioCaptureEngine {
         self.last_device_name.lock().clone()
     }
 
+    pub fn dropped_chunks(&self) -> u64 {
+        self.dropped_chunks.load(Ordering::Relaxed)
+    }
+
+    pub fn stream_error(&self) -> Option<String> {
+        self.stream_error.lock().clone()
+    }
+
     /// List all available input audio devices
-    pub fn list_input_devices() -> Vec<AudioDeviceInfo> {
+    pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, String> {
         let host = cpal::default_host();
         let default_device_name = host
             .default_input_device()
@@ -172,19 +196,23 @@ impl AudioCaptureEngine {
 
         let mut devices = Vec::new();
 
-        if let Ok(input_devices) = host.input_devices() {
+        {
+            let input_devices = host
+                .input_devices()
+                .map_err(|e| format!("Could not list microphones: {e}"))?;
             for dev in input_devices {
                 if let Ok(name) = dev.name() {
                     let default_config = dev.default_input_config();
                     let (sample_rate, channels) = match default_config {
                         Ok(cfg) => (cfg.sample_rate().0, cfg.channels()),
-                        Err(_) => (48000, 2),
+                        Err(_) => (0, 0),
                     };
 
                     devices.push(AudioDeviceInfo {
                         id: name.clone(),
                         name: name.clone(),
                         is_default: name == default_device_name,
+                        is_monitor: name.to_lowercase().contains("monitor"),
                         sample_rate,
                         channels,
                     });
@@ -195,7 +223,10 @@ impl AudioCaptureEngine {
         devices.sort_by(|a, b| {
             score_input_device_name(&b.name).cmp(&score_input_device_name(&a.name))
         });
-        devices
+        // CPAL exposes names rather than stable endpoint IDs. Duplicate names
+        // cannot identify one endpoint safely; System default remains available.
+        devices.dedup_by(|a, b| a.id == b.id);
+        Ok(devices)
     }
 
     /// Starts capturing audio and streaming 16kHz mono f32 samples to the provided sender channel
@@ -209,6 +240,11 @@ impl AudioCaptureEngine {
         auto_stop_notify: mpsc::Sender<()>,
     ) -> Result<(), String> {
         self.stop_capture();
+        *self.stream_error.lock() = None;
+        self.dropped_chunks.store(0, Ordering::Relaxed);
+        if !gain.is_finite() || !(0.5..=3.0).contains(&gain) {
+            return Err("Input gain must be between 0.5 and 3.0.".into());
+        }
 
         let host = cpal::default_host();
         let (device, device_name) = resolve_input_device(&host, device_id.as_deref())?;
@@ -236,12 +272,20 @@ impl AudioCaptureEngine {
         vad.set_sensitivity(vad_sensitivity);
         let vad_mutex = Arc::new(Mutex::new(vad));
 
-        self.is_recording.store(true, Ordering::SeqCst);
         let is_recording_flag = Arc::clone(&self.is_recording);
         let audio_level_ref = Arc::clone(&self.audio_level);
+        let dropped_chunks = Arc::clone(&self.dropped_chunks);
+        let stream_error = Arc::clone(&self.stream_error);
+        let error_recording = Arc::clone(&self.is_recording);
+        let error_stop = auto_stop_notify.clone();
 
-        let err_fn = |err| {
+        let err_fn = move |err| {
             log::error!("Audio stream error occurred: {:?}", err);
+            *stream_error.lock() = Some(format!(
+                "Microphone stopped: {err}. Reconnect it or select another input."
+            ));
+            error_recording.store(false, Ordering::SeqCst);
+            let _ = error_stop.try_send(());
         };
 
         let stream = match sample_format {
@@ -269,6 +313,7 @@ impl AudioCaptureEngine {
                             &audio_level_ref,
                             &sender_clone,
                             &auto_stop_clone,
+                            &dropped_chunks,
                         );
                     },
                     err_fn,
@@ -296,6 +341,7 @@ impl AudioCaptureEngine {
                             &audio_level_ref,
                             &sender_clone,
                             &auto_stop_clone,
+                            &dropped_chunks,
                         );
                     },
                     err_fn,
@@ -325,6 +371,7 @@ impl AudioCaptureEngine {
                             &audio_level_ref,
                             &sender_clone,
                             &auto_stop_clone,
+                            &dropped_chunks,
                         );
                     },
                     err_fn,
@@ -354,6 +401,7 @@ impl AudioCaptureEngine {
                             &audio_level_ref,
                             &sender_clone,
                             &auto_stop_clone,
+                            &dropped_chunks,
                         );
                     },
                     err_fn,
@@ -366,9 +414,11 @@ impl AudioCaptureEngine {
         }
         .map_err(|e| format!("Failed to build audio stream: {e}"))?;
 
-        stream
-            .play()
-            .map_err(|e| format!("Failed to start audio stream: {e}"))?;
+        self.is_recording.store(true, Ordering::SeqCst);
+        if let Err(e) = stream.play() {
+            self.is_recording.store(false, Ordering::SeqCst);
+            return Err(format!("Failed to start audio stream: {e}"));
+        }
 
         self.current_stream = Some(stream);
         Ok(())
@@ -378,6 +428,12 @@ impl AudioCaptureEngine {
         self.is_recording.store(false, Ordering::SeqCst);
         if let Some(stream) = self.current_stream.take() {
             let _ = stream.pause();
+        }
+        if let Some(stream) = self.system_stream.take() {
+            let _ = stream.pause();
+        }
+        if let Some(worker) = self.meeting_thread.take() {
+            let _ = worker.join();
         }
         *self.audio_level.lock() = 0.0;
     }
@@ -390,6 +446,7 @@ fn dispatch_chunk(
     audio_level: &Mutex<f32>,
     sender: &mpsc::Sender<Vec<f32>>,
     auto_stop: &mpsc::Sender<()>,
+    dropped_chunks: &AtomicU64,
 ) {
     let mono_16k = resampler.lock().resample_f32(native);
     if mono_16k.is_empty() {
@@ -404,9 +461,7 @@ fn dispatch_chunk(
     match sender.try_send(mono_16k) {
         Ok(()) => {}
         Err(mpsc::error::TrySendError::Full(_)) => {
-            log::warn!(
-                "Audio capture sample channel full; dropped chunk to prevent memory runaway"
-            );
+            dropped_chunks.fetch_add(1, Ordering::Relaxed);
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {}
     }

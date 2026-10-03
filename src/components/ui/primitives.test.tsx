@@ -39,7 +39,23 @@ describe("UI Primitives", () => {
       );
       expect(screen.getByText("API Key")).toBeInTheDocument();
       expect(screen.getByText("Found in your account dashboard")).toBeInTheDocument();
-      expect(screen.getByRole("textbox")).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "API Key" })).toHaveAccessibleDescription(
+        "Found in your account dashboard",
+      );
+    });
+
+    it("preserves explicit ids and associates nested controls with validation errors", () => {
+      render(
+        <Field label="Layers" error="Choose a safe limit">
+          <div>
+            <input id="layers" type="number" />
+          </div>
+        </Field>,
+      );
+      const control = screen.getByRole("spinbutton", { name: "Layers" });
+      expect(control).toHaveAttribute("id", "layers");
+      expect(control).toHaveAttribute("aria-invalid", "true");
+      expect(control).toHaveAccessibleDescription("Choose a safe limit");
     });
   });
 });

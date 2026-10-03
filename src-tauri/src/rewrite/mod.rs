@@ -1,8 +1,10 @@
 pub mod client;
 pub mod prompt;
 pub mod runtime_install;
+pub mod runtime_inventory;
 pub mod safety;
 pub mod server;
+pub mod tasks;
 
 pub use client::{polish_or_fallback, CircuitBreaker, FlowClient, PolishOutcome, RewriteRequest};
 pub use runtime_install::{

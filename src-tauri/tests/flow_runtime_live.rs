@@ -37,6 +37,26 @@ fn runtime_installed() -> bool {
     llama_server_bin().is_file() && flow_gguf_path(FLOW_MODEL).is_file()
 }
 
+#[test]
+fn installed_runtime_summarizes_a_meeting_with_its_task_context() {
+    let _serial = serialized();
+    if !runtime_installed() {
+        eprintln!("skipping: no llama-server runtime installed");
+        return;
+    }
+    let runtime = FlowRuntime::default();
+    runtime
+        .ensure(FLOW_MODEL, "vulkan", None, 0, 4096)
+        .expect("summary runtime should start");
+    let client = runtime.client.read().clone();
+    let result = reflow_lib::rewrite::tasks::summarize_transcript(&client,
+        "At today's meeting, the team decided to release on Friday. Mina owns final testing. If the tests fail, the release waits. The next review is Thursday.");
+    runtime.shutdown();
+    let summary = result.expect("the installed local model should answer the summary task");
+    assert!(!summary.trim().is_empty());
+    assert!(summary.chars().count() < 2400, "summary must stay concise");
+}
+
 fn request(text: &str) -> RewriteRequest {
     RewriteRequest {
         text: text.into(),

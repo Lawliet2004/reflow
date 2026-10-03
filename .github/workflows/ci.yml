@@ -2,7 +2,16 @@ name: ci
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Frontend gate. Runs on Linux because none of it is platform-specific and
@@ -24,6 +33,10 @@ jobs:
         run: npx tsc --noEmit
       - name: Unit tests (vitest)
         run: npm run test
+      - name: Packaging/platform contracts
+        run: node --test scripts/package.test.cjs scripts/kill-running.test.cjs
+      - name: Dependency security
+        run: npm audit --audit-level=high
       - name: Production build
         run: npm run build
 
@@ -31,7 +44,10 @@ jobs:
   # the VRAM spill predicate, shape bucketing and the decode-token cap. None of
   # it needs torch or a GPU, so it runs on every push.
   python-runtime:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,6 +56,10 @@ jobs:
       - run: pip install numpy==2.4.4
       - name: Sidecar selftest
         run: python model-runtime/qwen3_asr_runtime.py --selftest
+      - name: Model-free ASR regressions
+        run: python -m unittest discover -s model-runtime -p "test_*.py"
+      - name: Calibration quality metrics
+        run: python -m unittest discover -s scripts -p test_benchmark_runtime.py
 
   rust-lint:
     runs-on: ubuntu-latest
@@ -71,21 +91,33 @@ jobs:
 
   test-windows:
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - run: npm run lint
+      - run: npm run test
       - run: npm run build
+      - name: Windows packaging and scoped shutdown regressions
+        run: node --test scripts/package.test.cjs scripts/kill-running.test.cjs
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Windows-specific Rust lint
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       # The Windows test binaries used to fail to load before the harness
       # started, because `session::stop` took a `tauri::AppHandle` and so linked
       # the whole GUI/COM runtime into every test target. That coupling is gone,
       # so Windows now runs the full suite — which matters, since Windows is the
       # primary target and WDDM memory behaviour only reproduces here.
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests
 
   test-linux:
     runs-on: ubuntu-latest
@@ -114,4 +146,56 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run build
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests
+
+  # Compile/unit-test coverage only: this is not a macOS dictation release gate.
+  # Native hotkeys, injection and startup parity still need physical-device work.
+  test-macos-clipboard-build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run build
+      - run: node --test scripts/package.test.cjs scripts/kill-running.test.cjs
+      - name: macOS compilation
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --all-targets
+      - name: macOS model-free/unit regressions
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Recorder, session, TLS and networking regressions; debug APK and lint
+        working-directory: android
+        run: >-
+          java -classpath gradle/wrapper/gradle-wrapper.jar
+          org.gradle.wrapper.GradleWrapperMain --no-daemon --console=plain
+          testDebugUnitTest assembleDebug lintDebug
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-validation
+          path: |
+            android/app/build/reports/tests/
+            android/app/build/reports/lint-results-debug.*
+            android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: ignore

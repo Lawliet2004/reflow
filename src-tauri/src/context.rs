@@ -20,6 +20,8 @@ use crate::state::{AppStateEnum, LatencyHistory, LatencyMetrics, LatencyTimer};
 pub struct ApiRuntime {
     pub bind: String,
     pub shutdown: tokio::sync::watch::Sender<bool>,
+    pub finished: tokio::sync::watch::Receiver<bool>,
+    pub generation: u64,
 }
 
 /// Why the refinement runtime needs recovering.
@@ -41,18 +43,27 @@ pub type RuntimeRecoveryHook = Arc<dyn Fn(RuntimeRecoveryRequest) + Send + Sync 
 pub struct AppContext {
     pub state_enum: Arc<RwLock<AppStateEnum>>,
     pub settings_store: Arc<SettingsStore>,
+    /// Keep persisted preferences and their storage side effects in order.
+    pub settings_operation: Arc<Mutex<()>>,
     pub history_store: Arc<HistoryStore>,
     pub model_manager: Arc<ModelManager>,
     pub audio_engine: Arc<RwLock<AudioCaptureEngine>>,
     pub asr_handle: AsrHandle,
     pub asr_runtime: Arc<parking_lot::Mutex<String>>,
+    pub file_jobs: Arc<RwLock<std::collections::HashMap<String, crate::file_jobs::FileJob>>>,
     pub session_operation: Arc<tokio::sync::Mutex<()>>,
+    pub session_cancel: Arc<RwLock<Option<tokio::sync::watch::Sender<bool>>>>,
+    pub session_phone_token: Arc<RwLock<Option<String>>>,
     pub current_session_id: Arc<RwLock<Option<u64>>>,
+    pub session_intent: Arc<RwLock<crate::dory::SessionIntent>>,
+    pub session_mode: Arc<RwLock<Option<crate::settings::Mode>>>,
+    pub session_context: Arc<RwLock<crate::session::SessionContext>>,
     pub latency_timer: Arc<RwLock<LatencyTimer>>,
     pub last_latency_metrics: Arc<RwLock<LatencyMetrics>>,
     /// Rolling window of completed dictations, so the diagnostics view can
     /// report p50/p95 instead of a single unrepresentative sample.
     pub latency_history: Arc<RwLock<LatencyHistory>>,
+    pub latency_report_path: std::path::PathBuf,
     pub recording_sample_sender: Arc<RwLock<Option<mpsc::Sender<Vec<f32>>>>>,
     pub recording_pcm: Arc<parking_lot::Mutex<AudioRingBuffer>>,
     /// Resolved by the sample loop once every captured chunk has been handed
@@ -76,6 +87,10 @@ pub struct AppContext {
     pub last_audio_level: Arc<RwLock<f32>>,
     pub pairing: Arc<PairingState>,
     pub api_runtime: Arc<RwLock<Option<ApiRuntime>>>,
+    pub api_operation: Arc<tokio::sync::Mutex<()>>,
+    pub api_jobs: Arc<tokio::sync::Semaphore>,
+    pub api_identity: Arc<std::sync::OnceLock<Result<crate::api::tls::LanIdentity, String>>>,
+    pub api_identity_path: Arc<std::path::PathBuf>,
     pub flow_runtime: Arc<FlowRuntime>,
     pub active_intelligence_downloads: Arc<Mutex<HashSet<String>>>,
     pub active_runtime_downloads: Arc<Mutex<HashSet<String>>>,
@@ -96,6 +111,10 @@ pub struct AppContext {
     /// that a smaller model is running because the bigger one did not fit, or
     /// they will read the accuracy drop as a bug.
     pub asr_selection_notice: Arc<RwLock<Option<String>>>,
+    /// The (model, device, precision) the resolver last chose for a load —
+    /// the *resolved* triple, not the Settings one. The status poller records
+    /// measured peaks against it once the sidecar reports them.
+    pub last_asr_load: Arc<RwLock<Option<(String, String, String)>>>,
 }
 
 impl AppContext {
@@ -107,9 +126,20 @@ impl AppContext {
 
         let settings_store = Arc::new(SettingsStore::new(config_path));
         let initial_settings = settings_store.get();
-        let history_store = Arc::new(
-            HistoryStore::new(db_path).expect("Failed to initialize SQLite history database"),
-        );
+        if let Err(error) = crate::network_policy::configure(
+            initial_settings.offline_mode,
+            &PlatformSys::get_app_dir(),
+        ) {
+            log::error!("Network policy could not be saved: {error}");
+        }
+        let history_store = Arc::new(HistoryStore::open_recovering(db_path));
+        if let Err(error) = history_store.set_audio_retention(&initial_settings.audio_retention) {
+            log::error!("Could not apply audio retention: {error}");
+        }
+        history_store.require_encryption(initial_settings.history_encryption);
+        if let Err(error) = history_store.set_encryption(initial_settings.history_encryption) {
+            log::error!("History encryption could not be applied: {error}");
+        }
         let model_manager = Arc::new(ModelManager::new(models_dir));
         let pairing_path = PlatformSys::get_app_dir()
             .join("config")
@@ -118,6 +148,7 @@ impl AppContext {
         Self {
             state_enum: Arc::new(RwLock::new(AppStateEnum::Ready)),
             settings_store,
+            settings_operation: Arc::new(Mutex::new(())),
             history_store,
             model_manager,
             audio_engine: Arc::new(RwLock::new(AudioCaptureEngine::new())),
@@ -125,11 +156,18 @@ impl AppContext {
             asr_runtime: Arc::new(parking_lot::Mutex::new(
                 initial_settings.asr.runtime.clone(),
             )),
+            file_jobs: Arc::new(RwLock::new(Default::default())),
             session_operation: Arc::new(tokio::sync::Mutex::new(())),
+            session_cancel: Arc::new(RwLock::new(None)),
+            session_phone_token: Arc::new(RwLock::new(None)),
             current_session_id: Arc::new(RwLock::new(None)),
+            session_intent: Arc::new(RwLock::new(crate::dory::SessionIntent::Dictate)),
+            session_mode: Arc::new(RwLock::new(None)),
+            session_context: Arc::new(RwLock::new(crate::session::SessionContext::default())),
             latency_timer: Arc::new(RwLock::new(LatencyTimer::default())),
             last_latency_metrics: Arc::new(RwLock::new(LatencyMetrics::default())),
             latency_history: Arc::new(RwLock::new(LatencyHistory::default())),
+            latency_report_path: crate::state::latency_report_path(),
             recording_sample_sender: Arc::new(RwLock::new(None)),
             recording_pcm: Arc::new(parking_lot::Mutex::new(AudioRingBuffer::default())),
             audio_drain_done: Arc::new(Mutex::new(None)),
@@ -142,11 +180,20 @@ impl AppContext {
             last_audio_level: Arc::new(RwLock::new(0.0)),
             pairing: Arc::new(PairingState::new(pairing_path)),
             api_runtime: Arc::new(RwLock::new(None)),
+            api_operation: Arc::new(tokio::sync::Mutex::new(())),
+            api_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
+            api_identity: Arc::new(std::sync::OnceLock::new()),
+            api_identity_path: Arc::new(
+                PlatformSys::get_app_dir()
+                    .join("config")
+                    .join("lan-identity.json"),
+            ),
             flow_runtime: Arc::new(FlowRuntime::default()),
             active_intelligence_downloads: Arc::new(Mutex::new(HashSet::new())),
             active_runtime_downloads: Arc::new(Mutex::new(HashSet::new())),
             model_status_watch_active: Arc::new(AtomicBool::new(false)),
             asr_selection_notice: Arc::new(RwLock::new(None)),
+            last_asr_load: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -163,16 +210,24 @@ impl AppContext {
         Self {
             state_enum: Arc::new(RwLock::new(AppStateEnum::Ready)),
             settings_store,
+            settings_operation: Arc::new(Mutex::new(())),
             history_store,
             model_manager: Arc::new(ModelManager::new(dir.join("models"))),
             audio_engine: Arc::new(RwLock::new(AudioCaptureEngine::new())),
             asr_handle: AsrHandle::new_mock(),
             asr_runtime: Arc::new(parking_lot::Mutex::new("python".into())),
+            file_jobs: Arc::new(RwLock::new(Default::default())),
             session_operation: Arc::new(tokio::sync::Mutex::new(())),
+            session_cancel: Arc::new(RwLock::new(None)),
+            session_phone_token: Arc::new(RwLock::new(None)),
             current_session_id: Arc::new(RwLock::new(None)),
+            session_intent: Arc::new(RwLock::new(crate::dory::SessionIntent::Dictate)),
+            session_mode: Arc::new(RwLock::new(None)),
+            session_context: Arc::new(RwLock::new(crate::session::SessionContext::default())),
             latency_timer: Arc::new(RwLock::new(LatencyTimer::default())),
             last_latency_metrics: Arc::new(RwLock::new(LatencyMetrics::default())),
             latency_history: Arc::new(RwLock::new(LatencyHistory::default())),
+            latency_report_path: dir.join("latency-report.json"),
             recording_sample_sender: Arc::new(RwLock::new(None)),
             recording_pcm: Arc::new(parking_lot::Mutex::new(AudioRingBuffer::default())),
             audio_drain_done: Arc::new(Mutex::new(None)),
@@ -185,11 +240,16 @@ impl AppContext {
             last_audio_level: Arc::new(RwLock::new(0.0)),
             pairing: Arc::new(PairingState::new(dir.join("api-devices.json"))),
             api_runtime: Arc::new(RwLock::new(None)),
+            api_operation: Arc::new(tokio::sync::Mutex::new(())),
+            api_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
+            api_identity: Arc::new(std::sync::OnceLock::new()),
+            api_identity_path: Arc::new(dir.join("lan-identity.json")),
             flow_runtime: Arc::new(FlowRuntime::default()),
             active_intelligence_downloads: Arc::new(Mutex::new(HashSet::new())),
             active_runtime_downloads: Arc::new(Mutex::new(HashSet::new())),
             model_status_watch_active: Arc::new(AtomicBool::new(false)),
             asr_selection_notice: Arc::new(RwLock::new(None)),
+            last_asr_load: Arc::new(RwLock::new(None)),
         }
     }
 }

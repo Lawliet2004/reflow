@@ -19,6 +19,9 @@ impl PunctuationInferer {
             (r"(?i)\s*\b(open\s+quote)\b", "\""),
             (r"(?i)\s*\b(close\s+quote)\b", "\""),
             (r"(?i)\s*\b(em\s+dash)\b\s*", "—"),
+            (r"(?i)\b(open\s+bracket)\b\s*", "["),
+            (r"(?i)\s*\b(close\s+bracket)\b", "]"),
+            (r"(?i)\b(smiley)\b", ":)"),
             (r"(?i)\b(open\s+parenthesis)\b\s*", "("),
             (r"(?i)\s*\b(close\s+parenthesis)\b", ")"),
             (r"(?i)\b(open\s+paren)\b\s*", "("),
@@ -32,7 +35,7 @@ impl PunctuationInferer {
         }
 
         // Clean up spaces before punctuation marks
-        let space_before_punct = Regex::new(r"\s+([,\.\?\!:;])").unwrap();
+        let space_before_punct = Regex::new(r"\s+([,\.\?\!;]|:(?:[^)]|$))").unwrap();
         out = space_before_punct.replace_all(&out, "$1").to_string();
         let space_after_open = Regex::new(r"\(\s+").unwrap();
         out = space_after_open.replace_all(&out, "(").to_string();
@@ -44,8 +47,12 @@ impl PunctuationInferer {
 
     /// Capitalizes the first letter of each sentence
     pub fn capitalize_sentences(text: &str) -> String {
+        Self::capitalize_sentences_with_first(text, true)
+    }
+
+    pub fn capitalize_sentences_with_first(text: &str, first: bool) -> String {
         let mut result = String::with_capacity(text.len());
-        let mut capitalize_next = true;
+        let mut capitalize_next = first;
 
         for ch in text.chars() {
             if capitalize_next && ch.is_alphabetic() {

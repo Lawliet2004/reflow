@@ -77,6 +77,60 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
           {error}
         </p>
       )}
+      {!!settings.dictionary_suggestions?.length && (
+        <Section
+          title="Suggestions from corrections"
+          description="Accept a spelling to teach the speech model your vocabulary."
+        >
+          {settings.dictionary_suggestions.map((item) => (
+            <div
+              key={`${item.before}:${item.after}`}
+              className="flex items-center gap-2 py-2 text-sm"
+            >
+              <span className="flex-1">
+                {item.before} → {item.after} <span className="text-muted">({item.frequency})</span>
+              </span>
+              <button
+                className="btn btn-secondary"
+                onClick={() =>
+                  save({
+                    dictionary_terms: [
+                      ...terms,
+                      {
+                        id: crypto.randomUUID(),
+                        term: item.before,
+                        preferred_spelling: item.after,
+                        category: "Correction",
+                      },
+                    ],
+                    dictionary_suggestions: settings.dictionary_suggestions?.filter(
+                      (s) => s !== item,
+                    ),
+                  })
+                }
+              >
+                Accept
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() =>
+                  save({
+                    dictionary_suggestions: settings.dictionary_suggestions?.filter(
+                      (s) => s !== item,
+                    ),
+                    dismissed_corrections: [
+                      ...(settings.dismissed_corrections ?? []),
+                      `${item.before}\n${item.after}`,
+                    ],
+                  })
+                }
+              >
+                Dismiss
+              </button>
+            </div>
+          ))}
+        </Section>
+      )}
       <Section
         icon={<BookOpen className="w-4 h-4" />}
         title="Vocabulary"
@@ -110,7 +164,7 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                 {t.term}
                 <button
                   onClick={() => removeTerm(t.id)}
-                  className="text-accent hover:text-rose-500 transition-colors cursor-pointer ml-1"
+                  className="text-accent hover:text-danger transition-colors cursor-pointer ml-1"
                   title="Remove term"
                   aria-label={`Remove term ${t.term}`}
                 >
@@ -120,7 +174,7 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
             ))}
           </div>
         ) : (
-          <p className="text-[11.5px] text-muted italic">No custom terms added yet.</p>
+          <p className="text-xs text-muted italic">No custom terms added yet.</p>
         )}
       </Section>
 
@@ -159,7 +213,7 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
           <div className="divide-y divide-line rounded-xl border border-line overflow-hidden">
             {replacements.map((rule) => (
               <div key={rule.id} className="flex items-center gap-3 px-3 py-2.5">
-                <p className="flex-1 min-w-0 text-[13px] text-ink-2 truncate">
+                <p className="flex-1 min-w-0 text-sm text-ink-2 truncate">
                   <span className="text-muted">{rule.before}</span>
                   <span className="text-muted mx-1.5">→</span>
                   <span className="font-medium text-ink">{rule.after}</span>
@@ -170,7 +224,7 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                   ariaLabel="Enable replacement"
                 />
                 <button
-                  className="icon-btn hover:!bg-rose-500/10 hover:!text-rose-500"
+                  className="icon-btn hover:!bg-danger/10 hover:!text-danger"
                   onClick={() => removeReplacement(rule.id)}
                   title="Delete replacement"
                   aria-label="Delete replacement"
@@ -181,7 +235,7 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
             ))}
           </div>
         ) : (
-          <p className="text-[11.5px] text-muted italic">No replacements yet.</p>
+          <p className="text-xs text-muted italic">No replacements yet.</p>
         )}
       </Section>
     </fieldset>

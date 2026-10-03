@@ -33,6 +33,7 @@ class DictationService : Service() {
                 startForeground(7, notification)
             }
         }
-        return START_STICKY
+        // A restarted notification cannot recreate the microphone/session owner.
+        return START_NOT_STICKY
     }
 }

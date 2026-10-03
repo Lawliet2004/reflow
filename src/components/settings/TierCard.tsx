@@ -44,17 +44,17 @@ export function TierCard({
         }
       }}
       className={cn(
-        "relative flex flex-col p-4 rounded-xl border transition-all text-left cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500",
+        "relative flex flex-col p-4 rounded-xl border transition-all text-left cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
         selected
-          ? "bg-sky-50/50 dark:bg-sky-950/20 border-sky-500 dark:border-sky-500 shadow-sm ring-1 ring-sky-500"
-          : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700",
+          ? "bg-accent-soft border-accent shadow-sm ring-1 ring-accent"
+          : "bg-surface border-line hover:border-line-strong",
         disabled && "opacity-60 cursor-not-allowed",
       )}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold text-slate-900 dark:text-slate-100">{metadata.label}</h3>
+            <h3 className="font-semibold text-ink">{metadata.label}</h3>
             {selected ? (
               <Badge variant="primary" size="sm" className="gap-1">
                 <Check className="w-3 h-3" /> Active
@@ -66,7 +66,7 @@ export function TierCard({
               </Badge>
             ) : null}
           </div>
-          <span className="text-xs text-slate-500 dark:text-slate-400">
+          <span className="text-xs text-muted">
             {metadata.tagline} ?{" "}
             {metadata.downloadSizeMB > 0 ? `${metadata.downloadSizeMB} MB` : "Zero download"}
           </span>
@@ -94,26 +94,24 @@ export function TierCard({
               e.stopPropagation();
               onDelete(metadata.id);
             }}
-            className="text-xs text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+            className="text-xs text-danger hover:bg-danger-soft"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </Button>
         ) : null}
       </div>
 
-      <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-3 flex-1">
-        {metadata.description}
-      </p>
+      <p className="text-xs text-ink-2 leading-relaxed mb-3 flex-1">{metadata.description}</p>
 
       {downloading ? (
         <div className="space-y-1 mt-2">
-          <div className="flex justify-between text-xs text-slate-500">
+          <div className="flex justify-between text-xs text-muted">
             <span>Downloading weights...</span>
             <span>{Math.round(downloadProgress * 100)}%</span>
           </div>
-          <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+          <div className="w-full bg-line h-1.5 rounded-full overflow-hidden">
             <div
-              className="bg-sky-500 h-full transition-all duration-300 rounded-full"
+              className="bg-accent h-full transition-all duration-300 rounded-full"
               style={{ width: `${Math.max(5, Math.min(100, downloadProgress * 100))}%` }}
             />
           </div>
