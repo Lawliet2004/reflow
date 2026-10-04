@@ -22,7 +22,6 @@ use super::protocol::{
 use crate::context::{ApiRuntime, AppContext};
 use crate::dory::DoryEvent;
 use crate::injection::TextInjector;
-use crate::platform::PlatformSys;
 use crate::session::{self, SessionError};
 
 #[cfg(test)]
@@ -321,7 +320,8 @@ async fn health(State(ctx): State<AppContext>) -> Json<HealthResponse> {
         ok: true,
         version: env!("CARGO_PKG_VERSION").into(),
         model_ready: ctx.asr_handle.is_model_loaded(),
-        os: PlatformSys::get_system_metrics().os_name,
+        // Health polling must not wait for cold hardware/capability probes.
+        os: crate::platform::os_display_name(),
     })
 }
 
@@ -1446,6 +1446,7 @@ mod tests {
     async fn health_is_public() {
         let dir = std::env::temp_dir().join(format!("reflow_api_{}", uuid::Uuid::new_v4()));
         let ctx = AppContext::bootstrap_test(dir.clone());
+        let model_ready = ctx.asr_handle.is_model_loaded();
         let app = router(ctx);
         let response = app
             .oneshot(
@@ -1457,6 +1458,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), HttpStatus::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(payload["model_ready"], model_ready);
+        assert_eq!(payload["os"], crate::platform::os_display_name());
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -44,9 +44,20 @@ function verifyAssets(directory, version) {
   return files.filter((name) => required.some((pattern) => pattern.test(name))).sort();
 }
 
+function draftPayload(tag, root = path.resolve(__dirname, "..")) {
+  const version = verifyVersion(tag, root);
+  return {
+    tag_name: tag,
+    name: `Reflow ${version}`,
+    body: fs.readFileSync(path.join(root, `docs/release-${version}.md`), "utf8"),
+    draft: true,
+  };
+}
+
 if (require.main === module) {
   const [command, arg, version] = process.argv.slice(2);
   if (command === "verify-version") console.log(verifyVersion(arg));
+  else if (command === "draft-payload") console.log(JSON.stringify(draftPayload(arg)));
   else if (command === "verify-assets") {
     const files = verifyAssets(arg, version);
     const sums = files
@@ -60,6 +71,7 @@ if (require.main === module) {
       .join("");
     fs.writeFileSync(path.join(arg, "SHA256SUMS.txt"), sums);
     console.log(`Verified ${files.length} installers; wrote SHA256SUMS.txt`);
-  } else throw new Error("Use verify-version TAG or verify-assets DIRECTORY VERSION");
+  } else
+    throw new Error("Use verify-version TAG, draft-payload TAG or verify-assets DIRECTORY VERSION");
 }
-module.exports = { verifyVersion, verifyAssets };
+module.exports = { verifyVersion, verifyAssets, draftPayload };

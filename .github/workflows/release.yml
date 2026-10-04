@@ -29,9 +29,24 @@ jobs:
         run: |
           version=$(node scripts/release.cjs verify-version "$GITHUB_REF_NAME")
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
-            --title "Reflow $version" --notes-file "docs/release-$version.md"
-          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id")
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft] | @tsv")
+          if [ -n "$existing" ]; then
+            read -r release_id is_draft <<< "$existing"
+            if [ "$is_draft" != "true" ]; then
+              echo "Refusing to overwrite an already published release" >&2
+              exit 1
+            fi
+          else
+            node scripts/release.cjs draft-payload "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release.json"
+            # Read the ID from the create response: a subsequent list can lag behind.
+            release_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+              --input "$RUNNER_TEMP/release.json" --jq '.id')
+          fi
+          if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "Missing or invalid release ID" >&2
+            exit 1
+          fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
   publish-tauri:
@@ -82,6 +97,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
+          tagName: ${{ github.ref_name }}
+          releaseDraft: true
           args: --bundles ${{ matrix.bundles }}
 
   publish-android:
