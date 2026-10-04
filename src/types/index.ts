@@ -845,7 +845,7 @@ export function isModelReady(status: ModelStatus | null | undefined): boolean {
 export function isModelLoading(status: ModelStatus | null | undefined): boolean {
   if (!status) return true;
   if (!status.installed || status.is_downloading) return false;
-  return !isModelReady(status) && !status.error;
+  return Boolean(status.is_loading) && !isModelReady(status) && !status.error;
 }
 
 export interface StreamingTranscriptPayload {

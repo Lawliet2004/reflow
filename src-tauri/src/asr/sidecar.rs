@@ -556,6 +556,20 @@ impl Qwen3AsrSidecar {
         Ok(writer)
     }
 
+    /// Unload and cancellation retire the process to release its allocations.
+    /// A later load/install/probe must recreate the transport before writing.
+    fn ensure_initialized(&mut self) -> Result<(), String> {
+        let running = self
+            .child
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        if running && self.stdin.is_some() && self.responses.is_some() {
+            return Ok(());
+        }
+        self.kill_child();
+        self.initialize()
+    }
+
     fn write_until(
         &mut self,
         payload: PipePayload,
@@ -787,9 +801,7 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return Ok(());
         }
-        if self.child.is_none() {
-            return Err("ASR sidecar is not running".into());
-        }
+        self.ensure_initialized()?;
         match self.send_command(json!({"cmd": "probe_cuda"})) {
             Ok(resp) => {
                 if resp.get("status") == Some(&Value::String("error".into())) {
@@ -902,6 +914,7 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return self.fallback_mock.load_model(model_dir, backend);
         }
+        self.ensure_initialized()?;
 
         let manifest = ASR_MODELS
             .iter()
@@ -960,6 +973,7 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return Err("ASR runtime unavailable".into());
         }
+        self.ensure_initialized()?;
         let manifest = ASR_MODELS
             .iter()
             .chain(std::iter::once(&PHONON_MODEL))
@@ -1336,6 +1350,50 @@ impl Drop for Qwen3AsrSidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loads_restart_the_transport_after_unload_or_process_exit() {
+        let root =
+            std::env::temp_dir().join(format!("reflow_sidecar_lifecycle_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("qwen3_asr_runtime.py"),
+            r#"
+import json, sys
+loaded = False
+for line in sys.stdin:
+    message = json.loads(line)
+    if message['cmd'] == 'load_model':
+        loaded = True
+    print(json.dumps({'id': message['id'], 'status': 'ok', 'pong': True,
+                      'loaded': loaded, 'is_loading': False, 'backend': 'fixture',
+                      'cuda_available': False, 'cuda_probe_pending': False}), flush=True)
+"#,
+        )
+        .unwrap();
+        let mut engine = Qwen3AsrSidecar::new();
+        engine.set_resource_dir(root.clone());
+        engine.initialize().unwrap();
+        let first = engine.child.as_ref().unwrap().id();
+        engine.load_model("fixture", "cpu").unwrap();
+        assert!(engine.engine_status().loaded);
+        assert_eq!(engine.child.as_ref().unwrap().id(), first);
+        engine.unload_model().unwrap();
+        engine.load_model("fixture", "cpu").unwrap();
+        assert!(engine.engine_status().loaded);
+        let second = engine.child.as_ref().unwrap().id();
+        assert_ne!(first, second);
+        engine.child.as_mut().unwrap().kill().unwrap();
+        engine.child.as_mut().unwrap().wait().unwrap();
+        engine.load_model("fixture", "cpu").unwrap();
+        assert!(engine.engine_status().loaded);
+        assert_ne!(second, engine.child.as_ref().unwrap().id());
+        engine.unload_model().unwrap();
+        engine.probe_cuda().unwrap();
+        assert!(engine.child.is_some());
+        engine.unload_model().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn audio_push_chunks_are_bounded_to_one_second() {

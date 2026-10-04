@@ -35,9 +35,9 @@ fn phonon_real_sidecar_cpu_and_cuda() {
             })
             .collect::<Vec<_>>()
     };
+    let mut engine = Qwen3AsrSidecar::new();
+    engine.initialize().unwrap();
     for device in ["cpu", "cuda"] {
-        let mut engine = Qwen3AsrSidecar::new();
-        engine.initialize().unwrap();
         engine
             .load_model_with_precision(&directory.to_string_lossy(), device, "auto")
             .unwrap();

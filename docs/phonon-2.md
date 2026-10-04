@@ -37,6 +37,8 @@ These are one short synthetic sample, not an accuracy corpus or an older-laptop 
 
 The separate Rust sidecar test also passed on both devices: 0.542 s CPU and 0.928 s CUDA, with the same exact reference words. It additionally verified PCM transfer, device/precision reporting and rejection of Hindi requests.
 
+On 2026-10-05, the same-session unload/reload test exposed a closed-pipe bug in model switching. Loads, downloads and CUDA probes now recreate a retired Python process. The UI shows a spinner only while the backend reports an active load, keeping Reload available for an installed but unloaded model. The repaired CPU → unload → CUDA test passed with exact reference transcripts on both devices.
+
 Reproduce with your own English WAV and expected reference:
 
 ```bash

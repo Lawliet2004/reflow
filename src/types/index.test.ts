@@ -138,7 +138,19 @@ it("does not describe absent model weights as an active load", () => {
     error: null,
   } as ModelStatus;
   expect(isModelLoading(status)).toBe(false);
-  expect(isModelLoading({ ...status, installed: true })).toBe(true);
+  expect(isModelLoading({ ...status, installed: true, is_loading: true })).toBe(true);
+});
+
+it("allows retrying an installed model when no load is in progress", () => {
+  const status = {
+    installed: true,
+    loaded: false,
+    is_loading: false,
+    is_downloading: false,
+    error: null,
+  } as ModelStatus;
+  expect(isModelLoading(status)).toBe(false);
+  expect(isModelLoading({ ...status, is_loading: true })).toBe(true);
 });
 
 describe("cleanup and tier helpers", () => {

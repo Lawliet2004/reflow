@@ -58,7 +58,7 @@ class PhononTests(unittest.TestCase):
         import json
         import tarfile
         import hashlib
-        import zstandard
+        import types
         import phonon_runtime
         payload = b"bad"
         manifest = {"files": [{"path": "../escape", "original_sha256": hashlib.sha256(payload).hexdigest(), "original_bytes": len(payload)}]}
@@ -70,9 +70,12 @@ class PhononTests(unittest.TestCase):
                 tar.addfile(info, io.BytesIO(data))
         with tempfile.TemporaryDirectory() as root:
             archive = pathlib.Path(root) / "model.tar.zst"
-            archive.write_bytes(zstandard.ZstdCompressor().compress(stream.getvalue()))
-            with self.assertRaisesRegex(ValueError, "path"):
-                phonon_runtime.unpack_model(archive, pathlib.Path(root) / "unpacked")
+            archive.write_bytes(stream.getvalue())
+            decoder = types.SimpleNamespace(ZstdDecompressor=lambda: types.SimpleNamespace(stream_reader=lambda source: source))
+            engine = types.SimpleNamespace(load=lambda name: types.SimpleNamespace(join_file=lambda data, transform: data))
+            with mock.patch.dict(sys.modules, {"zstandard": decoder, "fermion._speech._engine": engine}):
+                with self.assertRaisesRegex(ValueError, "path"):
+                    phonon_runtime.unpack_model(archive, pathlib.Path(root) / "unpacked")
             self.assertFalse((pathlib.Path(root) / "escape").exists())
 
 
