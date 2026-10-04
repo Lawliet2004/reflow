@@ -41,6 +41,8 @@ _DOWNLOAD_HOSTS = frozenset((
     "huggingface.co", "github.com", "release-assets.githubusercontent.com",
     "objects.githubusercontent.com", "cdn-lfs.huggingface.co",
     "cdn-lfs-us-1.hf.co", "cdn-lfs-eu-1.hf.co", "cas-bridge.xethub.hf.co",
+    # Hugging Face weight redirects use these official CDN edges.
+    "us.aws.cdn.hf.co", "us.gcp.cdn.hf.co",
 ))
 
 

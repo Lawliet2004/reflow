@@ -54,6 +54,8 @@ pub fn allowed_host(host: &str) -> bool {
             | "cdn-lfs-us-1.hf.co"
             | "cdn-lfs-eu-1.hf.co"
             | "cas-bridge.xethub.hf.co"
+            | "us.aws.cdn.hf.co"
+            | "us.gcp.cdn.hf.co"
     )
 }
 
