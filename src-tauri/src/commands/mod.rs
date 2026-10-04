@@ -888,8 +888,18 @@ pub fn install_model(
     prepare_asr_runtime(ctx.inner(), &app)?;
     let model_dir = ctx.model_manager.get_model_dir(&active);
     let repo = ctx.model_manager.repo_for(&active);
-    ctx.asr_handle
-        .install_model_dir_blocking(&model_dir.to_string_lossy(), repo)?;
+    if active == "phonon-2" {
+        let (_, backend, precision) = resolve_asr_load(ctx.inner())?;
+        ctx.asr_handle.install_model_dir_with_options_blocking(
+            &model_dir.to_string_lossy(),
+            repo,
+            &backend,
+            &precision,
+        )?;
+    } else {
+        ctx.asr_handle
+            .install_model_dir_blocking(&model_dir.to_string_lossy(), repo)?;
+    }
     spawn_model_status_watch(app, ctx.inner().clone());
     Ok(())
 }

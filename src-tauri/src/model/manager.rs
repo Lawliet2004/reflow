@@ -40,9 +40,19 @@ pub const MODELS: &[ModelSpec] = &[
         label: "1.7B (native)",
         approx_bytes: 2_520_744_288,
     },
+    ModelSpec {
+        id: "phonon-2",
+        dir_name: "phonon-2",
+        repo: "FermionResearch/Phonon-2",
+        label: "Phonon-2 · Fast English",
+        approx_bytes: 163_515_201,
+    },
 ];
 
 pub fn runtime_model_id(model: &str, runtime: &str) -> String {
+    if model == "phonon-2" {
+        return model.to_string();
+    }
     if runtime == "native" {
         format!("native-{model}")
     } else {
@@ -84,6 +94,11 @@ impl ModelManager {
     /// Weights are considered installed when a real HF model directory is there.
     pub fn is_installed(&self, id: &str) -> bool {
         let dir = self.get_model_dir(id);
+        if id == "phonon-2" {
+            return dir
+                .join(crate::profile::manifest::PHONON_MODEL.filename)
+                .is_file();
+        }
         if let Some(manifest) =
             crate::profile::manifest::native_asr_manifest(id).filter(|m| m.id == id)
         {

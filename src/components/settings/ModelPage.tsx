@@ -53,9 +53,10 @@ interface Props {
 
 const FORMAT_SIZE = (mb: number) => (mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`);
 
-const MODELS: { id: "0.6b" | "1.7b"; title: string; desc: string }[] = [
+const MODELS: { id: string; title: string; desc: string }[] = [
   { id: "0.6b", title: "0.6B · Faster", desc: "Smaller model · speed depends on your hardware" },
   { id: "1.7b", title: "1.7B · Higher accuracy", desc: "Larger model · requires more memory" },
+  { id: "phonon-2", title: "Phonon-2 · Fast English", desc: "164 MB download · CPU or NVIDIA GPU" },
 ];
 
 type Precision = "auto" | "int4" | "int8" | "bf16";
@@ -211,9 +212,21 @@ export const ModelPage: React.FC<Props> = ({
     });
   };
 
-  const handleSelectModel = async (id: "0.6b" | "1.7b") => {
+  const phononSelected = settings.asr.model === "phonon-2";
+  const handleSelectModel = async (id: string) => {
     if (settings.asr.model === id) return;
-    if (!(await change("asr", { ...settings.asr, model: id }))) return;
+    if (
+      !(await change("asr", {
+        ...settings.asr,
+        model: id,
+        ...(id === "phonon-2"
+          ? { runtime: "python" as const, precision: "auto" as const }
+          : phononSelected
+            ? { precision: "auto" as const }
+            : {}),
+      }))
+    )
+      return;
     try {
       const status = await api.getModelStatus();
       if (!status.installed) {
@@ -349,7 +362,7 @@ export const ModelPage: React.FC<Props> = ({
           </pre>
         </div>
       )}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {MODELS.map((m) => {
           const active = settings.asr.model === m.id;
           return (
@@ -388,6 +401,13 @@ export const ModelPage: React.FC<Props> = ({
           );
         })}
       </div>
+      {phononSelected && (
+        <p className="text-sm text-muted" role="status">
+          English only. Choose English or Auto-detect for dictation. Download size is 164 MB; memory
+          use is higher. CPU speed depends on your hardware. Dictionary replacements still apply;
+          recognition hotword bias is unavailable.
+        </p>
+      )}
 
       <div
         className={`rounded-xl border p-4 transition-colors ${
@@ -434,7 +454,7 @@ export const ModelPage: React.FC<Props> = ({
                       ? `${
                           backendLabel && !/loading/i.test(backendLabel)
                             ? backendLabel
-                            : `Loading ${settings.asr.model === "1.7b" ? "1.7B" : "0.6B"} model`
+                            : `Loading ${phononSelected ? "Phonon-2" : settings.asr.model === "1.7b" ? "1.7B" : "0.6B"} model`
                         }`
                       : (modelStatus?.error ??
                         (modelStatus?.installed
@@ -491,12 +511,16 @@ export const ModelPage: React.FC<Props> = ({
         <>
           <Row
             label="Speech runtime"
-            hint="Native is an experimental Python-free runtime; download its model files separately."
+            hint={
+              phononSelected
+                ? "Phonon uses the Fermion Python runtime."
+                : "Native is an experimental Python-free runtime; download its model files separately."
+            }
           >
             <select
               className="field"
               value={settings.asr.runtime}
-              disabled={modelStatus?.is_downloading}
+              disabled={phononSelected || modelStatus?.is_downloading}
               onChange={async (e) => {
                 const runtime = e.target.value as AsrSettings["runtime"];
                 if (!(await change("asr", { ...settings.asr, runtime }))) return;
@@ -540,7 +564,7 @@ export const ModelPage: React.FC<Props> = ({
             </select>
           </Row>
 
-          {settings.asr.runtime === "python" && (
+          {settings.asr.runtime === "python" && !phononSelected && (
             <div>
               <div className="flex items-center justify-between gap-6 mb-1.5">
                 <div className="min-w-0">

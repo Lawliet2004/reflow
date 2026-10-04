@@ -343,7 +343,7 @@ pub fn has_installed_asr(ctx: &crate::context::AppContext, settings: &AppSetting
                 &settings.asr.runtime,
             ))
     };
-    if settings.preset == "custom" {
+    if settings.preset == "custom" || settings.asr.model == "phonon-2" {
         installed(&settings.asr.model)
     } else {
         ["0.6b", "1.7b"].iter().any(|id| installed(id))

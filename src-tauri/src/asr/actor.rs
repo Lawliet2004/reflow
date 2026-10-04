@@ -83,6 +83,8 @@ pub enum AsrCommand {
     InstallModelDir {
         model_dir: String,
         repo: String,
+        backend: String,
+        precision: String,
         reply: Reply<Result<(), String>>,
     },
     SetResourceDir {
@@ -283,9 +285,13 @@ impl AsrHandle {
                         AsrCommand::InstallModelDir {
                             model_dir,
                             repo,
+                            backend,
+                            precision,
                             reply,
                         } => {
-                            let res = engine.install_model_dir(&model_dir, &repo);
+                            let res = engine.install_model_dir_with_options(
+                                &model_dir, &repo, &backend, &precision,
+                            );
                             Self::sync_cache(
                                 &mut *engine,
                                 &status_c,
@@ -660,6 +666,8 @@ impl AsrHandle {
             .send(AsrCommand::InstallModelDir {
                 model_dir: model_dir.to_string(),
                 repo: repo.to_string(),
+                backend: "auto".into(),
+                precision: "auto".into(),
                 reply: Reply::Async(reply),
             })
             .await
@@ -669,11 +677,23 @@ impl AsrHandle {
     }
 
     pub fn install_model_dir_blocking(&self, model_dir: &str, repo: &str) -> Result<(), String> {
+        self.install_model_dir_with_options_blocking(model_dir, repo, "auto", "auto")
+    }
+
+    pub fn install_model_dir_with_options_blocking(
+        &self,
+        model_dir: &str,
+        repo: &str,
+        backend: &str,
+        precision: &str,
+    ) -> Result<(), String> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.sender
             .try_send(AsrCommand::InstallModelDir {
                 model_dir: model_dir.to_string(),
                 repo: repo.to_string(),
+                backend: backend.to_string(),
+                precision: precision.to_string(),
                 reply: Reply::Sync(tx),
             })
             .map_err(|e| format!("ASR actor channel error: {e}"))?;

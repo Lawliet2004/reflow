@@ -5,6 +5,30 @@ import { api } from "../../services/tauriApi";
 import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
 import type { AsrSettings } from "../../types";
 
+it("selects Phonon with its Python runtime and automatic precision", async () => {
+  const install = vi.spyOn(api, "installModel").mockResolvedValue();
+  vi.spyOn(api, "getModelStatus").mockResolvedValue({
+    ...(await api.getModelStatus()),
+    installed: false,
+  });
+  const { save } = await modelPage(false, undefined, { runtime: "native", precision: "int4" });
+  fireEvent.click(screen.getByRole("button", { name: /Phonon-2/ }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      preset: "custom",
+      asr: expect.objectContaining({ model: "phonon-2", runtime: "python", precision: "auto" }),
+    }),
+  );
+  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith("phonon-2"));
+});
+
+it("shows Phonon's English restriction and hides Qwen-only settings", async () => {
+  await modelPage(true, undefined, { model: "phonon-2" });
+  expect(screen.getByText(/English only/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /4-bit/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Speech runtime" })).toBeDisabled();
+});
+
 async function modelPage(
   installed = true,
   save = vi.fn().mockResolvedValue(true),

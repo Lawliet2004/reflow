@@ -1032,6 +1032,9 @@ impl AppSettings {
         if !matches!(self.asr.runtime.as_str(), "python" | "native") {
             self.asr.runtime = default_asr_runtime();
         }
+        if self.asr.model == "phonon-2" {
+            self.asr.runtime = "python".into();
+        }
         let intent = self.resolve_intent();
         self.intelligence_tier = intent.tier;
         self.cleanup_level = intent.cleanup_level;

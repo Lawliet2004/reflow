@@ -20,8 +20,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Precision {
-    /// Full precision on CPU (fp32) — the CPU path never quantizes, because
-    /// quantized weights on CPU cost RAM without buying speed.
+    /// Full precision. Qwen's CPU path uses this; Phonon uses packed int8 kernels.
     Fp32,
     Bf16,
     Int8,
@@ -212,11 +211,16 @@ impl ModelManifest {
 
     /// Estimated system-RAM peak for a CPU load, in MiB.
     ///
-    /// Higher than the VRAM figure for the same weights: the CPU path runs
-    /// fp32 and the allocator is less tightly managed.
+    /// CPU working set, including runtime overhead. Qwen runs fp32; Phonon's
+    /// optimized kernels keep packed int8 weights.
     pub fn estimated_cpu_ram_mb(&self) -> f32 {
-        let weights_mb =
-            (self.params as f32 * Precision::Fp32.bytes_per_weight()) / (1024.0 * 1024.0);
+        let weights_mb = (self.params as f32
+            * if self.id == "phonon-2" {
+                1.1
+            } else {
+                Precision::Fp32.bytes_per_weight()
+            })
+            / (1024.0 * 1024.0);
         weights_mb + self.overhead_mb * 1.2
     }
 
@@ -234,6 +238,13 @@ impl ModelManifest {
     pub fn supported_precisions_on(&self, device: Device) -> Vec<Precision> {
         if !self.devices.contains(&device) {
             return Vec::new();
+        }
+        if self.id == "phonon-2" {
+            return vec![if device == Device::Cpu {
+                Precision::Int8
+            } else {
+                Precision::Fp32
+            }];
         }
         if device == Device::Cpu && self.precisions.contains(&Precision::Fp32) {
             return vec![Precision::Fp32];
@@ -280,6 +291,7 @@ impl ModelManifest {
 /// Language lists cover only what has been validated. Qwen3-ASR's model card
 /// advertises far more; those are added by Task 42 as each passes its corpus.
 pub const ASR_MODELS: &[ModelManifest] = &[
+    // Keep the Qwen entries first: their automatic size ladder is family-specific.
     ModelManifest {
         id: "0.6b",
         label: "Qwen3-ASR 0.6B",
@@ -328,6 +340,26 @@ pub const ASR_MODELS: &[ModelManifest] = &[
         overhead_mb: 1100.0,
     },
 ];
+
+/// Compact English ASR. The CPU engine expands/requantizes the packed archive
+/// to int8; CUDA uses the exact fp32 Parakeet graph, not a 164 MB allocation.
+pub const PHONON_MODEL: ModelManifest = ModelManifest {
+    id: "phonon-2",
+    label: "Phonon-2 · Fast English",
+    runtime: RuntimeKind::PythonAsr,
+    repo: "FermionResearch/Phonon-2",
+    revision: "ca1bef26bcd8ef4a7e16d0636d8a77bb25e298ee",
+    filename: "phonon-2.bps.tar.zst",
+    dir_name: "phonon-2",
+    sha256: "98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e",
+    auxiliary_files: &[],
+    download_bytes: 163_515_201,
+    params: 630_000_000,
+    precisions: &[Precision::Int8, Precision::Fp32],
+    devices: &[Device::Cpu, Device::Cuda],
+    languages: &["en"],
+    overhead_mb: 900.0,
+};
 
 /// Refinement models served by `llama-server`.
 pub const REFINEMENT_MODELS: &[ModelManifest] = &[
@@ -423,6 +455,9 @@ pub fn native_asr_manifest(id: &str) -> Option<&'static ModelManifest> {
 }
 
 pub fn asr_manifest(id: &str) -> Option<&'static ModelManifest> {
+    if id == PHONON_MODEL.id {
+        return Some(&PHONON_MODEL);
+    }
     ASR_MODELS.iter().find(|m| m.id == id)
 }
 
@@ -434,6 +469,7 @@ pub fn refinement_manifest(id: &str) -> Option<&'static ModelManifest> {
 pub fn all_manifests() -> impl Iterator<Item = &'static ModelManifest> {
     ASR_MODELS
         .iter()
+        .chain(std::iter::once(&PHONON_MODEL))
         .chain(REFINEMENT_MODELS.iter())
         .chain(NATIVE_ASR_MODELS.iter())
 }

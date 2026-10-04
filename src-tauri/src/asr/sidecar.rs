@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
 use crate::audio::resampler::AudioResampler;
-use crate::profile::manifest::ASR_MODELS;
+use crate::profile::manifest::{ASR_MODELS, PHONON_MODEL};
 
 const ASR_PUSH_CHUNK_SAMPLES: usize = 16_000;
 const CANCELLED_TRANSPORT: &str = "engine_cancelled: discarded dictation";
@@ -903,9 +903,12 @@ impl ASREngine for Qwen3AsrSidecar {
             return self.fallback_mock.load_model(model_dir, backend);
         }
 
-        let manifest = ASR_MODELS.iter().find(|m| {
-            Path::new(model_dir).file_name().and_then(|n| n.to_str()) == Some(m.dir_name)
-        });
+        let manifest = ASR_MODELS
+            .iter()
+            .chain(std::iter::once(&PHONON_MODEL))
+            .find(|m| {
+                Path::new(model_dir).file_name().and_then(|n| n.to_str()) == Some(m.dir_name)
+            });
         let cmd = json!({
             "cmd": "load_model",
             "model_id": manifest.map(|m| m.id),
@@ -943,11 +946,24 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn install_model_dir(&mut self, model_dir: &str, repo: &str) -> Result<(), String> {
+        self.install_model_dir_with_options(model_dir, repo, "auto", "auto")
+    }
+
+    fn install_model_dir_with_options(
+        &mut self,
+        model_dir: &str,
+        repo: &str,
+        backend: &str,
+        precision: &str,
+    ) -> Result<(), String> {
         crate::network_policy::check_download()?;
         if self.use_fallback {
             return Err("ASR runtime unavailable".into());
         }
-        let manifest = ASR_MODELS.iter().find(|m| m.repo == repo);
+        let manifest = ASR_MODELS
+            .iter()
+            .chain(std::iter::once(&PHONON_MODEL))
+            .find(|m| m.repo == repo);
         let cmd = json!({
             "cmd": "install_model",
             "revision": manifest.map(|m| m.revision),
@@ -955,7 +971,9 @@ impl ASREngine for Qwen3AsrSidecar {
             "model_id": manifest.map(|m| m.id),
             "expected_bytes": manifest.map(|m| m.download_bytes),
             "model_dir": model_dir,
-            "repo": repo
+            "repo": repo,
+            "device": backend,
+            "precision": precision,
         });
         match self.send_command(cmd) {
             Ok(resp) => {

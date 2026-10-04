@@ -1,0 +1,6 @@
+# Install into the same Python interpreter used by Reflow's speech sidecar.
+fermion-research==0.2.7
+scipy==1.17.1
+soundfile==0.13.1
+zstandard==0.25.0
+safetensors==0.8.0

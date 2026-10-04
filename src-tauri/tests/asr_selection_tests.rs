@@ -17,6 +17,59 @@
 use reflow_lib::capability::{Capabilities, GpuInfo, GpuVendor};
 use reflow_lib::profile::{no_measurements, select_asr_load, Device, Precision, Preset};
 
+#[test]
+fn phonon_keeps_its_own_engine_under_every_preset() {
+    for preset in [
+        Preset::Auto,
+        Preset::Fast,
+        Preset::Balanced,
+        Preset::Accurate,
+        Preset::Custom,
+    ] {
+        let chosen = select_asr_load(
+            preset,
+            "phonon-2",
+            "cpu",
+            "auto",
+            &|_| true,
+            &Capabilities::default(),
+            &no_measurements,
+        );
+        assert_eq!(chosen.model_id, "phonon-2");
+        assert_eq!(chosen.device, Device::Cpu);
+        assert_eq!(chosen.precision, Precision::Int8);
+        assert!(chosen.error.is_none());
+    }
+}
+
+#[test]
+fn phonon_uses_cuda_when_it_fits_and_cpu_when_it_does_not() {
+    for (free, expected) in [(8000.0, Device::Cuda), (200.0, Device::Cpu)] {
+        let chosen = select_asr_load(
+            Preset::Auto,
+            "phonon-2",
+            "auto",
+            "auto",
+            &|_| true,
+            &caps_with_free_vram(free),
+            &no_measurements,
+        );
+        assert_eq!(chosen.model_id, "phonon-2");
+        assert_eq!(chosen.device, expected);
+        assert!(chosen.error.is_none());
+    }
+    let chosen = select_asr_load(
+        Preset::Custom,
+        "phonon-2",
+        "cpu",
+        "int4",
+        &|_| true,
+        &Capabilities::default(),
+        &no_measurements,
+    );
+    assert!(chosen.error.is_some());
+}
+
 /// A 4 GB card with `free_mb` actually available.
 fn caps_with_free_vram(free_mb: f32) -> Capabilities {
     let mut caps = Capabilities::default();

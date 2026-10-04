@@ -1,6 +1,18 @@
 {
   "models": [
     {
+      "repo": "FermionResearch/Phonon-2",
+      "api_url": "https://huggingface.co/api/models/FermionResearch/Phonon-2?blobs=true",
+      "revision": "ca1bef26bcd8ef4a7e16d0636d8a77bb25e298ee",
+      "files": [
+        {
+          "filename": "phonon-2.bps.tar.zst",
+          "sha256": "98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e",
+          "size": 163515201
+        }
+      ]
+    },
+    {
       "repo": "Qwen/Qwen3-ASR-0.6B-hf",
       "api_url": "https://huggingface.co/api/models/Qwen/Qwen3-ASR-0.6B-hf?blobs=true",
       "revision": "7f1569a48a89f3e3f4dc3a5c9d28bddd903bc76c",

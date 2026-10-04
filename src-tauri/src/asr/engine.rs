@@ -230,6 +230,16 @@ pub trait ASREngine: Send + Sync {
         Err("Model install is not supported by this engine".into())
     }
 
+    fn install_model_dir_with_options(
+        &mut self,
+        model_dir: &str,
+        repo: &str,
+        _backend: &str,
+        _precision: &str,
+    ) -> Result<(), String> {
+        self.install_model_dir(model_dir, repo)
+    }
+
     fn engine_status(&mut self) -> EngineStatus {
         EngineStatus {
             loaded: self.is_model_loaded(),

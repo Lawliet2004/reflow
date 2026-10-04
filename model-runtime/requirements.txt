@@ -4,3 +4,4 @@ torchao==0.18.0
 accelerate==1.14.0
 huggingface_hub==1.11.0
 numpy==2.4.4
+-r requirements-phonon.txt
