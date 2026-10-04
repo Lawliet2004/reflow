@@ -144,7 +144,7 @@ export function PresetSelector({
               onClick={() => onSelectPreset(opt.id)}
               onKeyDown={(e) => handleKeyDown(e, index)}
               className={cn(
-                "relative flex flex-col p-4 rounded-xl border transition-all cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900",
+                "relative flex flex-col p-4 rounded-xl border transition-colors cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900",
                 isSelected
                   ? "bg-accent-soft border-accent shadow-sm ring-1 ring-accent"
                   : "bg-surface border-line hover:border-line-strong",

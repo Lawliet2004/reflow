@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { ModelPage } from "./ModelPage";
 import { api } from "../../services/tauriApi";
@@ -64,6 +64,21 @@ it("offers installation for the selected missing speech model", async () => {
   expect(screen.getByText("Speech model is not installed")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Download speech model" }));
   await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith("0.6b"));
+});
+
+it("keeps downloading separate from choosing the model", async () => {
+  const install = vi.spyOn(api, "installIntelligenceModel").mockResolvedValue();
+  const { save } = await modelPage();
+  const selection = screen.getByRole("button", { name: "Use Qwen3.5 2B" });
+  const card = selection.parentElement!;
+  fireEvent.click(within(card).getByRole("button", { name: "Download" }));
+  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith("deep_context"));
+  expect(save).not.toHaveBeenCalled();
+  expect(selection).toHaveAttribute("aria-pressed", "false");
+  fireEvent.click(selection);
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ flow_model: "qwen3.5-2b" })),
+  );
 });
 
 it.each([

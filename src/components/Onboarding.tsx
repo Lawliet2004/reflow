@@ -221,7 +221,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                   <button
                     key={m.id}
                     onClick={() => onUpdateSettings({ asr: { ...settings.asr, model: m.id } })}
-                    className={`text-left rounded-xl border p-3 transition-all cursor-pointer ${
+                    className={`text-left rounded-xl border p-3 transition-colors cursor-pointer ${
                       active
                         ? "border-accent bg-accent-soft"
                         : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
@@ -249,8 +249,10 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 </div>
                 <div className="h-1.5 rounded-full bg-line overflow-hidden">
                   <div
-                    className="h-full bg-accent rounded-full transition-all"
-                    style={{ width: `${modelStatus?.download_progress_pct ?? 0}%` }}
+                    className="progress-fill bg-accent"
+                    style={{
+                      transform: `scaleX(${Math.max(0, Math.min(100, modelStatus?.download_progress_pct ?? 0)) / 100})`,
+                    }}
                   />
                 </div>
               </div>

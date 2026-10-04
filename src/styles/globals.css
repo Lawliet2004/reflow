@@ -82,10 +82,12 @@
 
   /* Motion. Every duration referenced here is zeroed by `.reduce-motion`, so
    * animation lives in tokens rather than scattered literals. */
-  --motion-fast: 120ms;
-  --motion-base: 220ms;
-  --motion-slow: 420ms;
-  --motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --motion-fast: 160ms;
+  --motion-base: 260ms;
+  --motion-slow: 400ms;
+  --motion-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --default-transition-duration: var(--motion-fast);
+  --default-transition-timing-function: var(--motion-ease);
 
   --shadow-subtle: 0 1px 2px rgba(15, 23, 42, 0.04), 0 0 0 1px rgba(226, 232, 240, 0.6);
   --shadow-panel:
@@ -213,9 +215,9 @@ body.overlay-window #root {
     padding: 8px 12px;
     font-size: var(--text-sm);
     transition:
-      border-color 140ms ease,
-      box-shadow 140ms ease,
-      background 140ms ease;
+      border-color var(--motion-fast) var(--motion-ease),
+      box-shadow var(--motion-fast) var(--motion-ease),
+      background-color var(--motion-fast) var(--motion-ease);
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.02);
   }
   .field:hover {
@@ -264,7 +266,10 @@ body.overlay-window #root {
     color: var(--color-ink-2);
     white-space: nowrap;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
-    transition: all 140ms ease;
+    transition:
+      background-color var(--motion-fast) var(--motion-ease),
+      border-color var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease);
   }
 
   .btn {
@@ -281,11 +286,12 @@ body.overlay-window #root {
       background var(--motion-fast) var(--motion-ease),
       border-color var(--motion-fast) var(--motion-ease),
       color var(--motion-fast) var(--motion-ease),
-      transform 80ms ease;
+      transform var(--motion-fast) var(--motion-ease);
     user-select: none;
   }
   .btn:active:enabled {
     transform: translateY(1px);
+    transition-duration: 70ms;
   }
   .btn-primary {
     background: var(--color-action);
@@ -335,9 +341,9 @@ body.overlay-window #root {
     border-radius: 8px;
     color: var(--color-muted);
     transition:
-      background 140ms ease,
-      color 140ms ease,
-      transform 100ms ease;
+      background-color var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease),
+      transform var(--motion-fast) var(--motion-ease);
   }
   .btn:disabled,
   .icon-btn:disabled {
@@ -350,6 +356,7 @@ body.overlay-window #root {
   }
   .icon-btn:active:enabled {
     transform: scale(0.95);
+    transition-duration: 70ms;
   }
 
   .row-menu {
@@ -923,7 +930,53 @@ html.dark[data-accent="graphite"] {
   }
 }
 .animate-fade-rise {
-  animation: fade-rise 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: view-enter var(--motion-base) var(--motion-ease) backwards;
+}
+
+/* Keep navigation legible without moving an entire scrolling surface. */
+@keyframes view-enter {
+  from {
+    opacity: 0.65;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@layer components {
+  .model-card {
+    position: relative;
+    isolation: isolate;
+    transition:
+      background-color var(--motion-base) var(--motion-ease),
+      border-color var(--motion-base) var(--motion-ease);
+  }
+  .model-card:has(.model-card-select:hover:enabled) {
+    border-color: var(--color-accent);
+  }
+  .model-card-select {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    cursor: pointer;
+  }
+  .model-card-select:disabled {
+    cursor: wait;
+  }
+  .model-card-content {
+    position: relative;
+    pointer-events: none;
+  }
+  .model-card-content button {
+    pointer-events: auto;
+  }
+  .progress-fill {
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    transform-origin: left center;
+    transition: transform var(--motion-slow) var(--motion-ease);
+  }
 }
 
 /* One reduced-motion policy, honoured for both the OS preference and the

@@ -34,8 +34,8 @@ export const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
         <span
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-xs transition-all",
-            on ? "left-[20px]" : "left-[2px]",
+            "pointer-events-none absolute left-[2px] top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-xs transition-transform",
+            on ? "translate-x-[18px]" : "translate-x-0",
           )}
         />
       </button>

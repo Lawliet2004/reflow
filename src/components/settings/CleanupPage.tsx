@@ -210,7 +210,7 @@ export const CleanupPage: React.FC<Props> = ({
           return (
             <div
               key={id}
-              className={`relative rounded-2xl border transition-all p-4 ${
+              className={`relative rounded-2xl border transition-colors p-4 ${
                 active
                   ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
                   : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
@@ -344,8 +344,10 @@ export const CleanupPage: React.FC<Props> = ({
                       </div>
                       <div className="h-1.5 rounded-full bg-line overflow-hidden">
                         <div
-                          className="h-full bg-accent transition-all duration-300 rounded-full"
-                          style={{ width: `${progress}%` }}
+                          className="progress-fill bg-accent"
+                          style={{
+                            transform: `scaleX(${Math.max(0, Math.min(100, progress)) / 100})`,
+                          }}
                         />
                       </div>
                     </div>

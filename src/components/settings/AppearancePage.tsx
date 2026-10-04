@@ -88,7 +88,7 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                 type="button"
                 onClick={() => change("app_theme", item.id)}
                 aria-pressed={isSelected}
-                className={`flex flex-col text-left p-3.5 rounded-xl border transition-all cursor-pointer relative ${
+                className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors cursor-pointer relative ${
                   isSelected
                     ? "border-accent bg-accent-soft shadow-sm ring-1 ring-accent"
                     : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
@@ -131,7 +131,7 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                   onClick={() => change("accent_color", c.id)}
                   title={c.label}
                   aria-label={c.label}
-                  className={`group relative flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                  className={`group relative flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors cursor-pointer ${
                     isSelected
                       ? "border-accent bg-accent-soft ring-1 ring-accent shadow-xs"
                       : "border-line bg-surface hover:border-line-strong hover:bg-base-2"

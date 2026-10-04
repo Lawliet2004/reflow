@@ -89,7 +89,7 @@ export const HotkeyPicker: React.FC<HotkeyPickerProps> = ({ value, onChange, siz
         heldRef.current = [];
       }}
       title={recording ? "Press keys… (Esc to cancel)" : "Click to record a new shortcut"}
-      className={`field ${sizeClass} !text-center font-semibold cursor-pointer transition-all ${
+      className={`field ${sizeClass} !text-center font-semibold cursor-pointer transition-colors ${
         recording ? "!border-accent !text-accent ring-2 ring-accent/30" : ""
       }`}
     >

@@ -358,7 +358,7 @@ export const ModelPage: React.FC<Props> = ({
               onClick={() => handleSelectModel(m.id)}
               disabled={installingModel !== null || downloading}
               aria-pressed={active}
-              className={`text-left rounded-xl border p-3.5 transition-all cursor-pointer ${
+              className={`text-left rounded-xl border p-3.5 transition-colors cursor-pointer ${
                 active
                   ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
                   : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
@@ -390,7 +390,7 @@ export const ModelPage: React.FC<Props> = ({
       </div>
 
       <div
-        className={`rounded-xl border p-4 transition-all ${
+        className={`rounded-xl border p-4 transition-colors ${
           modelReady
             ? "border-accent-border bg-accent-soft/60"
             : downloading || loading
@@ -462,8 +462,10 @@ export const ModelPage: React.FC<Props> = ({
         {downloading && (
           <div className="h-1.5 rounded-full bg-line mt-3 overflow-hidden">
             <div
-              className="h-full bg-accent transition-all duration-500 rounded-full"
-              style={{ width: `${modelStatus?.download_progress_pct ?? 0}%` }}
+              className="progress-fill bg-accent"
+              style={{
+                transform: `scaleX(${Math.max(0, Math.min(100, modelStatus?.download_progress_pct ?? 0)) / 100})`,
+              }}
             />
           </div>
         )}
@@ -558,7 +560,7 @@ export const ModelPage: React.FC<Props> = ({
                       onClick={() => handleSelectPrecision(p.id)}
                       disabled={downloading || installingModel !== null}
                       aria-pressed={active}
-                      className={`text-left rounded-lg border p-2.5 transition-all cursor-pointer ${
+                      className={`text-left rounded-lg border p-2.5 transition-colors cursor-pointer ${
                         active
                           ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
                           : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
@@ -681,193 +683,178 @@ export const ModelPage: React.FC<Props> = ({
           return (
             <div
               key={tier}
-              className={`rounded-xl border p-4 space-y-3 ${
+              className={`model-card rounded-xl border p-4 ${
                 isActive ? "border-accent bg-accent-soft" : "border-line bg-surface"
               }`}
             >
               <button
                 type="button"
-                className="flex items-start gap-3 w-full text-left rounded-lg"
+                className="model-card-select"
                 aria-label={tier === "smart_flow" ? "Use Qwen3.5 0.8B" : "Use Qwen3.5 2B"}
                 aria-pressed={isActive}
                 disabled={selectingLlm}
                 onClick={() => selectLlm(meta.modelId)}
               >
-                <div
-                  className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                    isActive ? "bg-accent text-white" : "bg-surface-2 text-ink-2"
-                  }`}
-                >
-                  {icon}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-semibold text-ink">
-                      {LLM_NAMES[meta.modelId]}
-                    </span>
-                    {isActive && (
-                      <span className="text-2xs font-bold tracking-wider px-1.5 py-0.5 rounded bg-accent text-white">
-                        SELECTED
-                      </span>
-                    )}
-                  </div>
-                  <span className="block text-xs text-muted mt-0.5">
-                    {isActive
-                      ? "Used for your next dictation when installed."
-                      : "Click to use this model."}
-                  </span>
-                </div>
+                <span className="sr-only">Select {LLM_NAMES[meta.modelId]}</span>
               </button>
-
-              <div className="flex items-center justify-between gap-3 text-xs text-muted">
-                <span>
-                  <span className="text-ink font-medium">{FORMAT_SIZE(meta.downloadSizeMB)}</span>{" "}
-                  download ·{" "}
-                  <span className="text-ink font-medium">{FORMAT_SIZE(meta.ramRequiredMB)}</span>{" "}
-                  RAM
-                </span>
-                {installed && (
-                  <span className="inline-flex items-center gap-1 text-success font-semibold">
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    Installed
-                  </span>
-                )}
-                {showRuntimeMissing && (
-                  <span className="inline-flex items-center gap-1 text-warning font-semibold">
-                    <AlertTriangle className="w-3.5 h-3.5" />
-                    Weights only
-                  </span>
-                )}
-                {downloading && (
-                  <span className="inline-flex items-center gap-1 text-accent font-semibold">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Downloading
-                  </span>
-                )}
-                {runtimeDownloadActive && !installed && !downloading && (
-                  <span className="inline-flex items-center gap-1 text-accent font-semibold">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Installing runtime
-                  </span>
-                )}
-              </div>
-
-              {installed &&
-                flowStatus?.ready &&
-                flowStatus.active_model === meta.modelId &&
-                isActive && (
-                  <div className="text-2xs text-muted bg-base-2/60 border border-line rounded-md px-2.5 py-1.5 leading-snug">
-                    Loaded on {flowStatus.backend || "runtime"}
-                    {flowStatus.n_gpu_layers !== undefined && (
-                      <>
-                        {" "}
-                        · {flowStatus.n_gpu_layers}
-                        {flowStatus.mode === "gpu" ? "/99 layers" : " layers"}
-                        {flowStatus.mode === "gpu" && flowStatus.vram_used_mb
-                          ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB VRAM`
-                          : ""}
-                      </>
-                    )}
+              <div className="model-card-content space-y-3">
+                <div className="flex items-start gap-3 w-full text-left">
+                  <div
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                      isActive ? "bg-accent text-white" : "bg-surface-2 text-ink-2"
+                    }`}
+                  >
+                    {icon}
                   </div>
-                )}
-
-              {showRuntimeMissing && (
-                <p className="text-2xs text-warning leading-snug">
-                  This model is downloaded, but its writing runtime is missing. Install the runtime
-                  below to use it.
-                </p>
-              )}
-              {downloading && (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-2xs text-muted">
-                    <span>Downloading weights</span>
-                    <span>
-                      {intelligenceDownload?.progress_pct ?? 0}% ·{" "}
-                      {(intelligenceDownload?.speed_mbps ?? 0).toFixed(1)} MB/s
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-ink">
+                        {LLM_NAMES[meta.modelId]}
+                      </span>
+                      {isActive && (
+                        <span className="text-2xs font-bold tracking-wider px-1.5 py-0.5 rounded bg-accent text-white">
+                          SELECTED
+                        </span>
+                      )}
+                    </div>
+                    <span className="block text-xs text-muted mt-0.5">
+                      {isActive
+                        ? "Used for your next dictation when installed."
+                        : "Click to use this model."}
                     </span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-line overflow-hidden">
-                    <div
-                      className="h-full bg-accent transition-all duration-300 rounded-full"
-                      style={{
-                        width: `${intelligenceDownload?.progress_pct ?? 0}%`,
-                      }}
-                    />
                   </div>
                 </div>
-              )}
-              {runtimeDownloadActive && runtimeDownload && (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-2xs text-muted">
-                    <span>Installing {runtimeDownload.kind_label ?? "runtime"} runtime</span>
-                    <span>
-                      {runtimeDownload.progress_pct}% · {runtimeDownload.speed_mbps.toFixed(1)} MB/s
+
+                <div className="flex items-center justify-between gap-3 text-xs text-muted">
+                  <span>
+                    <span className="text-ink font-medium">{FORMAT_SIZE(meta.downloadSizeMB)}</span>{" "}
+                    download ·{" "}
+                    <span className="text-ink font-medium">{FORMAT_SIZE(meta.ramRequiredMB)}</span>{" "}
+                    RAM
+                  </span>
+                  {installed && (
+                    <span className="inline-flex items-center gap-1 text-success font-semibold">
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      Installed
                     </span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-line overflow-hidden">
-                    <div
-                      className="h-full bg-accent transition-all duration-300 rounded-full"
-                      style={{ width: `${runtimeDownload.progress_pct}%` }}
-                    />
-                  </div>
-                  {runtimeDownloadError && (
-                    <p className="text-2xs text-danger leading-snug">{runtimeDownloadError}</p>
+                  )}
+                  {showRuntimeMissing && (
+                    <span className="inline-flex items-center gap-1 text-warning font-semibold">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      Weights only
+                    </span>
+                  )}
+                  {downloading && (
+                    <span className="inline-flex items-center gap-1 text-accent font-semibold">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Downloading
+                    </span>
+                  )}
+                  {runtimeDownloadActive && !installed && !downloading && (
+                    <span className="inline-flex items-center gap-1 text-accent font-semibold">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Installing runtime
+                    </span>
                   )}
                 </div>
-              )}
-              {showRuntimeMissing && !runtimeDownloadActive && runtimeDownloadError && (
-                <p className="text-2xs text-danger leading-snug">
-                  Last install attempt failed: {runtimeDownloadError}
-                </p>
-              )}
-              {confirmRemoveIntelligence === tier && (
-                <div className="p-2.5 rounded-lg border border-danger/30 bg-danger/10 space-y-1.5">
-                  <p className="text-xs text-danger">
-                    Delete the downloaded weights for {meta.label}? You can re-download later.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <button
-                      className="btn btn-danger !py-1 !px-2.5 !text-xs"
-                      onClick={() => handleRemoveIntelligence(tier)}
-                      disabled={isRemoving}
-                    >
-                      <Trash2 className="w-3 h-3" />
-                      {isRemoving ? "Removing…" : "Yes, remove"}
-                    </button>
-                    <button
-                      className="btn btn-ghost !py-1 !px-2.5 !text-xs"
-                      onClick={() => setConfirmRemoveIntelligence(null)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
 
-              <div className="flex items-center justify-end gap-2 pt-1 border-t border-line/60">
-                {installed ? (
-                  <button
-                    className="btn btn-ghost !py-1 !px-2.5 !text-xs"
-                    onClick={() => setConfirmRemoveIntelligence(tier)}
-                    disabled={isRemoving}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    Remove
-                  </button>
-                ) : showRuntimeMissing ? (
-                  <>
-                    <button
-                      className="btn btn-primary !py-1 !px-2.5 !text-xs"
-                      onClick={onInstallRuntime}
-                      disabled={runtimeDownloadActive}
-                    >
-                      {runtimeDownloadActive ? (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <Cpu className="w-3 h-3" />
+                {installed &&
+                  flowStatus?.ready &&
+                  flowStatus.active_model === meta.modelId &&
+                  isActive && (
+                    <div className="text-2xs text-muted bg-base-2/60 border border-line rounded-md px-2.5 py-1.5 leading-snug">
+                      Loaded on {flowStatus.backend || "runtime"}
+                      {flowStatus.n_gpu_layers !== undefined && (
+                        <>
+                          {" "}
+                          · {flowStatus.n_gpu_layers}
+                          {flowStatus.mode === "gpu" ? "/99 layers" : " layers"}
+                          {flowStatus.mode === "gpu" && flowStatus.vram_used_mb
+                            ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB VRAM`
+                            : ""}
+                        </>
                       )}
-                      Install runtime
-                    </button>
+                    </div>
+                  )}
+
+                {showRuntimeMissing && (
+                  <p className="text-2xs text-warning leading-snug">
+                    This model is downloaded, but its writing runtime is missing. Install the
+                    runtime below to use it.
+                  </p>
+                )}
+                {downloading && (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-2xs text-muted">
+                      <span>Downloading weights</span>
+                      <span>
+                        {intelligenceDownload?.progress_pct ?? 0}% ·{" "}
+                        {(intelligenceDownload?.speed_mbps ?? 0).toFixed(1)} MB/s
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-line overflow-hidden">
+                      <div
+                        className="progress-fill bg-accent"
+                        style={{
+                          transform: `scaleX(${Math.max(0, Math.min(100, intelligenceDownload?.progress_pct ?? 0)) / 100})`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {runtimeDownloadActive && runtimeDownload && (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-2xs text-muted">
+                      <span>Installing {runtimeDownload.kind_label ?? "runtime"} runtime</span>
+                      <span>
+                        {runtimeDownload.progress_pct}% · {runtimeDownload.speed_mbps.toFixed(1)}{" "}
+                        MB/s
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-line overflow-hidden">
+                      <div
+                        className="progress-fill bg-accent"
+                        style={{
+                          transform: `scaleX(${Math.max(0, Math.min(100, runtimeDownload.progress_pct)) / 100})`,
+                        }}
+                      />
+                    </div>
+                    {runtimeDownloadError && (
+                      <p className="text-2xs text-danger leading-snug">{runtimeDownloadError}</p>
+                    )}
+                  </div>
+                )}
+                {showRuntimeMissing && !runtimeDownloadActive && runtimeDownloadError && (
+                  <p className="text-2xs text-danger leading-snug">
+                    Last install attempt failed: {runtimeDownloadError}
+                  </p>
+                )}
+                {confirmRemoveIntelligence === tier && (
+                  <div className="p-2.5 rounded-lg border border-danger/30 bg-danger/10 space-y-1.5">
+                    <p className="text-xs text-danger">
+                      Delete the downloaded weights for {meta.label}? You can re-download later.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="btn btn-danger !py-1 !px-2.5 !text-xs"
+                        onClick={() => handleRemoveIntelligence(tier)}
+                        disabled={isRemoving}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        {isRemoving ? "Removing…" : "Yes, remove"}
+                      </button>
+                      <button
+                        className="btn btn-ghost !py-1 !px-2.5 !text-xs"
+                        onClick={() => setConfirmRemoveIntelligence(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-1 border-t border-line/60">
+                  {installed ? (
                     <button
                       className="btn btn-ghost !py-1 !px-2.5 !text-xs"
                       onClick={() => setConfirmRemoveIntelligence(tier)}
@@ -876,21 +863,44 @@ export const ModelPage: React.FC<Props> = ({
                       <Trash2 className="w-3 h-3" />
                       Remove
                     </button>
-                  </>
-                ) : downloading || runtimeDownloadActive ? null : (
-                  <button
-                    className="btn btn-primary !py-1 !px-2.5 !text-xs"
-                    onClick={() => handleInstallIntelligence(tier)}
-                    disabled={installingIntelligence === tier}
-                  >
-                    {installingIntelligence === tier ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Download className="w-3 h-3" />
-                    )}
-                    Download
-                  </button>
-                )}
+                  ) : showRuntimeMissing ? (
+                    <>
+                      <button
+                        className="btn btn-primary !py-1 !px-2.5 !text-xs"
+                        onClick={onInstallRuntime}
+                        disabled={runtimeDownloadActive}
+                      >
+                        {runtimeDownloadActive ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Cpu className="w-3 h-3" />
+                        )}
+                        Install runtime
+                      </button>
+                      <button
+                        className="btn btn-ghost !py-1 !px-2.5 !text-xs"
+                        onClick={() => setConfirmRemoveIntelligence(tier)}
+                        disabled={isRemoving}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Remove
+                      </button>
+                    </>
+                  ) : downloading || runtimeDownloadActive ? null : (
+                    <button
+                      className="btn btn-primary !py-1 !px-2.5 !text-xs"
+                      onClick={() => handleInstallIntelligence(tier)}
+                      disabled={installingIntelligence === tier}
+                    >
+                      {installingIntelligence === tier ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Download className="w-3 h-3" />
+                      )}
+                      Download
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           );
@@ -911,7 +921,7 @@ export const ModelPage: React.FC<Props> = ({
               role="radio"
               aria-checked={refinementDevice === "cpu"}
               onClick={() => handleSelectRefinementDevice("cpu")}
-              className={`text-left rounded-lg border p-3 transition-all cursor-pointer ${
+              className={`text-left rounded-lg border p-3 transition-colors cursor-pointer ${
                 refinementDevice === "cpu"
                   ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
                   : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
@@ -940,7 +950,7 @@ export const ModelPage: React.FC<Props> = ({
               aria-disabled={!refinementGpuAvailable}
               disabled={!refinementGpuAvailable}
               onClick={() => handleSelectRefinementDevice("gpu")}
-              className={`text-left rounded-lg border p-3 transition-all ${
+              className={`text-left rounded-lg border p-3 transition-colors ${
                 refinementDevice === "gpu"
                   ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
                   : "border-line bg-surface"

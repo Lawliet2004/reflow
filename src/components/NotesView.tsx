@@ -151,7 +151,7 @@ export const NotesView: React.FC<{
   };
 
   return (
-    <div className="workspace-page notes-page">
+    <div className="workspace-page notes-page animate-fade-rise">
       <header className="page-heading notes-heading">
         <div>
           <h1>Notes</h1>

@@ -132,7 +132,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </nav>
 
       <div className="flex-1 min-w-0 overflow-y-auto select-text">
-        <div className="settings-content space-y-6 animate-fade-rise">
+        <div key={page} className="settings-content space-y-6 animate-fade-rise">
           <header className="mb-1 flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-0 flex-1 basis-48">
               <h2 className="font-display text-2xl font-semibold tracking-tight text-ink">
