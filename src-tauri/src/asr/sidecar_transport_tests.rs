@@ -73,6 +73,9 @@ fn stalled_stdin_write_obeys_the_command_deadline() {
 
 #[test]
 fn cancellation_callback_never_waits_for_a_stalled_pipe_writer() {
+    // Prepare bytes before starting the fixture's watchdog. Debug JSON encoding
+    // of a large command can exceed the setup deadline on slower CI hosts.
+    let frame = vec![b'x'; 8 * 1024 * 1024];
     let mut child = stalled_reader();
     let mut engine = Qwen3AsrSidecar::new();
     engine.stdin = child
@@ -81,16 +84,11 @@ fn cancellation_callback_never_waits_for_a_stalled_pipe_writer() {
         .map(|stdin| Arc::new(parking_lot::Mutex::new(stdin)));
     engine.responses = child.stdout.take().map(spawn_response_reader);
     engine.child = Some(child);
-    engine.writer().unwrap();
+    let writer = engine.writer().unwrap();
     let stdin = Arc::clone(engine.stdin.as_ref().unwrap());
     let cancel = engine.cancellation_signal().unwrap();
-    let blocked = std::thread::spawn(move || {
-        engine.send_command_timeout(
-            json!({"cmd": "start_stream", "vocabulary": "x".repeat(8 * 1024 * 1024)}),
-            Duration::from_secs(1),
-        )
-    });
-    let deadline = std::time::Instant::now() + Duration::from_millis(750);
+    let blocked = writer.enqueue(frame).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let observed_blocked_writer = loop {
         if stdin.try_lock().is_none() {
             break true;
@@ -103,7 +101,9 @@ fn cancellation_callback_never_waits_for_a_stalled_pipe_writer() {
     let started = std::time::Instant::now();
     cancel();
     let elapsed = started.elapsed();
-    let result = blocked.join().unwrap();
+    // Always close the child before asserting, releasing the blocked OS write.
+    engine.kill_child();
+    let result = blocked.recv_timeout(Duration::from_secs(2));
     assert!(
         observed_blocked_writer,
         "fixture never filled its input pipe"
@@ -112,7 +112,11 @@ fn cancellation_callback_never_waits_for_a_stalled_pipe_writer() {
         elapsed < Duration::from_millis(100),
         "cancellation callback waited {elapsed:?}"
     );
-    assert!(result.as_ref().is_err_and(|error| is_engine_timeout(error)));
+    assert!(writer.cancelled.load(Ordering::Acquire));
+    assert!(
+        matches!(result, Ok(Err(_))),
+        "fixture write did not block until teardown: {result:?}"
+    );
 }
 
 #[test]
