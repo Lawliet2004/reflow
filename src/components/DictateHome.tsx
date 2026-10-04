@@ -20,6 +20,7 @@ import {
   StreamingTranscriptPayload,
   TranscriptStyle,
   isModelReady,
+  IntelligenceTierState,
 } from "../types";
 import { api } from "../services/tauriApi";
 import { FileTranscription, FileTranscriptionController } from "./FileTranscription";
@@ -29,6 +30,8 @@ import { Waveform } from "./Waveform";
 import { LatencyWaterfall } from "./LatencyWaterfall";
 import { StageRail } from "./hud/StageRail";
 import { relativeTime } from "../historyDisplay";
+import { LlmSelector } from "./LlmSelector";
+import { selectedLlm } from "../llmSelection";
 
 interface DictateHomeProps {
   appState: AppState;
@@ -41,7 +44,8 @@ interface DictateHomeProps {
   latencyPercentiles: LatencyPercentiles | null;
   onStartRecording: () => void;
   onStopRecording: () => void;
-  onUpdateSettings: (settings: Partial<AppSettings>) => void;
+  onUpdateSettings: (settings: Partial<AppSettings>) => Promise<boolean> | void;
+  intelligenceTiers?: IntelligenceTierState[] | null;
   onOpenHistory: () => void;
   onOpenSettings?: () => void;
   backendStage?: BackendStage | null;
@@ -65,6 +69,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   onStartRecording,
   onStopRecording,
   onUpdateSettings,
+  intelligenceTiers,
   onOpenHistory,
   onOpenSettings,
   backendStage = null,
@@ -149,14 +154,8 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   const selectCleanup = (id: CleanupLevel) =>
     onUpdateSettings({
       cleanup_level: id,
-      intelligence_tier:
-        id === "raw" || id === "light"
-          ? "raw_verbatim"
-          : id === "high"
-            ? "deep_context"
-            : "smart_flow",
-      ...(id !== "raw" && id !== "light" && settings.preset === "fast"
-        ? { preset: "auto" as const }
+      ...(id === "raw"
+        ? { intelligence_tier: "raw_verbatim" as const, flow_model: "none" as const }
         : {}),
     });
   // Radio-group keyboard model: arrows move the selection, Tab leaves the group.
@@ -164,12 +163,20 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
     if (!step) return;
     event.preventDefault();
+    if (isRecording || isProcessing) return;
+    const available = polishEnabled
+      ? CLEANUP
+      : CLEANUP.filter((item) => item.id === "raw" || item.id === "light");
     const index =
-      (CLEANUP.findIndex((item) => item.id === cleanup) + step + CLEANUP.length) % CLEANUP.length;
-    selectCleanup(CLEANUP[index].id);
-    (event.currentTarget.children[index] as HTMLElement | undefined)?.focus();
+      (available.findIndex((item) => item.id === cleanup) + step + available.length) %
+      available.length;
+    selectCleanup(available[index].id);
+    (
+      event.currentTarget.children[CLEANUP.findIndex((item) => item.id === available[index].id)] as
+        HTMLElement | undefined
+    )?.focus();
   };
-  const polishEnabled = cleanup === "medium" || cleanup === "high";
+  const polishEnabled = selectedLlm(settings) !== "none";
   const status = isRecording
     ? "Listening to you"
     : isProcessing
@@ -328,18 +335,31 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
               role="radio"
               aria-checked={cleanup === item.id}
               tabIndex={cleanup === item.id ? 0 : -1}
+              disabled={
+                isRecording ||
+                isProcessing ||
+                (!polishEnabled && (item.id === "medium" || item.id === "high"))
+              }
               onClick={() => selectCleanup(item.id)}
             >
               {item.label}
             </button>
           ))}
         </div>
+        <LlmSelector
+          settings={settings}
+          onUpdateSettings={onUpdateSettings}
+          tiers={intelligenceTiers}
+          disabled={isRecording || isProcessing}
+          onOpenSettings={onOpenSettings}
+        />
         {polishEnabled && (
           <label className="flex items-center gap-2 text-sm text-muted">
             Writing style
             <select
               className="field"
               value={settings.style ?? "neutral"}
+              disabled={isRecording || isProcessing}
               onChange={(event) =>
                 onUpdateSettings({ style: event.target.value as TranscriptStyle })
               }

@@ -66,6 +66,22 @@ it("offers installation for the selected missing speech model", async () => {
   await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith("0.6b"));
 });
 
+it.each([
+  ["Use Qwen3.5 0.8B", "smart_flow", "qwen3.5-0.8b"],
+  ["Use Qwen3.5 2B", "deep_context", "qwen3.5-2b"],
+  ["Use no LLM", "raw_verbatim", "none"],
+])("selects %s from its card without starting downloads", async (name, tier, model) => {
+  const install = vi.spyOn(api, "installIntelligenceModel").mockResolvedValue();
+  const { save } = await modelPage();
+  fireEvent.click(screen.getByRole("button", { name }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ intelligence_tier: tier, flow_model: model }),
+    ),
+  );
+  expect(install).not.toHaveBeenCalled();
+});
+
 it("does not reload or download a model after a failed settings save", async () => {
   const save = vi.fn().mockResolvedValue(false);
   const reload = vi.spyOn(api, "reloadModel").mockResolvedValue();

@@ -46,6 +46,7 @@ export interface IntelligenceDownloadEvent {
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<NavTab>("dictate");
+  const [settingsInitialPage, setSettingsInitialPage] = useState<"general" | "model">("general");
   const [noteDraft, setNoteDraft] = useState("");
   const [notesRevision, setNotesRevision] = useState(0);
   const [appState, setAppState] = useState<AppState>("READY");
@@ -418,7 +419,10 @@ export const App: React.FC = () => {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <Navigation
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={(tab) => {
+            if (tab === "settings") setSettingsInitialPage("general");
+            setActiveTab(tab);
+          }}
           appState={appState}
           modelStatus={modelStatus}
         />
@@ -432,6 +436,7 @@ export const App: React.FC = () => {
             (showOnboarding ? (
               <Onboarding
                 settings={settings}
+                intelligenceTiers={intelligence.intelligenceTiers}
                 modelStatus={modelStatus}
                 onUpdateSettings={handleUpdateSettings}
                 onComplete={() => {
@@ -442,6 +447,7 @@ export const App: React.FC = () => {
             ) : (
               <DictateHome
                 appState={appState}
+                intelligenceTiers={intelligence.intelligenceTiers}
                 settings={settings}
                 modelStatus={modelStatus}
                 transcript={transcript}
@@ -459,7 +465,10 @@ export const App: React.FC = () => {
                 onUpdateSettings={handleUpdateSettings}
                 fileTranscription={fileTranscription}
                 onOpenHistory={() => setActiveTab("history")}
-                onOpenSettings={() => setActiveTab("settings")}
+                onOpenSettings={() => {
+                  setSettingsInitialPage("model");
+                  setActiveTab("settings");
+                }}
               />
             ))}
 
@@ -481,6 +490,7 @@ export const App: React.FC = () => {
 
           {activeTab === "settings" && (
             <SettingsView
+              initialPage={settingsInitialPage}
               settings={settings}
               onUpdateSettings={handleUpdateSettings}
               modelStatus={modelStatus}

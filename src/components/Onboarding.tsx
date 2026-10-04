@@ -4,12 +4,15 @@ import { AppSettings, AudioDevice, ModelStatus, isModelReady } from "../types";
 import { api } from "../services/tauriApi";
 import { HotkeyPicker } from "./HotkeyPicker";
 import { RecognitionCheck } from "./RecognitionCheck";
+import { LlmSelector } from "./LlmSelector";
+import type { IntelligenceTierState } from "../types";
 
 interface OnboardingProps {
   settings: AppSettings;
   modelStatus: ModelStatus | null;
   onUpdateSettings: (settings: Partial<AppSettings>) => Promise<boolean> | void;
   onComplete: () => void;
+  intelligenceTiers?: IntelligenceTierState[] | null;
 }
 
 const STEPS = [
@@ -23,6 +26,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   modelStatus,
   onUpdateSettings: persistSettings,
   onComplete,
+  intelligenceTiers,
 }) => {
   const [step, setStep] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -31,14 +35,24 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   const [testedConfiguration, setTestedConfiguration] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const onUpdateSettings = async (changes: Partial<AppSettings>) => {
-    setTestedConfiguration(null);
+    if (
+      changes.asr ||
+      "microphone_device_id" in changes ||
+      "input_gain" in changes ||
+      "language" in changes
+    )
+      setTestedConfiguration(null);
     setSaving(true);
     setError(null);
     try {
-      if ((await persistSettings(changes)) === false)
+      if ((await persistSettings(changes)) === false) {
         setError("Settings could not be saved. Try again before testing recognition.");
+        return false;
+      }
+      return true;
     } catch (failure) {
       setError(`Settings could not be saved: ${String(failure)}`);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -279,6 +293,19 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 Finish unlocks after the speech model is ready and a recognition test succeeds.
               </p>
             )}
+            <div className="pt-4 border-t border-line space-y-2">
+              <h3 className="text-sm font-semibold text-ink">Optional AI writing cleanup</h3>
+              <p className="text-xs text-muted">
+                An ASR model turns speech into text. An LLM rewrites that text. You can finish setup
+                with no LLM and change it later on Home.
+              </p>
+              <LlmSelector
+                settings={settings}
+                onUpdateSettings={onUpdateSettings}
+                tiers={intelligenceTiers}
+                disabled={saving}
+              />
+            </div>
           </section>
         )}
 

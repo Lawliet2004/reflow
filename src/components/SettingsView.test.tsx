@@ -20,6 +20,23 @@ const intelligence: IntelligenceHub = {
   refreshCapabilities: () => {},
 };
 
+it("opens Performance directly when Home links to a model download", async () => {
+  render(
+    <SettingsView
+      initialPage="model"
+      settings={await api.getSettings()}
+      onUpdateSettings={vi.fn().mockResolvedValue(true)}
+      modelStatus={null}
+      onReloadModel={vi.fn()}
+      intelligence={intelligence}
+      onInstallRuntime={vi.fn()}
+      onRemoveRuntime={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("heading", { name: "Performance" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Use no LLM" })).toBeVisible();
+});
+
 it("restores the selected page and search focus after clearing an unmatched search", async () => {
   render(
     <SettingsView

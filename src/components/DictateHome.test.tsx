@@ -2,13 +2,14 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { DictateHome } from "./DictateHome";
 import { api } from "../services/tauriApi";
+import type { AppSettings } from "../types";
 
-async function home() {
+async function home(update = vi.fn(), overrides: Partial<AppSettings> = {}) {
   const settings = await api.getSettings();
   vi.spyOn(api, "getHistory").mockResolvedValue([]);
   return render(
     <DictateHome
-      settings={settings}
+      settings={{ ...settings, ...overrides }}
       appState="READY"
       modelStatus={null}
       transcript={{
@@ -23,13 +24,49 @@ async function home() {
       latencyPercentiles={null}
       onStartRecording={vi.fn()}
       onStopRecording={vi.fn()}
-      onUpdateSettings={vi.fn()}
+      onUpdateSettings={update}
       onOpenHistory={vi.fn()}
     />,
   );
 }
 
 describe("transcript actions", () => {
+  it("lets users choose either LLM or speech only without installing models", async () => {
+    const update = vi.fn();
+    const install = vi.spyOn(api, "installIntelligenceModel").mockResolvedValue();
+    await home(update);
+    const selector = screen.getByRole("combobox", { name: "LLM model" });
+    fireEvent.change(selector, { target: { value: "qwen3.5-2b" } });
+    expect(update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ intelligence_tier: "deep_context" }),
+    );
+    fireEvent.change(selector, { target: { value: "qwen3.5-0.8b" } });
+    expect(update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ intelligence_tier: "smart_flow" }),
+    );
+    fireEvent.change(selector, { target: { value: "none" } });
+    expect(update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ intelligence_tier: "raw_verbatim", flow_model: "none" }),
+    );
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("keeps the chosen LLM when changing cleanup intensity", async () => {
+    const update = vi.fn();
+    await home(update, { intelligence_tier: "deep_context", cleanup_level: "high" });
+    fireEvent.click(screen.getByRole("radio", { name: "Clean" }));
+    expect(update).toHaveBeenLastCalledWith({ cleanup_level: "light" });
+  });
+
+  it("shows writing style for light cleanup with an LLM and disables AI cleanup without one", async () => {
+    const view = await home(vi.fn(), { intelligence_tier: "smart_flow", cleanup_level: "light" });
+    expect(screen.getByRole("combobox", { name: "Writing style" })).toBeInTheDocument();
+    view.unmount();
+    await home(vi.fn(), { intelligence_tier: "raw_verbatim", cleanup_level: "light" });
+    expect(screen.queryByRole("combobox", { name: "Writing style" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Polished" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Refined" })).toBeDisabled();
+  });
   it("restores an edited transcript without changing the clipboard or another app", async () => {
     await home();
     fireEvent.change(screen.getByRole("textbox", { name: "Transcript" }), {
@@ -124,6 +161,7 @@ describe("transcript actions", () => {
     );
     expect(screen.getByRole("button", { name: "Start recording" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Transcript" })).toHaveAttribute("readonly");
+    expect(screen.getByRole("combobox", { name: "LLM model" })).toBeDisabled();
     expect(screen.getByText("Inserting your words")).toBeInTheDocument();
   });
 

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   AppSettings,
+  FlowModel,
   AsrSettings,
   Capabilities,
   IntelligenceTier,
@@ -33,6 +34,7 @@ import {
 } from "lucide-react";
 import type { IntelligenceDownloadEvent } from "../../App";
 import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
+import { LLM_NAMES, llmSelectionPatch, selectedLlm } from "../../llmSelection";
 
 interface Props {
   intelligence: IntelligenceHub;
@@ -87,6 +89,17 @@ export const ModelPage: React.FC<Props> = ({
   const [removing, setRemoving] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const { flowStatus, intelligenceTiers } = intelligence;
+  const [selectingLlm, setSelectingLlm] = useState(false);
+  const selectLlm = async (model: FlowModel) => {
+    setSelectingLlm(true);
+    try {
+      await onUpdateSettings(llmSelectionPatch(settings, model));
+    } catch {
+      intelligence.notifyToast("error", "The LLM choice could not be saved. Try again.");
+    } finally {
+      setSelectingLlm(false);
+    }
+  };
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
 
@@ -623,11 +636,31 @@ export const ModelPage: React.FC<Props> = ({
       <div className="pt-4 border-t border-line space-y-3">
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-accent" />
-          <h3 className="text-sm font-semibold text-ink">Intelligence &amp; Flow Engine</h3>
+          <h3 className="text-sm font-semibold text-ink">LLM model · optional writing cleanup</h3>
         </div>
         <p className="text-xs text-muted -mt-1">
-          Stage 2 LLM post-processing. Download the GGUF weights for the tier you want to enable.
+          Choose a model to rewrite your transcript locally, or use speech recognition alone.
+          Selecting a model does not download it. Use its Download button when you are ready.
         </p>
+
+        <button
+          type="button"
+          aria-label="Use no LLM"
+          aria-pressed={selectedLlm(settings) === "none"}
+          disabled={selectingLlm}
+          onClick={() => selectLlm("none")}
+          className={`w-full rounded-xl border p-4 text-left space-y-1 ${selectedLlm(settings) === "none" ? "border-accent bg-accent-soft" : "border-line bg-surface"}`}
+        >
+          <span className="flex items-center justify-between gap-2 text-sm font-semibold text-ink">
+            No LLM · speech only
+            {selectedLlm(settings) === "none" && (
+              <span className="text-xs text-accent">Selected</span>
+            )}
+          </span>
+          <span className="block text-xs text-muted">
+            Speech recognition and basic cleanup. No LLM download required.
+          </span>
+        </button>
 
         {(["smart_flow", "deep_context"] as IntelligenceTier[]).map((tier) => {
           const meta = INTELLIGENCE_TIERS[tier];
@@ -637,7 +670,7 @@ export const ModelPage: React.FC<Props> = ({
           const installed = ggufInstalled && runtimeInstalled;
           const showRuntimeMissing = ggufInstalled && !runtimeInstalled;
           const downloading = isIntelligenceDownloading(tier);
-          const isActive = settings.intelligence_tier === tier;
+          const isActive = selectedLlm(settings) === meta.modelId;
           const isRemoving = removingIntelligence === tier;
           const icon =
             tier === "smart_flow" ? (
@@ -652,7 +685,14 @@ export const ModelPage: React.FC<Props> = ({
                 isActive ? "border-accent bg-accent-soft" : "border-line bg-surface"
               }`}
             >
-              <div className="flex items-start gap-3">
+              <button
+                type="button"
+                className="flex items-start gap-3 w-full text-left rounded-lg"
+                aria-label={tier === "smart_flow" ? "Use Qwen3.5 0.8B" : "Use Qwen3.5 2B"}
+                aria-pressed={isActive}
+                disabled={selectingLlm}
+                onClick={() => selectLlm(meta.modelId)}
+              >
                 <div
                   className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
                     isActive ? "bg-accent text-white" : "bg-surface-2 text-ink-2"
@@ -662,16 +702,22 @@ export const ModelPage: React.FC<Props> = ({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-sm font-semibold text-ink">{meta.label}</p>
+                    <span className="text-sm font-semibold text-ink">
+                      {LLM_NAMES[meta.modelId]}
+                    </span>
                     {isActive && (
                       <span className="text-2xs font-bold tracking-wider px-1.5 py-0.5 rounded bg-accent text-white">
-                        ACTIVE
+                        SELECTED
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-muted mt-0.5 break-all">{meta.modelFile}</p>
+                  <span className="block text-xs text-muted mt-0.5">
+                    {isActive
+                      ? "Used for your next dictation when installed."
+                      : "Click to use this model."}
+                  </span>
                 </div>
-              </div>
+              </button>
 
               <div className="flex items-center justify-between gap-3 text-xs text-muted">
                 <span>
@@ -706,27 +752,29 @@ export const ModelPage: React.FC<Props> = ({
                 )}
               </div>
 
-              {installed && flowStatus?.ready && isActive && (
-                <div className="text-2xs text-muted bg-base-2/60 border border-line rounded-md px-2.5 py-1.5 leading-snug">
-                  Loaded on {flowStatus.backend || "runtime"}
-                  {flowStatus.n_gpu_layers !== undefined && (
-                    <>
-                      {" "}
-                      · {flowStatus.n_gpu_layers}
-                      {flowStatus.mode === "gpu" ? "/99 layers" : " layers"}
-                      {flowStatus.mode === "gpu" && flowStatus.vram_used_mb
-                        ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB VRAM`
-                        : ""}
-                    </>
-                  )}
-                </div>
-              )}
+              {installed &&
+                flowStatus?.ready &&
+                flowStatus.active_model === meta.modelId &&
+                isActive && (
+                  <div className="text-2xs text-muted bg-base-2/60 border border-line rounded-md px-2.5 py-1.5 leading-snug">
+                    Loaded on {flowStatus.backend || "runtime"}
+                    {flowStatus.n_gpu_layers !== undefined && (
+                      <>
+                        {" "}
+                        · {flowStatus.n_gpu_layers}
+                        {flowStatus.mode === "gpu" ? "/99 layers" : " layers"}
+                        {flowStatus.mode === "gpu" && flowStatus.vram_used_mb
+                          ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB VRAM`
+                          : ""}
+                      </>
+                    )}
+                  </div>
+                )}
 
               {showRuntimeMissing && (
                 <p className="text-2xs text-warning leading-snug">
-                  Weights are downloaded, but the <code>llama-server</code> runtime is missing from{" "}
-                  <code>~/AppData/Roaming/reflow/bin/</code>. The tier can&rsquo;t run until the
-                  runtime is installed.
+                  This model is downloaded, but its writing runtime is missing. Install the runtime
+                  below to use it.
                 </p>
               )}
               {downloading && (

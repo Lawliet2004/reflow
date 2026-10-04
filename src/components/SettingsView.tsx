@@ -25,6 +25,7 @@ interface SettingsViewProps {
   intelligence: IntelligenceHub;
   onInstallRuntime: () => void;
   onRemoveRuntime: () => void;
+  initialPage?: "general" | "model";
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -35,6 +36,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   intelligence,
   onInstallRuntime,
   onRemoveRuntime,
+  initialPage = "general",
 }) => {
   const {
     intelligenceDownload,
@@ -43,7 +45,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     runtimeDownloadActive,
     runtimeDownloadError,
   } = intelligence;
-  const [selectedPage, setPage] = useState<string>("general");
+  const [selectedPage, setPage] = useState<string>(initialPage);
   const [query, setQuery] = useState("");
   const searchInput = useRef<HTMLInputElement>(null);
   const [pendingSaves, setPendingSaves] = useState(0);

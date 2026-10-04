@@ -1,7 +1,48 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { api } from "../services/tauriApi";
 import { Onboarding } from "./Onboarding";
+
+it("allows speech-only setup and preserves a recognition check when choosing an optional LLM", async () => {
+  const settings = await api.getSettings();
+  const status = await api.getModelStatus();
+  const save = vi.fn().mockResolvedValue(true);
+  const complete = vi.fn();
+  const install = vi.spyOn(api, "installIntelligenceModel").mockResolvedValue();
+  vi.spyOn(api, "testRecognition").mockResolvedValue({
+    text: "Ready to dictate",
+    language: "en",
+    health: {
+      device: "Mic",
+      duration_ms: 3000,
+      peak: 0.5,
+      rms: 0.1,
+      clipped_pct: 0,
+      dropped_chunks: 0,
+      assessment: "Healthy",
+    },
+  });
+  render(
+    <Onboarding
+      settings={settings}
+      modelStatus={{ ...status, installed: true, loaded: true, is_loading: false }}
+      onUpdateSettings={save}
+      onComplete={complete}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Test recognition" }));
+  await screen.findByText("Ready to dictate");
+  fireEvent.change(screen.getByRole("combobox", { name: "LLM model" }), {
+    target: { value: "none" },
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled());
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ intelligence_tier: "raw_verbatim" }));
+  expect(install).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Finish" }));
+  expect(complete).toHaveBeenCalledOnce();
+});
 
 it("requires usable recognition rather than only installed weights before finishing", async () => {
   const settings = await api.getSettings();
