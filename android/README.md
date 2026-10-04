@@ -19,6 +19,8 @@ gradlew.bat assembleDebug
 
 Requires JDK 17 and Android SDK 35. The Gradle wrapper jar is included.
 
+GitHub releases include a signed companion APK beginning with 0.3.0. Install the APK directly on Android 8+ and pair it with the desktop. This is not a standalone on-device speech recognizer or a Play Store listing. Release CI signs with the persistent repository secrets `ANDROID_KEYSTORE_BASE64` and `ANDROID_KEYSTORE_PASSWORD`, using key alias `reflow`; never rotate that identity casually, since installed apps require the same key for updates. An older debug APK may require uninstalling before switching to this release key.
+
 Run local lifecycle/network regressions with `gradlew.bat testDebugUnitTest`. These mock the microphone hardware boundary; they do not replace device tests for permission prompts, rotation, microphone unplugging, foreground-service behavior, or network interruption.
 
 Speech-language options are packaged from the same `model-runtime/languages.json` catalog used by the desktop. Existing unsupported language preferences return to automatic detection.

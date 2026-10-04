@@ -98,6 +98,14 @@ test("macOS distribution is gated until dictation parity is verified", () => {
   );
 });
 
+test("an explicitly requested macOS preview produces a real DMG plan", () => {
+  const plan = helper.buildPlan({ platform: "darwin", root, allowMacosPreview: true });
+  assert.deepEqual(plan.args.slice(1), ["build", "--bundles", "dmg"]);
+  assert.deepEqual(plan.artifactExtensions, [".dmg"]);
+  const plist = fs.readFileSync(path.join(root, "src-tauri", "Info.plist"), "utf8");
+  assert.match(plist, /NSMicrophoneUsageDescription/);
+});
+
 test("Linux plans request real deb/AppImage bundles and frontend skip is explicit", () => {
   const plan = helper.buildPlan({
     platform: "linux",
@@ -162,7 +170,7 @@ test("failed or mismatched Tauri command cannot generate checksums or claim succ
         helper.execute(plan, () => {
           throw new Error("Unexpected build");
         }),
-      /matching Windows\/Linux host/,
+      /matching Windows\/Linux\/macOS host/,
     );
     return;
   }

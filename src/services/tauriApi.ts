@@ -308,7 +308,7 @@ export const api = {
       per_day: [],
     }),
   repasteLast: () => safeInvoke<boolean>("repaste_last"),
-  getAppVersion: () => safeInvoke<string>("get_app_version", undefined, "0.2.0"),
+  getAppVersion: () => safeInvoke<string>("get_app_version", undefined, "0.3.0"),
   openReleases: () => safeInvoke<void>("open_releases"),
   getNetworkJournal: () =>
     safeInvoke<{ timestamp: string; host: string; bytes: number }[]>(

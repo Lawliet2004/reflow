@@ -12,10 +12,33 @@ jobs:
   validate:
     uses: ./.github/workflows/ci.yml
 
-  publish-tauri:
+  prepare-release:
     needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node scripts/release.cjs verify-version "$GITHUB_REF_NAME")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+            --title "Reflow $version" --notes-file "docs/release-$version.md"
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id")
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+  publish-tauri:
+    needs: prepare-release
     name: Build ${{ matrix.name }} installer
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -26,70 +49,95 @@ jobs:
           - name: Windows
             platform: windows-latest
             bundles: nsis,msi
-          # macOS remains a compile/test target in ci.yml. Public installers are
-          # gated until native dictation/hotkey/startup parity is verified.
-
+          - name: macOS Apple Silicon preview
+            platform: macos-latest
+            bundles: dmg
+          - name: macOS Intel preview
+            platform: macos-15-intel
+            bundles: dmg
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux bundle dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libasound2-dev \
-            libxdo-dev \
-            libssl-dev \
-            patchelf \
-            pkg-config
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libasound2-dev libxdo-dev libssl-dev patchelf pkg-config
+      - run: npm ci
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
-      - name: Frontend lint
-        run: npm run lint
-      - name: Frontend regressions
-        run: npm run test
-      - name: Packaging and scoped shutdown regressions
-        run: node --test scripts/package.test.cjs scripts/kill-running.test.cjs
-      - name: Rust regressions before creating draft installers
+      # This also covers the Intel Mac host, which is not in the reusable CI matrix.
+      - name: Platform regressions before bundling
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests
-
-      - name: Build and publish installers
+      - name: Build and upload desktop installers to draft
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Reflow ${{ github.ref_name }}
-          releaseBody: |
-            Download the installer for your operating system below.
-
-            - Linux: `.deb` or `.AppImage`
-            - Windows: `.msi` or NSIS `.exe`
-            Linux X11 supports clipboard injection. On Wayland, compositor permissions/tools can require manual paste.
-            macOS development builds currently offer clipboard/manual-copy fallback and are not included as supported dictation installers.
-          releaseDraft: true
-          prerelease: false
-          generateReleaseNotes: true
-          releaseAssetNamePattern: Reflow-[platform]-[arch][ext]
+          releaseId: ${{ needs.prepare-release.outputs.release_id }}
           args: --bundles ${{ matrix.bundles }}
+
+  publish-android:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build release APK and run Android regressions
+        working-directory: android
+        run: >-
+          java -classpath gradle/wrapper/gradle-wrapper.jar
+          org.gradle.wrapper.GradleWrapperMain --no-daemon --console=plain
+          testDebugUnitTest lintRelease assembleRelease
+      - name: Sign, verify and upload Android companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/reflow-release.jks"
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          "$tools/zipalign" -f -p 4 android/app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
+          apk="$RUNNER_TEMP/Reflow-$VERSION-android.apk"
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/reflow-release.jks" --ks-key-alias reflow \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --out "$apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify --verbose "$apk"
+          gh release upload "$GITHUB_REF_NAME" "$apk" --clobber
+
+  publish-release:
+    needs: [prepare-release, publish-tauri, publish-android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify every installer and publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --dir release-downloads
+          node scripts/release.cjs verify-assets release-downloads "$VERSION"
+          gh release upload "$GITHUB_REF_NAME" release-downloads/SHA256SUMS.txt --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

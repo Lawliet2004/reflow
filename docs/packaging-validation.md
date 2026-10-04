@@ -1,5 +1,7 @@
 # Packaging, process ownership and platform gates
 
+**0.3.0 release update:** Explicitly requested macOS preview DMGs now build for both Apple Silicon and Intel. They retain the clipboard/manual-copy limitations below and use ad-hoc signing, with a microphone usage description. The local helper requires `--macos-preview` to opt into that preview; the default macOS parity gate remains. Tag releases now publish Windows, Linux, both macOS previews and a signed Android companion only after reusable CI, platform builds, APK signature verification and the complete installer/checksum inventory succeed. See [0.3.0 release notes](release-0.3.0.md) for user-facing limits. The historical validation record below describes the earlier 0.2.0 packaging slice.
+
 Implemented 1 October 2026. These changes address the packaging/process-termination findings in the backend audit and add the missing Android and macOS compilation gates.
 
 ## Installer commands

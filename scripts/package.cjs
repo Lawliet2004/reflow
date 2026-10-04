@@ -11,8 +11,9 @@ function buildPlan({
   root = repositoryRoot,
   skipFrontendBuild = false,
   environment = process.env,
+  allowMacosPreview = false,
 } = {}) {
-  if (platform === "darwin")
+  if (platform === "darwin" && !allowMacosPreview)
     throw new Error(
       "macOS distribution is gated until dictation parity is verified; development builds retain clipboard/manual-copy fallback.",
     );
@@ -27,7 +28,9 @@ function buildPlan({
             ["deb", ".deb"],
             ["appimage", ".AppImage"],
           ]
-        : null;
+        : platform === "darwin"
+          ? [["dmg", ".dmg"]]
+          : null;
   if (!formats) throw new Error(`Unsupported packaging platform: ${platform}`);
   const args = [
     path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js"),
@@ -91,7 +94,7 @@ function writeChecksums(artifacts) {
 function execute(plan, run = spawnSync) {
   if (plan.platform !== process.platform)
     throw new Error(
-      "Build installers on their matching Windows/Linux host; cross-platform dry-run plans are available.",
+      "Build installers on their matching Windows/Linux/macOS host; cross-platform dry-run plans are available.",
     );
   if (!fs.existsSync(plan.args[0]))
     throw new Error("Install the locked frontend dependencies with npm ci before packaging.");
@@ -121,17 +124,19 @@ function main(args) {
   let platform = process.platform;
   let skipFrontendBuild = false;
   let dryRun = false;
+  let allowMacosPreview = false;
   for (let index = 0; index < args.length; index++) {
     if (args[index] === "--platform") platform = args[++index];
     else if (args[index] === "--skip-frontend-build") skipFrontendBuild = true;
     else if (args[index] === "--dry-run") dryRun = true;
+    else if (args[index] === "--macos-preview") allowMacosPreview = true;
     else if (args[index] === "--sign-binaries")
       throw new Error(
         "This helper does not implement signing. Configure reviewed Tauri signing before building.",
       );
     else throw new Error(`Unknown packaging option: ${args[index]}`);
   }
-  const plan = buildPlan({ platform, skipFrontendBuild });
+  const plan = buildPlan({ platform, skipFrontendBuild, allowMacosPreview });
   if (dryRun) console.log(JSON.stringify(plan, null, 2));
   else execute(plan);
 }

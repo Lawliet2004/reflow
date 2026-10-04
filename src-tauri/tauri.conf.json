@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Reflow",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.reflow.app",
   "build": {
     "frontendDist": "../dist",
@@ -72,6 +72,9 @@
     "category": "Utility",
     "shortDescription": "Local dictation for Windows and Linux",
     "longDescription": "Reflow is a local-first desktop dictation app. Speech stays on your computer and is transcribed with Qwen3-ASR.",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "linux": {
       "deb": {
         "depends": [
