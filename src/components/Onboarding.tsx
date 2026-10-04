@@ -83,9 +83,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
       await api.installModel(settings.asr.model);
     } catch (e) {
       console.error("Model install failed:", e);
-      setError(
-        "The model could not be installed. Check your connection and available disk space, then try again.",
-      );
+      setError(`Could not download the speech model: ${String(e)}`);
     } finally {
       setInstalling(false);
     }
@@ -262,9 +260,18 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 onClick={downloadModel}
                 disabled={installing}
               >
-                <Download className="w-4 h-4" />
-                Download model
+                {installing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+                {installing ? "Starting download…" : "Download model"}
               </button>
+            )}
+            {!installing && !downloading && !ready && modelStatus?.error && (
+              <p role="alert" className="text-sm text-danger">
+                Speech model error: {modelStatus.error}
+              </p>
             )}
             {installed && !ready && !modelStatus?.is_loading && (
               <button
