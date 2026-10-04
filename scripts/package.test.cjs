@@ -104,6 +104,15 @@ test("an explicitly requested macOS preview produces a real DMG plan", () => {
   assert.deepEqual(plan.artifactExtensions, [".dmg"]);
   const plist = fs.readFileSync(path.join(root, "src-tauri", "Info.plist"), "utf8");
   assert.match(plist, /NSMicrophoneUsageDescription/);
+  const config = JSON.parse(
+    fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"),
+  );
+  const entitlements = fs.readFileSync(
+    path.join(root, "src-tauri", config.bundle.macOS.entitlements),
+    "utf8",
+  );
+  assert.match(entitlements, /com.apple.security.device.audio-input/);
+  assert.match(entitlements, /<true\/>/);
 });
 
 test("Linux plans request real deb/AppImage bundles and frontend skip is explicit", () => {

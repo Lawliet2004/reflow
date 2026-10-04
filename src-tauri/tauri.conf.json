@@ -73,7 +73,8 @@
     "shortDescription": "Local dictation for Windows and Linux",
     "longDescription": "Reflow is a local-first desktop dictation app. Speech stays on your computer and is transcribed with Qwen3-ASR.",
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist"
     },
     "linux": {
       "deb": {
