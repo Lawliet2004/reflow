@@ -60,6 +60,8 @@ mod tests {
     #[test]
     fn conflicts_are_reported_before_registration() {
         let mut s = AppSettings::default();
+        // Use a key-bearing binding so every platform reaches conflict detection.
+        s.hotkeys.dictation = "Ctrl+Shift+Space".into();
         s.hotkeys.command = Some(s.hotkeys.dictation.clone());
         assert!(HotkeyRegistry::from_settings(&s)
             .unwrap_err()

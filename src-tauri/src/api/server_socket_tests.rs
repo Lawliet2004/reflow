@@ -306,7 +306,9 @@ async fn websocket_processing_final_reaches_owner_once() {
         .await
         .unwrap();
     control.complete.store(true, Ordering::Release);
-    let final_message = tokio::time::timeout(Duration::from_secs(3), receive_text(&mut socket))
+    // Completion includes cold hardware probes (each allows five seconds) and
+    // history writes. This checks delivery/ownership, not a latency benchmark.
+    let final_message = tokio::time::timeout(Duration::from_secs(30), receive_text(&mut socket))
         .await
         .unwrap();
     assert_eq!(final_message["type"], "final");
