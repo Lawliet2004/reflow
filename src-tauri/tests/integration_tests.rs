@@ -124,7 +124,13 @@ fn test_settings_store_persistence() {
 
 #[test]
 fn test_legacy_settings_json_defaults_api_fields() {
-    let mut value = serde_json::to_value(reflow_lib::settings::AppSettings::default()).unwrap();
+    let legacy = reflow_lib::settings::AppSettings {
+        cleanup_level: "light".into(),
+        style: "neutral".into(),
+        auto_style_from_app: true,
+        ..Default::default()
+    };
+    let mut value = serde_json::to_value(legacy).unwrap();
     let obj = value.as_object_mut().unwrap();
     obj.remove("api_enabled");
     obj.remove("api_bind");
@@ -136,6 +142,8 @@ fn test_legacy_settings_json_defaults_api_fields() {
     assert_eq!(loaded.api_port, 7840);
     assert_eq!(loaded.api_bind, "lan");
     assert_eq!(loaded.cleanup_level, "light");
+    assert_eq!(loaded.style, "neutral");
+    assert!(loaded.auto_style_from_app);
     assert!(!loaded.developer_mode);
 }
 
@@ -143,11 +151,12 @@ fn test_legacy_settings_json_defaults_api_fields() {
 fn test_default_settings_are_tray_first() {
     let s = reflow_lib::settings::AppSettings::default();
     assert!(!s.developer_mode);
-    assert_eq!(s.style, "neutral");
+    assert_eq!(s.style, "faithful");
+    assert!(!s.auto_style_from_app);
     // The default tier performs LLM refinement, so the default cleanup level
     // has to be one that does not short-circuit Stage 2.
-    assert_eq!(s.cleanup_level, "light");
-    assert_eq!(s.resolved_cleanup_level(), "light");
+    assert_eq!(s.cleanup_level, "medium");
+    assert_eq!(s.resolved_cleanup_level(), "medium");
     assert!(s.resolve_intent().run_llm);
 }
 

@@ -29,7 +29,7 @@ const PRESET_OPTIONS: PresetOption[] = [
     badge: "Recommended",
     description:
       "Prioritizes throughput using hardware, memory headroom and measured ASR performance.",
-    icon: <Sparkles className="w-5 h-5 text-accent" />,
+    icon: <Sparkles className="w-4 h-4" />,
   },
   {
     id: "fast",
@@ -37,14 +37,14 @@ const PRESET_OPTIONS: PresetOption[] = [
     title: "Fast",
     description:
       "Uses the smallest installed speech model and deterministic cleanup without the LLM wait.",
-    icon: <Zap className="w-5 h-5 text-warning" />,
+    icon: <Zap className="w-4 h-4" />,
   },
   {
     id: "balanced",
     shortcut: "3",
     title: "Balanced",
     description: "Balances speech accuracy and memory use while keeping your chosen cleanup level.",
-    icon: <ShieldCheck className="w-5 h-5 text-success" />,
+    icon: <ShieldCheck className="w-4 h-4" />,
   },
   {
     id: "accurate",
@@ -52,7 +52,7 @@ const PRESET_OPTIONS: PresetOption[] = [
     title: "Accurate",
     description:
       "Prefers the larger installed speech model when memory allows. Keeps your chosen cleanup level.",
-    icon: <Cpu className="w-5 h-5 text-indigo-500" />,
+    icon: <Cpu className="w-4 h-4" />,
   },
   {
     id: "custom",
@@ -60,7 +60,7 @@ const PRESET_OPTIONS: PresetOption[] = [
     title: "Custom",
     description:
       "Fine-grained manual control over models, compute devices, precision, and GPU layer offload.",
-    icon: <Sliders className="w-5 h-5 text-muted" />,
+    icon: <Sliders className="w-4 h-4" />,
   },
 ];
 
@@ -129,7 +129,7 @@ export function PresetSelector({
       <div
         role="radiogroup"
         aria-label="Hardware intelligence presets"
-        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"
+        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2"
       >
         {PRESET_OPTIONS.map((opt, index) => {
           const isSelected = selectedPreset === opt.id;
@@ -144,29 +144,26 @@ export function PresetSelector({
               onClick={() => onSelectPreset(opt.id)}
               onKeyDown={(e) => handleKeyDown(e, index)}
               className={cn(
-                "relative flex flex-col p-4 rounded-xl border transition-colors cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900",
+                "relative flex flex-col p-3 rounded-[var(--radius-control)] border transition-colors cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                 isSelected
-                  ? "bg-accent-soft border-accent shadow-sm ring-1 ring-accent"
+                  ? "bg-accent-soft border-accent"
                   : "bg-surface border-line hover:border-line-strong",
               )}
             >
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2 font-medium text-ink">
-                  {opt.icon}
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex items-center gap-2 text-sm font-medium text-ink">
+                  <span aria-hidden className={isSelected ? "text-accent" : "text-muted"}>
+                    {opt.icon}
+                  </span>
                   <span>{opt.title}</span>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <kbd className="px-1.5 py-0.5 text-2xs font-mono rounded bg-base-2 text-muted border border-line">
-                    {opt.shortcut}
-                  </kbd>
-                  {opt.badge ? (
-                    <Badge variant="primary" size="sm">
-                      {opt.badge}
-                    </Badge>
-                  ) : null}
-                </div>
+                {opt.badge ? (
+                  <Badge variant="primary" size="sm">
+                    {opt.badge}
+                  </Badge>
+                ) : null}
               </div>
-              <p id={descId} className="text-xs text-ink-2 leading-relaxed flex-1">
+              <p id={descId} className="text-xs text-muted leading-relaxed flex-1">
                 {opt.description}
               </p>
             </div>
@@ -175,10 +172,7 @@ export function PresetSelector({
       </div>
 
       {profilePreview ? (
-        <div
-          aria-live="polite"
-          className="p-4 rounded-xl bg-surface-2 border border-line text-xs space-y-2"
-        >
+        <div aria-live="polite" className="text-xs space-y-3">
           <div className="flex items-center justify-between font-medium text-ink-2">
             <span>Current hardware plan</span>
             {loading ? (
@@ -192,34 +186,32 @@ export function PresetSelector({
               </Badge>
             )}
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1 text-ink-2">
+          <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2">
             <div>
-              <span className="text-muted block">ASR Model:</span>
-              <span className="font-medium text-ink">{profilePreview.asr_model}</span>
+              <dt className="text-muted">Speech model</dt>
+              <dd className="font-medium text-ink tabular-nums">{profilePreview.asr_model}</dd>
             </div>
             <div>
-              <span className="text-muted block">Precision:</span>
-              <span className="font-medium text-ink">
+              <dt className="text-muted">Precision</dt>
+              <dd className="font-medium text-ink tabular-nums">
                 {profilePreview.asr_precision.toUpperCase()}
-              </span>
+              </dd>
             </div>
             <div>
-              <span className="text-muted block">Refinement:</span>
-              <span className="font-medium text-ink">
+              <dt className="text-muted">Writing model</dt>
+              <dd className="font-medium text-ink tabular-nums">
                 {profilePreview.refinement_model || "None (ASR-only)"}
-              </span>
+              </dd>
             </div>
             <div>
-              <span className="text-muted block">Context / CPU threads:</span>
-              <span className="font-medium text-ink">
-                {profilePreview.context_size} tokens / {profilePreview.inference_threads}
-              </span>
+              <dt className="text-muted">Context · threads</dt>
+              <dd className="font-medium text-ink tabular-nums">
+                {profilePreview.context_size} · {profilePreview.inference_threads}
+              </dd>
             </div>
-          </div>
+          </dl>
           {profilePreview.error && (
-            <ul className="pt-2 space-y-1 border-t border-danger/30">
-              <li className="text-danger font-medium">{profilePreview.error}</li>
-            </ul>
+            <p className="text-danger font-medium">{profilePreview.error}</p>
           )}
           {profilePreview.reasons.length > 0 && (
             <ul className="pt-2 space-y-1 border-t border-line">

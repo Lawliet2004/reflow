@@ -5,7 +5,7 @@ use parking_lot::RwLock;
 use serde_json::{json, Value};
 
 use super::prompt::build_messages;
-use super::safety::accept_rewrite;
+use super::safety::{accept_rewrite, preserves_item_words};
 
 pub const CIRCUIT_BREAKER_MAX_FAILURES: usize = 3;
 pub const CIRCUIT_BREAKER_RESET_DURATION: Duration = Duration::from_secs(300); // 5 minutes
@@ -475,6 +475,7 @@ fn flow_http() -> Result<&'static (tokio::runtime::Runtime, reqwest::Client), St
             // call site, which is what makes a single shared client usable by
             // callers with different deadlines.
             let client = reqwest::Client::builder()
+                .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .pool_idle_timeout(Duration::from_secs(300))
                 .build()
@@ -574,7 +575,54 @@ fn strip_think(text: &str) -> String {
     out.trim().to_string()
 }
 
-/// Outcome of a polishing attempt.
+// Conservative sentence boundaries: a false negative keeps the full transcript
+// through fallback, while a false positive can detach a name or instruction.
+fn is_sentence_boundary(source: &str, index: usize, ch: char) -> bool {
+    if matches!(ch, '。' | '！' | '？') {
+        return true;
+    }
+    let end = index + ch.len_utf8();
+    if !matches!(ch, '.' | '!' | '?') || !source[end..].starts_with(char::is_whitespace) {
+        return false;
+    }
+    if ch != '.' {
+        return true;
+    }
+    let token = source[..index]
+        .split_whitespace()
+        .next_back()
+        .unwrap_or_default()
+        .trim_start_matches(['(', '[', '\'', '"']);
+    let initial = token.chars().count() == 1 && token.chars().all(char::is_alphabetic);
+    let dotted_abbreviation =
+        token.contains('.') && token.chars().all(|c| c.is_ascii_alphabetic() || c == '.');
+    let abbreviation = matches!(
+        token.to_ascii_lowercase().as_str(),
+        "dr" | "mr" | "mrs" | "ms" | "prof" | "st" | "sr" | "jr" | "etc" | "vs"
+    );
+    !initial && !dotted_abbreviation && !abbreviation
+}
+
+/// Splits "• item" / "3. item" into its marker and its text. The item is
+/// rewritten with the marker stripped and re-attached afterwards, so the model
+/// only ever sees the item itself.
+fn split_list_marker(line: &str) -> (&str, &str) {
+    for marker in ["• ", "- ", "* "] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            return (marker, rest);
+        }
+    }
+    let digits = line.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0
+        && matches!(line.as_bytes().get(digits), Some(b'.' | b')'))
+        && line.as_bytes().get(digits + 1) == Some(&b' ')
+    {
+        return (&line[..digits + 2], &line[digits + 2..]);
+    }
+    ("", line)
+}
+
+/// Rewrite each complete section, returning no partial result on failure.
 fn rewrite_segments(
     source: &str,
     level: &str,
@@ -593,38 +641,104 @@ fn rewrite_segments(
         if remaining.is_zero() || *attempts >= 64 {
             return Err("Paragraph refinement reached its total deadline or segment limit; original transcript preserved.".into());
         }
+        // Keep dictated line breaks as hard boundaries. A whole-text rewrite
+        // can move a paragraph while retaining the same number of newlines.
+        if source.contains('\n') {
+            let mut lines = Vec::new();
+            for line in source.split('\n') {
+                if line.trim().is_empty() {
+                    lines.push(line.to_owned());
+                } else {
+                    let leading = line.len() - line.trim_start().len();
+                    let trailing = line.trim_end().len();
+                    let rewritten = visit(line.trim(), level, started, budget, attempts, rewrite)?;
+                    lines.push(format!(
+                        "{}{rewritten}{}",
+                        &line[..leading],
+                        &line[trailing..]
+                    ));
+                }
+            }
+            return Ok(lines.join("\n"));
+        }
         *attempts += 1;
-        match rewrite(source, remaining) {
-            Ok(candidate) => accept_rewrite(source, &candidate, level)
-                .ok_or_else(|| "LLM rewrite rejected by safety gate".into()),
+        // ponytail: one request per list line, so latency scales with the item
+        // count. Upgrade path: rewrite a contiguous list block in one call and
+        // validate that line and marker counts are unchanged.
+        let (marker, body) = split_list_marker(source);
+        let result = match rewrite(body, remaining) {
+            Ok(candidate) => {
+                let mut candidate = candidate;
+                // A bullet item is a fragment: keep it unpunctuated unless the
+                // dictated item already ended with a period.
+                if !marker.is_empty() && !body.ends_with('.') && candidate.ends_with('.') {
+                    candidate.pop();
+                }
+                // A lead-in ends in a colon; the model tends to "." it back
+                // into an ordinary sentence.
+                if body.ends_with(':') {
+                    // The caller owns the existing marker. Keep the model from
+                    // numbering the header itself despite the fragment rule.
+                    candidate = split_list_marker(&candidate).1.to_owned();
+                    if candidate.ends_with('.') {
+                        candidate.pop();
+                    }
+                    if !candidate.ends_with(':') {
+                        candidate.push(':');
+                    }
+                }
+                if !marker.is_empty() && !preserves_item_words(body, &candidate) {
+                    return Err(
+                        "LLM changed a listed item's content; original transcript preserved."
+                            .into(),
+                    );
+                }
+                accept_rewrite(body, &candidate, level)
+                    .map(|text| format!("{marker}{text}"))
+                    .ok_or_else(|| "LLM rewrite rejected by safety gate".into())
+            }
             Err(error) if error.starts_with("flow rewrite input too long") => {
                 // Split only at paragraph/sentence boundaries. Never split a long
                 // sentence arbitrarily: that could detach a negation from its verb.
-                let middle = source.len() / 2;
-                let boundary = source
+                let middle = body.len() / 2;
+                let boundary = body
                     .char_indices()
                     .filter_map(|(index, ch)| {
                         let end = index + ch.len_utf8();
-                        (matches!(ch, '\n' | '.' | '!' | '?' | '。' | '！' | '？')
-                            && end < source.len()
-                            && !source[end..].trim().is_empty())
+                        (is_sentence_boundary(body, index, ch)
+                            && end < body.len()
+                            && !body[end..].trim().is_empty())
                         .then_some(end)
                     })
                     .min_by_key(|end| end.abs_diff(middle));
                 let Some(boundary) = boundary else {
                     return Err(error);
                 };
-                let left = &source[..boundary];
-                let right = &source[boundary..];
+                let left = &body[..boundary];
+                let right = &body[boundary..];
                 let leading = right.len() - right.trim_start().len();
                 let left_trimmed = left.trim_end();
-                let separator = &source[left_trimmed.len()..boundary + leading];
+                let separator = &body[left_trimmed.len()..boundary + leading];
                 let first = visit(left_trimmed, level, started, budget, attempts, rewrite)?;
                 let second = visit(&right[leading..], level, started, budget, attempts, rewrite)?;
-                Ok(format!("{first}{separator}{second}"))
+                Ok(format!("{marker}{first}{separator}{second}"))
             }
             Err(error) => Err(error),
+        };
+        // Each existing item and its lead-in are already one structural line.
+        // Expanding a fragment can duplicate the whole list while still sharing
+        // enough words to pass the meaning checks. Full prose can still gain
+        // paragraphs or become a list when its input has no marker/ending colon.
+        if (!marker.is_empty() || body.ends_with(':'))
+            && result
+                .as_ref()
+                .is_ok_and(|candidate| candidate.contains(['\n', '\r']))
+        {
+            return Err(
+                "LLM expanded an existing list fragment; original transcript preserved.".into(),
+            );
         }
+        result
     }
     visit(source, level, Instant::now(), budget, &mut 0, rewrite)
 }
@@ -639,6 +753,15 @@ pub fn polish_or_fallback(
     client: &FlowClient,
     smart_text: &str,
     req: &RewriteRequest,
+) -> PolishOutcome {
+    polish_with_context_or_fallback(client, smart_text, req, &[])
+}
+
+pub(crate) fn polish_with_context_or_fallback(
+    client: &FlowClient,
+    smart_text: &str,
+    req: &RewriteRequest,
+    inputs: &[(&str, String)],
 ) -> PolishOutcome {
     *client.generation.write() = GenerationMetrics::default();
     let level = req.cleanup_level.trim().to_ascii_lowercase();
@@ -674,10 +797,15 @@ pub fn polish_or_fallback(
         };
     }
 
-    // Nothing to gain: skip the round trip rather than spend ~400 ms risking a
-    // change to text that is already finished. Not an error — the transcript is
-    // returned exactly as Stage 1 produced it.
-    if super::safety::polish_would_add_nothing(smart_text) {
+    // Only minimal cleanup may skip already-punctuated short text. Casing and
+    // terminal punctuation cannot prove grammar or repeated phrases are right;
+    // natural/writing/developer tasks must receive their requested edit.
+    if level == "light"
+        && inputs.is_empty()
+        && req.dictation_mode == "normal"
+        && !req.style.eq_ignore_ascii_case("email")
+        && super::safety::polish_would_add_nothing(smart_text)
+    {
         log::debug!("Skipping polish: Stage 1 output is already clean");
         return PolishOutcome {
             final_text: smart_text.to_string(),
@@ -696,9 +824,64 @@ pub fn polish_or_fallback(
             effective.text = part.to_owned();
             let mut bounded = client.clone();
             bounded.timeout = remaining;
-            bounded.rewrite(&effective)
+            let mut messages = build_messages(&effective);
+            let list_fragment = if part.ends_with(':') {
+                Some("header")
+            } else if smart_text.lines().any(|line| {
+                let (marker, body) = split_list_marker(line.trim());
+                !marker.is_empty() && body == part
+            }) {
+                Some("item")
+            } else {
+                None
+            };
+            if let Some(fragment) = list_fragment {
+                let user = messages.last_mut().unwrap();
+                let (instruction, transcript) =
+                    user["content"].as_str().unwrap().split_once('\n').unwrap();
+                // The full writing directive asks for paragraphs/enumeration
+                // layout. That conflicts with editing just an existing header
+                // or item and made the small model try to finish the list.
+                let opener = instruction
+                    .split_once(". ")
+                    .map_or(instruction, |(opener, _)| opener);
+                user["content"] = format!(
+                    "{opener}. Edit only this list {fragment}; fix grammar/casing and \
+                     return one line without a list marker. Keep the full name and modifiers; \
+                     never complete the list or add, repeat, or copy any items:\n{transcript}"
+                )
+                .into();
+            } else if part.trim() != smart_text.trim() {
+                let user = messages.last_mut().unwrap();
+                let (instruction, transcript) =
+                    user["content"].as_str().unwrap().split_once('\n').unwrap();
+                let opener = instruction
+                    .split_once(". ")
+                    .map_or(instruction, |(opener, _)| opener);
+                user["content"] = format!(
+                    "{opener}. Edit only this existing paragraph or line; retain its role \
+                     and full content, including an existing greeting or sign-off. Return \
+                     only this part; never complete the document or add other paragraphs:\n{transcript}"
+                )
+                .into();
+            }
+            if !inputs.is_empty() {
+                let mut content = messages.last().unwrap()["content"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                for (label, text) in inputs {
+                    content.push_str(&format!("\n\n{label}:\n{text}"));
+                }
+                messages.last_mut().unwrap()["content"] = content.into();
+            }
+            bounded.rewrite_messages(&effective, messages)
         },
     );
+    let result = result.and_then(|candidate| {
+        accept_rewrite(smart_text, &candidate, &level)
+            .ok_or_else(|| "LLM changed the assembled text's structure or content; original transcript preserved.".into())
+    });
     match result {
         Ok(candidate) => PolishOutcome {
             final_text: candidate,
@@ -728,6 +911,187 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn spoken_breaks_are_hard_boundaries_even_when_the_whole_text_fits() {
+        let source = "First.\n\nSecond. Third.";
+        let mut parts = Vec::new();
+        let output = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
+            parts.push(part.to_owned());
+            Ok(part.to_owned())
+        })
+        .unwrap();
+        assert_eq!(parts, ["First.", "Second. Third."]);
+        assert_eq!(output, source);
+    }
+
+    #[test]
+    fn list_lines_keep_markers_colons_and_unpunctuated_items() {
+        let source = "things i need:\n\n• update the readme\n• fix the bug";
+        let mut parts = Vec::new();
+        let output = rewrite_segments(source, "high", Duration::from_secs(1), &mut |part, _| {
+            parts.push(part.to_owned());
+            // The model capitalises and tends to sentence-ify fragments.
+            let mut chars = part.chars();
+            let mut s = chars
+                .next()
+                .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default();
+            if let Some(stripped) = s.strip_suffix(':') {
+                s = format!("{stripped}.");
+            } else if !s.ends_with('.') {
+                s.push('.');
+            }
+            Ok(s)
+        })
+        .unwrap();
+        // The marker and colon are re-attached; item periods are stripped.
+        assert_eq!(
+            parts,
+            ["things i need:", "update the readme", "fix the bug"]
+        );
+        assert_eq!(
+            output,
+            "Things i need:\n\n• Update the readme\n• Fix the bug"
+        );
+    }
+
+    #[test]
+    fn existing_list_items_cannot_expand_into_additional_lines() {
+        for marker in ["• ", "1. ", "2) ", "- ", "* "] {
+            let source = format!("{marker}The mobile and the power bank");
+            let result =
+                rewrite_segments(&source, "high", Duration::from_secs(1), &mut |part, _| {
+                    Ok(part.replace(" and ", "\n"))
+                });
+            assert!(result.is_err(), "a {marker:?} item gained a new line");
+        }
+    }
+
+    #[test]
+    fn writing_audit_header_does_not_acquire_a_number_marker() {
+        let source = "Use numbered points:\n\n1. Save the draft\n2. Send the invoice";
+        let result = rewrite_segments(source, "high", Duration::from_secs(1), &mut |part, _| {
+            Ok(if part.ends_with(':') {
+                format!("1. {part}")
+            } else {
+                part.to_owned()
+            })
+        })
+        .unwrap();
+        assert_eq!(result, source);
+    }
+
+    #[test]
+    fn existing_list_header_cannot_expand_into_additional_lines() {
+        let source =
+            "I want you to bring me three things:\n\n• The mobile\n• The power bank\n• The earbuds";
+        let result = rewrite_segments(source, "high", Duration::from_secs(1), &mut |part, _| {
+            Ok(part.replace("me three", "me\nthree"))
+        });
+        assert!(result.is_err(), "a list header gained a new line");
+    }
+
+    #[test]
+    fn an_unformatted_whole_dictation_can_still_become_a_list() {
+        let source = "I want you to bring me three things: first the mobile, second the power bank, third the earbuds.";
+        let candidate =
+            "I want you to bring me three things:\n\n• The mobile\n• The power bank\n• The earbuds";
+        let result = rewrite_segments(source, "high", Duration::from_secs(1), &mut |_, _| {
+            Ok(candidate.to_owned())
+        })
+        .unwrap();
+        assert_eq!(result, candidate);
+    }
+
+    #[test]
+    fn ordinary_paragraph_rewrites_can_add_paragraph_breaks() {
+        let source = "I will bring the mobile. Please bring the power bank and earbuds.";
+        let candidate = "I will bring the mobile.\n\nPlease bring the power bank and earbuds.";
+        let result = rewrite_segments(source, "high", Duration::from_secs(1), &mut |_, _| {
+            Ok(candidate.to_owned())
+        })
+        .unwrap();
+        assert_eq!(result, candidate);
+    }
+
+    #[test]
+    fn expanding_a_list_fragment_preserves_the_entire_dictation() {
+        let source =
+            "I want you to bring me three things:\n\n• The mobile\n• The power bank\n• The earbuds";
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let worker = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let app = Router::new()
+                        .route(
+                            "/apply-template",
+                            post(|| async { Json(json!({"prompt": "rendered prompt"})) }),
+                        )
+                        .route(
+                            "/tokenize",
+                            post(|| async { Json(json!({"tokens": vec![1; 128]})) }),
+                        )
+                        .route(
+                            "/v1/chat/completions",
+                            post(|Json(request): Json<Value>| async move {
+                                let user = request["messages"]
+                                    .as_array()
+                                    .unwrap()
+                                    .last()
+                                    .unwrap()["content"]
+                                    .as_str()
+                                    .unwrap();
+                                let (_, part) = user.split_once('\n').unwrap();
+                                Json(json!({
+                                    "choices": [{
+                                        "message": {"content": part.replace("me three", "me\nthree")},
+                                        "finish_reason": "stop"
+                                    }]
+                                }))
+                            }),
+                        );
+                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    tx.send(format!("http://{}", listener.local_addr().unwrap()))
+                        .unwrap();
+                    axum::serve(listener, app)
+                        .with_graceful_shutdown(async {
+                            let _ = stopped.await;
+                        })
+                        .await
+                        .unwrap();
+                });
+        });
+        let client = FlowClient::new_url(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Duration::from_secs(3),
+        )
+        .with_context_size(4096);
+        let outcome = polish_or_fallback(&client, source, &sample_req("high", "notes", source));
+        let _ = shutdown.send(());
+        worker.join().unwrap();
+
+        assert_eq!(outcome.final_text, source);
+        assert!(!outcome.used, "unsafe fragments must not reach injection");
+        assert!(outcome.error.is_some());
+    }
+
+    #[test]
+    fn captured_context_is_not_skipped_for_a_short_clean_sentence() {
+        let text = "Ship it on Thursday.";
+        let outcome = polish_with_context_or_fallback(
+            &FlowClient::new_missing(),
+            text,
+            &sample_req("light", "normal", text),
+            &[("Clipboard", "Release requirements".into())],
+        );
+        assert!(outcome.error.is_some());
+        assert_eq!(outcome.final_text, text);
+    }
     use tokio::net::TcpListener;
 
     #[test]
@@ -760,6 +1124,82 @@ mod tests {
             }
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn oversized_input_does_not_split_paths_or_decimal_numbers() {
+        let source = "Keep version 3.5 in src/api.ts and do not change the route";
+        let mut parts = Vec::new();
+        let result = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
+            parts.push(part.to_owned());
+            if part == source {
+                Err("flow rewrite input too long".into())
+            } else {
+                Ok(part.to_owned())
+            }
+        });
+        assert!(
+            result.is_err(),
+            "a sentence without a safe boundary must fall back"
+        );
+        assert_eq!(parts, [source]);
+    }
+
+    #[test]
+    fn oversized_input_splits_at_the_sentence_after_a_path_and_version() {
+        let source = "Keep src/api.ts at 3.5. Don't change the route.";
+        let mut parts = Vec::new();
+        let result = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
+            parts.push(part.to_owned());
+            if part.len() > 30 {
+                Err("flow rewrite input too long".into())
+            } else {
+                Ok(part.to_owned())
+            }
+        })
+        .unwrap();
+        assert_eq!(result, source);
+        assert_eq!(
+            parts,
+            [source, "Keep src/api.ts at 3.5.", "Don't change the route."]
+        );
+    }
+
+    #[test]
+    fn oversized_input_never_splits_abbreviations_from_their_context() {
+        for source in [
+            "Please ask Dr. Smith to review the release",
+            "Please ask A. Smith to review the release",
+            "Use e.g. a safe fallback for this request",
+            "Ask the U.S. Navy to review the release",
+        ] {
+            let mut parts = Vec::new();
+            let result =
+                rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
+                    parts.push(part.to_owned());
+                    if part == source {
+                        Err("flow rewrite input too long".into())
+                    } else {
+                        Ok(part.to_owned())
+                    }
+                });
+            assert!(result.is_err(), "unsafe split in {source}");
+            assert_eq!(parts, [source]);
+        }
+    }
+
+    #[test]
+    fn oversized_cjk_input_can_split_without_ascii_whitespace() {
+        let source = "请检查文件。不要改动接口。";
+        let result = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
+            if part == source {
+                Err("flow rewrite input too long".into())
+            } else {
+                Ok(part.to_owned())
+            }
+        })
+        .unwrap();
+        assert_eq!(result, source);
     }
 
     #[test]
@@ -907,14 +1347,12 @@ mod tests {
         assert!(outcome.error.is_some());
     }
 
-    /// A finished sentence needs no polish, so a missing runtime is not a
-    /// failure. Reporting one would put an error in front of the user about work
-    /// that did not need doing.
+    /// Minimal cleanup may skip a finished sentence without requiring a model.
     #[test]
     fn a_clean_transcript_reports_no_error_even_with_no_runtime() {
         let client = FlowClient::new_missing();
         let smart = "Ship it on Thursday.";
-        let outcome = polish_or_fallback(&client, smart, &sample_req("high", "normal", smart));
+        let outcome = polish_or_fallback(&client, smart, &sample_req("light", "normal", smart));
         assert_eq!(outcome.final_text, smart);
         assert!(!outcome.used);
         assert!(
@@ -922,6 +1360,28 @@ mod tests {
             "skipping unnecessary work must not surface an error: {:?}",
             outcome.error
         );
+    }
+
+    #[test]
+    fn writing_and_developer_tasks_do_not_skip_their_requested_edit() {
+        for (level, mode) in [
+            ("high", "notes"),
+            ("medium", "developer_prompt"),
+            ("medium", "normal"),
+        ] {
+            let source = "Please fix the login.";
+            let result = polish_or_fallback(
+                &FlowClient::new_missing(),
+                source,
+                &sample_req(level, mode, source),
+            );
+            assert_eq!(result.final_text, source);
+            assert!(!result.used);
+            assert!(
+                result.error.is_some(),
+                "requested task must attempt its edit, then report missing runtime"
+            );
+        }
     }
 
     #[test]
@@ -968,6 +1428,22 @@ mod tests {
         assert_eq!(outcome.final_text, "Hello world today.");
         assert!(outcome.used);
         assert!(outcome.error.is_none());
+    }
+
+    #[test]
+    fn grammatical_paraphrase_keeps_the_complete_original_when_word_choices_change() {
+        let original = "i need the key, for opening the door";
+        let candidate = "I need the key to open the door.";
+        assert!(crate::rewrite::safety::accept_rewrite(original, candidate, "high").is_none());
+        let client = FlowClient::new_url(spawn_stub(candidate), Duration::from_secs(3));
+        let outcome =
+            polish_or_fallback(&client, original, &sample_req("high", "normal", original));
+        assert_eq!(outcome.final_text, original);
+        assert!(!outcome.used);
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("LLM rewrite rejected by safety gate")
+        );
     }
 
     #[test]

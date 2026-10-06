@@ -70,6 +70,66 @@ fn phonon_uses_cuda_when_it_fits_and_cpu_when_it_does_not() {
     assert!(chosen.error.is_some());
 }
 
+#[test]
+fn zipformer_stays_cpu_int8_under_every_preset_and_runtime() {
+    for preset in [
+        Preset::Auto,
+        Preset::Fast,
+        Preset::Balanced,
+        Preset::Accurate,
+        Preset::Custom,
+    ] {
+        for runtime in ["python", "native"] {
+            let chosen = reflow_lib::profile::select_asr_load_for_runtime(
+                runtime,
+                preset,
+                "zipformer-20m",
+                "auto",
+                "auto",
+                &|_| true,
+                &caps_with_free_vram(8000.0),
+                &no_measurements,
+            );
+            assert_eq!(chosen.model_id, "zipformer-20m");
+            assert_eq!(chosen.device, Device::Cpu, "{runtime}/{preset:?}");
+            assert_eq!(chosen.precision, Precision::Int8);
+            assert!(chosen.error.is_none());
+        }
+    }
+}
+
+#[test]
+fn zipformer_explains_ignored_gpu_and_rejects_forced_precision() {
+    let chosen = select_asr_load(
+        Preset::Custom,
+        "zipformer-20m",
+        "cuda",
+        "auto",
+        &|_| true,
+        &caps_with_free_vram(8000.0),
+        &no_measurements,
+    );
+    assert_eq!(chosen.device, Device::Cpu);
+    assert!(
+        chosen.downgrade.is_some(),
+        "an ignored GPU request is explained"
+    );
+
+    let chosen = select_asr_load(
+        Preset::Custom,
+        "zipformer-20m",
+        "cpu",
+        "bf16",
+        &|_| true,
+        &caps_with_free_vram(8000.0),
+        &no_measurements,
+    );
+    assert_eq!(
+        chosen.error.as_ref().map(|e| e.code.as_str()),
+        Some("asr_precision_unsupported")
+    );
+}
+
 /// A 4 GB card with `free_mb` actually available.
 fn caps_with_free_vram(free_mb: f32) -> Capabilities {
     let mut caps = Capabilities::default();

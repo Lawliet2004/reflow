@@ -529,6 +529,8 @@ pub struct AppSettings {
     pub notes_folder: String,
     #[serde(default)]
     pub dictionary_suggestions: Vec<crate::expansion_commands::DictionarySuggestion>,
+    #[serde(default = "default_true")]
+    pub auto_learn_dictionary: bool,
     #[serde(default)]
     pub dismissed_corrections: Vec<String>,
     #[serde(default)]
@@ -618,6 +620,28 @@ pub struct AppSettings {
     pub reduce_motion: bool,
     #[serde(default = "default_ui_font_scale")]
     pub ui_font_scale: String,
+    /// `#rrggbb`, used when `accent_color` is `"custom"`.
+    #[serde(default = "default_accent_custom")]
+    pub accent_custom: String,
+    #[serde(default = "default_surface_tone")]
+    pub surface_tone: String,
+    #[serde(default = "default_serif")]
+    pub reading_font: String,
+    #[serde(default = "default_serif")]
+    pub heading_font: String,
+    #[serde(default = "default_ui_density")]
+    pub ui_density: String,
+    #[serde(default = "default_corner_style")]
+    pub corner_style: String,
+    #[serde(default = "default_window_material")]
+    pub window_material: String,
+    #[serde(default = "default_hud_shape")]
+    pub hud_shape: String,
+    #[serde(default = "default_hud_style")]
+    pub hud_style: String,
+    /// Background opacity of the recording HUD, `0.6..=1.0`.
+    #[serde(default = "default_hud_opacity")]
+    pub hud_opacity: f32,
     #[serde(default = "default_developer_mode")]
     pub developer_mode: bool,
     pub active_profile: String,
@@ -665,6 +689,42 @@ fn default_ui_font_scale() -> String {
     "normal".into()
 }
 
+fn default_accent_custom() -> String {
+    "#2a6690".into()
+}
+
+fn default_surface_tone() -> String {
+    "warm".into()
+}
+
+fn default_serif() -> String {
+    "serif".into()
+}
+
+fn default_ui_density() -> String {
+    "comfortable".into()
+}
+
+fn default_corner_style() -> String {
+    "soft".into()
+}
+
+fn default_window_material() -> String {
+    "mica".into()
+}
+
+fn default_hud_shape() -> String {
+    "pill".into()
+}
+
+fn default_hud_style() -> String {
+    "status".into()
+}
+
+fn default_hud_opacity() -> f32 {
+    0.96
+}
+
 fn default_api_bind() -> String {
     "lan".into()
 }
@@ -689,14 +749,8 @@ fn default_api_port() -> u16 {
     7840
 }
 
-/// Deterministic Stage 1 aggressiveness for a fresh install.
-///
-/// `"light"` alongside the `smart_flow` tier used to mean Stage 2 never ran,
-/// but that was because `cleanup_level` was doubling as the Stage 2 gate. With
-/// `ResolvedIntent::run_llm` owning that decision, light Stage 1 plus LLM
-/// refinement is both correct and the better default: Stage 1 already removes
-/// fillers and self-repairs, so a heavier pass mostly duplicates work and
-/// nudges the model toward over-editing already-clean text.
+/// Compatibility default for saved configurations missing this field.
+/// Fresh installs use Natural cleanup in `AppSettings::default()`.
 fn default_cleanup_level() -> String {
     "light".into()
 }
@@ -755,6 +809,7 @@ impl Default for AppSettings {
 
             notes_folder: String::new(),
             dictionary_suggestions: Vec::new(),
+            auto_learn_dictionary: true,
             dismissed_corrections: Vec::new(),
             hotkey: crate::platform::default_hotkey().into(),
             push_to_talk: true,
@@ -766,12 +821,14 @@ impl Default for AppSettings {
             input_gain: 1.0,
             vad_sensitivity: 0.5,
             processing_mode: "smart".into(),
-            cleanup_level: default_cleanup_level(),
+            // Fresh installs start with natural cleanup. Field-level serde
+            // defaults retain the legacy light behavior for saved documents.
+            cleanup_level: "medium".into(),
             intelligence_tier: default_intelligence_tier(),
             last_polish_tier: default_intelligence_tier(),
             flow_model: default_flow_model(),
-            style: default_style(),
-            auto_style_from_app: default_auto_style(),
+            style: "faithful".into(),
+            auto_style_from_app: false,
             dictation_mode: "normal".into(),
             preset: default_preset(),
             asr: AsrSettings::default(),
@@ -788,6 +845,16 @@ impl Default for AppSettings {
             waveform_style: default_waveform_style(),
             reduce_motion: default_reduce_motion(),
             ui_font_scale: default_ui_font_scale(),
+            accent_custom: default_accent_custom(),
+            surface_tone: default_surface_tone(),
+            reading_font: default_serif(),
+            heading_font: default_serif(),
+            ui_density: default_ui_density(),
+            corner_style: default_corner_style(),
+            window_material: default_window_material(),
+            hud_shape: default_hud_shape(),
+            hud_style: default_hud_style(),
+            hud_opacity: default_hud_opacity(),
             developer_mode: false,
             active_profile: "Default".into(),
             application_profiles: Vec::new(),
@@ -1032,7 +1099,7 @@ impl AppSettings {
         if !matches!(self.asr.runtime.as_str(), "python" | "native") {
             self.asr.runtime = default_asr_runtime();
         }
-        if self.asr.model == "phonon-2" {
+        if matches!(self.asr.model.as_str(), "phonon-2" | "zipformer-20m") {
             self.asr.runtime = "python".into();
         }
         let intent = self.resolve_intent();
@@ -1079,6 +1146,9 @@ impl AppSettings {
 pub struct SettingsStore {
     file_path: PathBuf,
     settings: Arc<RwLock<AppSettings>>,
+    loaded_from_disk: bool,
+    recovery_notice: RwLock<Option<String>>,
+    write_block_reason: Option<String>,
 }
 
 impl SettingsStore {
@@ -1087,25 +1157,46 @@ impl SettingsStore {
         // migration reads no longer exist on the struct, so parsing first would
         // throw away exactly what it needs.
         let mut migrating = false;
+        let mut loaded_from_disk = false;
+        let mut recovery_notice = None;
+        let mut write_block_reason = None;
         let loaded = if file_path.exists() {
             match fs::read_to_string(&file_path) {
                 Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
                     Ok(mut value) => {
-                        let found = migrate_document(&mut value);
-                        migrating = found < CURRENT_SETTINGS_VERSION;
-                        serde_json::from_value::<AppSettings>(value).unwrap_or_else(|err| {
-                            log::warn!(
-                                "Settings file could not be applied ({err}); using defaults"
-                            );
+                        if value
+                            .get("settings_version")
+                            .and_then(serde_json::Value::as_u64)
+                            .is_some_and(|version| version > CURRENT_SETTINGS_VERSION as u64)
+                        {
+                            let reason = "Settings were created by a newer Reflow version. Update Reflow before saving settings. The original settings file was preserved.".to_owned();
+                            recovery_notice = Some(reason.clone());
+                            write_block_reason = Some(reason);
                             AppSettings::default()
-                        })
+                        } else {
+                            let found = migrate_document(&mut value);
+                            match serde_json::from_value::<AppSettings>(value) {
+                                Ok(settings) => {
+                                    loaded_from_disk = true;
+                                    migrating = found < CURRENT_SETTINGS_VERSION;
+                                    settings
+                                }
+                                Err(err) => {
+                                    recovery_notice = Some(format!("Settings could not be applied ({err}). The original settings file was preserved."));
+                                    AppSettings::default()
+                                }
+                            }
+                        }
                     }
                     Err(err) => {
-                        log::warn!("Settings file is not valid JSON ({err}); using defaults");
+                        recovery_notice = Some(format!("Settings are not valid JSON ({err}). The original settings file was preserved."));
                         AppSettings::default()
                     }
                 },
-                Err(_) => AppSettings::default(),
+                Err(err) => {
+                    recovery_notice = Some(format!("Settings could not be read ({err}). The original settings file was preserved."));
+                    AppSettings::default()
+                }
             }
         } else {
             AppSettings::default()
@@ -1124,6 +1215,9 @@ impl SettingsStore {
         let store = Self {
             file_path,
             settings: Arc::new(RwLock::new(normalized.clone())),
+            loaded_from_disk,
+            recovery_notice: RwLock::new(recovery_notice),
+            write_block_reason,
         };
         if migrating {
             // Persist the migration so the next launch is a no-op.
@@ -1134,7 +1228,39 @@ impl SettingsStore {
         store
     }
 
+    pub fn loaded_from_disk(&self) -> bool {
+        self.loaded_from_disk
+    }
+
+    pub fn recovery_notice(&self) -> Option<String> {
+        self.recovery_notice.read().clone()
+    }
+
+    /// Recovery defaults cannot authorize destroying saved data or decrypting
+    /// an encrypted manifest. Keep the active preferences safe without
+    /// replacing the unreadable document. Supported documents can persist
+    /// these preferences through the next explicit normal settings update.
+    pub(crate) fn preserve_history_preferences(&self, encrypted: bool, recovering: bool) {
+        let mut settings = self.settings.write();
+        settings.history_encryption = encrypted;
+        let notice = if recovering {
+            settings.history_retention = "indefinite".into();
+            settings.audio_retention = "disabled".into();
+            "Saved history and recordings were preserved because settings were missing or unreadable. New recordings are not saved. Review privacy preferences in Settings."
+        } else {
+            "History encryption remains enabled until you explicitly turn it off in Settings. If the original database is unavailable, private writes remain blocked."
+        };
+        let mut recovery_notice = self.recovery_notice.write();
+        *recovery_notice = Some(match recovery_notice.take() {
+            Some(previous) => format!("{previous} {notice}"),
+            None => notice.to_owned(),
+        });
+    }
+
     fn write_to_disk(&self, settings: &AppSettings) -> Result<(), String> {
+        if let Some(reason) = &self.write_block_reason {
+            return Err(reason.clone());
+        }
         if let Some(parent) = self.file_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create settings directory: {e}"))?;
@@ -1223,6 +1349,18 @@ impl SettingsStore {
         let mut merged: AppSettings = serde_json::from_value(merged_value)
             .map_err(|e| format!("Failed to apply settings patch: {e}"))?;
 
+        // Removing a rule is a preference too: do not silently relearn it.
+        for removed in lock
+            .dictionary_terms
+            .iter()
+            .filter(|term| !merged.dictionary_terms.iter().any(|t| t.id == term.id))
+        {
+            let pair = format!("{}\n{}", removed.term, removed.preferred_spelling);
+            if !merged.dismissed_corrections.contains(&pair) {
+                merged.dismissed_corrections.push(pair);
+            }
+        }
+
         // `intelligence_tier` and `cleanup_level` are independent controls over
         // different stages, so a patch to one must not silently rewrite the
         // other. In particular a cleanup change must never flip the tier:
@@ -1245,6 +1383,23 @@ impl SettingsStore {
         self.write_to_disk(&merged)?;
         *lock = merged.clone();
         Ok(merged)
+    }
+
+    /// Read, learn and persist under one lock, preserving concurrent scalar saves
+    /// and other automatically learned corrections.
+    pub fn learn_dictionary_corrections(
+        &self,
+        before: &str,
+        after: &str,
+    ) -> Result<Option<AppSettings>, String> {
+        let mut lock = self.settings.write();
+        let mut updated = lock.clone();
+        if crate::dictionary::learn_into_settings(&mut updated, before, after) == 0 {
+            return Ok(None);
+        }
+        self.write_to_disk(&updated)?;
+        *lock = updated.clone();
+        Ok(Some(updated))
     }
 }
 
@@ -1317,11 +1472,11 @@ mod tests {
     fn developer_mode_and_cleanup_defaults() {
         let settings = AppSettings::default();
         assert!(!settings.developer_mode);
-        assert_eq!(settings.cleanup_level, "light");
+        assert_eq!(settings.cleanup_level, "medium");
         assert_eq!(settings.intelligence_tier, "smart_flow");
         assert_eq!(settings.flow_model, "qwen3.5-0.8b");
-        assert_eq!(settings.style, "neutral");
-        assert!(settings.auto_style_from_app);
+        assert_eq!(settings.style, "faithful");
+        assert!(!settings.auto_style_from_app);
         assert_eq!(settings.processing_mode, "smart");
         assert_eq!(settings.asr.precision, "auto");
     }
@@ -1443,6 +1598,7 @@ mod tests {
         obj.remove("app_theme");
         obj.remove("accent_color");
         obj.remove("hud_scale");
+        obj.remove("hud_style");
         obj.remove("waveform_style");
         obj.remove("reduce_motion");
         obj.remove("ui_font_scale");
@@ -1463,6 +1619,7 @@ mod tests {
         assert_eq!(loaded.app_theme, "system");
         assert_eq!(loaded.accent_color, "sky");
         assert_eq!(loaded.hud_scale, "standard");
+        assert_eq!(loaded.hud_style, "status");
         assert_eq!(loaded.waveform_style, "bars");
         assert!(!loaded.reduce_motion);
         assert_eq!(loaded.ui_font_scale, "normal");
@@ -1495,6 +1652,25 @@ mod tests {
             .unwrap();
         assert_eq!(store.get().asr.runtime, "python");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hud_style_survives_updates_and_settings_reload() {
+        let dir = std::env::temp_dir().join(format!("reflow_hud_style_{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert_eq!(store.get().hud_style, "status");
+        for style in ["waveform", "status"] {
+            store
+                .merge_update(serde_json::json!({"hud_style": style}))
+                .unwrap();
+            store
+                .merge_update(serde_json::json!({"hud_scale": "large"}))
+                .unwrap();
+            assert_eq!(SettingsStore::new(path.clone()).get().hud_style, style);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

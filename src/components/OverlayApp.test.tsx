@@ -6,7 +6,7 @@ import * as bridge from "../services/tauriApi";
 
 it("keeps live overlay state and settings when startup snapshots arrive late", async () => {
   const initial = await api.getSettings();
-  const latest = { ...initial, accent_color: "rose" as const };
+  const latest = { ...initial, accent_color: "rose" as const, hud_style: "waveform" as const };
   let finishSettings!: (value: typeof initial) => void;
   let finishState!: (value: "READY") => void;
   vi.spyOn(api, "getSettings").mockImplementation(
@@ -33,10 +33,12 @@ it("keeps live overlay state and settings when startup snapshots arrive late", a
     listeners.get("app:state-changed")?.("RECORDING");
   });
   expect(screen.getByText("Listening")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveAttribute("data-style", "waveform");
   await act(async () => {
     finishSettings(initial);
     finishState("READY");
   });
   expect(screen.getByText("Listening")).toBeInTheDocument();
   expect(document.documentElement.dataset.accent).toBe("rose");
+  expect(screen.getByRole("status")).toHaveAttribute("data-style", "waveform");
 });

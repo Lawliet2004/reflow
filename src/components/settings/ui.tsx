@@ -14,60 +14,76 @@ import { Section, Row, Switch } from "../ui";
 export { Section, Row };
 export const Toggle = Switch;
 
+const ICON = { size: 17, strokeWidth: 1.75, "aria-hidden": true } as const;
 export const PAGE_ICONS: Record<string, React.ReactNode> = {
-  modes: <Sparkles className="w-4 h-4" />,
-  snippets: <BookOpen className="w-4 h-4" />,
-  output: <Keyboard className="w-4 h-4" />,
-  general: <Keyboard className="w-4 h-4" />,
-  appearance: <Palette className="w-4 h-4" />,
-  audio: <Mic className="w-4 h-4" />,
-  model: <Cpu className="w-4 h-4" />,
-  cleanup: <Sparkles className="w-4 h-4" />,
-  dictionary: <BookOpen className="w-4 h-4" />,
-  phone: <Smartphone className="w-4 h-4" />,
-  advanced: <ShieldCheck className="w-4 h-4" />,
+  general: <Keyboard {...ICON} />,
+  appearance: <Palette {...ICON} />,
+  audio: <Mic {...ICON} />,
+  model: <Cpu {...ICON} />,
+  cleanup: <Sparkles {...ICON} />,
+  dictionary: <BookOpen {...ICON} />,
+  phone: <Smartphone {...ICON} />,
+  advanced: <ShieldCheck {...ICON} />,
 };
 
 export const PAGES: { id: string; label: string; description: string; keywords: string[] }[] = [
   {
-    id: "modes",
-    label: "Modes",
-    description: "Custom instructions, context, app triggers and mode shortcuts.",
-    keywords: ["mode", "context", "command", "trigger", "instructions"],
-  },
-  {
-    id: "snippets",
-    label: "Snippets",
-    description: "Spoken phrases that insert stored text.",
-    keywords: ["snippet", "expansion", "address", "signature"],
-  },
-  {
-    id: "output",
-    label: "Output",
-    description: "Paste, send, copy, HUD, files and command destinations.",
-    keywords: ["output", "paste", "send", "copy", "command", "file"],
-  },
-  {
     id: "general",
     label: "General",
-    description: "Your hotkey, and how Reflow starts and sits on your desktop.",
-    keywords: ["hotkey", "shortcut", "window", "startup", "minimized"],
+    description: "Hotkeys, dictation output, modes, snippets and startup.",
+    keywords: [
+      "hotkey",
+      "shortcut",
+      "window",
+      "startup",
+      "minimized",
+      "output",
+      "paste",
+      "send",
+      "copy",
+      "file",
+      "mode",
+      "context",
+      "command",
+      "trigger",
+      "instructions",
+      "snippet",
+      "expansion",
+      "address",
+      "signature",
+    ],
   },
   {
     id: "appearance",
     label: "Appearance",
-    description: "Theme, accent colour, text size, motion and the recording HUD.",
+    description: "Theme, paper, ink, type, spacing and the dictation pill.",
     keywords: [
       "theme",
       "dark",
       "light",
       "color",
+      "colour",
       "accent",
+      "paper",
+      "tone",
+      "mica",
       "hud",
+      "pill",
+      "waveform",
+      "shape",
       "overlay",
+      "position",
+      "opacity",
+      "contrast",
       "font",
+      "serif",
       "scale",
+      "size",
+      "density",
+      "corner",
+      "radius",
       "motion",
+      "reset",
     ],
   },
   {
@@ -126,6 +142,11 @@ export const PAGES: { id: string; label: string; description: string; keywords: 
       "diagnostics",
     ],
   },
+];
+
+export const PAGE_GROUPS: { label: string; ids: string[] }[] = [
+  { label: "Dictation", ids: ["general", "audio", "cleanup", "dictionary"] },
+  { label: "App", ids: ["appearance", "model", "phone", "advanced"] },
 ];
 
 export function qrSrc(svg: string): string {

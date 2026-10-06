@@ -7,6 +7,8 @@ pub mod calibration;
 pub mod capability;
 pub mod commands;
 pub mod context;
+pub mod correction_observer;
+pub mod dictionary;
 pub mod dory;
 pub mod expansion_commands;
 pub mod file_jobs;
@@ -42,10 +44,6 @@ use state::AppStateEnum;
 pub fn run() {
     let context = AppContext::bootstrap();
     let initial_settings = context.settings_store.get();
-    let _ = RetentionCleaner::apply_retention(
-        &context.history_store,
-        &initial_settings.history_retention,
-    );
     let asr_handle = context.asr_handle.clone();
     let hotkey_error = std::sync::Arc::clone(&context.hotkey_error);
 
@@ -91,6 +89,9 @@ pub fn run() {
         )
         .manage(context.clone())
         .setup(move |app| {
+            if let Some(notice) = context.settings_store.recovery_notice() {
+                log::warn!("{notice}");
+            }
             if crate::platform::PlatformSys::is_portable() {
                 for window in &app.config().app.windows {
                     let builder = tauri::WebviewWindowBuilder::from_config(app, window)?;
@@ -325,7 +326,11 @@ pub fn run() {
                 }
             }
 
-            overlay::position_overlay(app.handle(), &initial_settings.overlay_position);
+            overlay::position_overlay(
+                app.handle(),
+                &initial_settings.overlay_position,
+                &initial_settings.hud_scale,
+            );
 
             bind_dory_ui(app.handle().clone(), context.bus.clone(), context.clone());
             idle_policies::start(app.handle().clone(), context.clone());
@@ -519,6 +524,7 @@ pub fn run() {
             commands::get_model_status,
             commands::install_model,
             commands::remove_model,
+            commands::get_downloaded_models,
             commands::reload_model,
             commands::get_latency_metrics,
             commands::get_latency_report,
@@ -595,7 +601,12 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     let _ = app.emit("app:state-changed", state);
                     match state {
                         AppStateEnum::Recording => {
-                            overlay::show_overlay(&app, &ctx.settings_store.get().overlay_position);
+                            let settings = ctx.settings_store.get();
+                            overlay::show_overlay(
+                                &app,
+                                &settings.overlay_position,
+                                &settings.hud_scale,
+                            );
                             if let Some(tray) = app.tray_by_id("main") {
                                 let _ = tray.set_tooltip(Some("Reflow — Listening"));
                             }
@@ -642,6 +653,12 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     let hide_delay = if feedback.fallback_copy { 2500 } else { 1200 };
                     let _ = app.emit("injection:result", feedback);
                     overlay::hide_overlay_later(app.clone(), hide_delay);
+                }
+                Ok(DoryEvent::DictionaryChanged(settings)) => {
+                    let _ = app.emit("settings:changed", *settings);
+                }
+                Ok(DoryEvent::HistoryUpdated(entry)) => {
+                    let _ = app.emit("history:updated", *entry);
                 }
                 Ok(DoryEvent::Error(err)) => {
                     let _ = app.emit("recording:error", err);

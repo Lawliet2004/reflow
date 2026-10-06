@@ -16,6 +16,53 @@ use crate::rewrite::FlowRuntime;
 use crate::settings::SettingsStore;
 use crate::state::{AppStateEnum, LatencyHistory, LatencyMetrics, LatencyTimer};
 
+/// Apply startup privacy preferences only after establishing whether they came
+/// from a readable saved configuration. A fallback default is not consent to
+/// delete recordings, purge old dictations, or decrypt an existing database.
+pub fn apply_startup_history_preferences(
+    settings: &SettingsStore,
+    history: &HistoryStore,
+    existing_history: bool,
+) -> crate::settings::AppSettings {
+    let recovering = existing_history && !settings.loaded_from_disk();
+    let encrypted = history.encryption_enabled() || history.source_requires_encryption();
+    if recovering {
+        settings.preserve_history_preferences(encrypted, true);
+    } else if encrypted && !settings.get().history_encryption {
+        settings.preserve_history_preferences(true, false);
+    }
+    let active = settings.get();
+    history.require_encryption(active.history_encryption);
+    if recovering || active.audio_retention == "disabled" {
+        if let Err(error) = history.purge_expired_audio() {
+            log::error!("Could not expire saved recordings on startup: {error}");
+        }
+    }
+    if !recovering {
+        // Disabling is an explicit desktop settings operation, never startup
+        // reconciliation. This also covers a settings/database crash mismatch.
+        if active.history_encryption {
+            if let Err(error) = history.set_encryption(true) {
+                log::error!("History encryption could not be applied: {error}");
+            }
+        }
+        // A disabled default can be persisted by an unrelated recovery save.
+        // Only an explicit audio-retention update may delete all recordings.
+        // A newly opened store already disables writes; retain saved expiry.
+        if active.audio_retention != "disabled" {
+            if let Err(error) = history.set_audio_retention(&active.audio_retention) {
+                log::error!("Could not apply audio retention: {error}");
+            }
+        }
+    }
+    if let Err(error) =
+        crate::history::RetentionCleaner::apply_retention(history, &active.history_retention)
+    {
+        log::error!("Could not apply history retention: {error}");
+    }
+    active
+}
+
 #[derive(Clone)]
 pub struct ApiRuntime {
     pub bind: String,
@@ -80,6 +127,7 @@ pub struct AppContext {
     /// `None` and let the fallback formatting path take over.
     pub runtime_recovery: Arc<RwLock<Option<RuntimeRecoveryHook>>>,
     pub dictation_target_hwnd: Arc<RwLock<isize>>,
+    pub correction_watch_generation: Arc<std::sync::atomic::AtomicU64>,
     pub registered_hotkey: Arc<RwLock<String>>,
     pub hotkey_error: Arc<RwLock<Option<String>>>,
     pub bus: DoryBus,
@@ -120,25 +168,20 @@ pub struct AppContext {
 impl AppContext {
     pub fn bootstrap() -> Self {
         let db_path = PlatformSys::get_db_path();
+        let existing_history = db_path.exists();
         let config_path = PlatformSys::get_config_path();
         let models_dir = PlatformSys::get_models_dir();
         let _ = std::fs::create_dir_all(PlatformSys::get_logs_dir());
 
         let settings_store = Arc::new(SettingsStore::new(config_path));
-        let initial_settings = settings_store.get();
+        let history_store = Arc::new(HistoryStore::open_recovering(db_path));
+        let initial_settings =
+            apply_startup_history_preferences(&settings_store, &history_store, existing_history);
         if let Err(error) = crate::network_policy::configure(
             initial_settings.offline_mode,
             &PlatformSys::get_app_dir(),
         ) {
             log::error!("Network policy could not be saved: {error}");
-        }
-        let history_store = Arc::new(HistoryStore::open_recovering(db_path));
-        if let Err(error) = history_store.set_audio_retention(&initial_settings.audio_retention) {
-            log::error!("Could not apply audio retention: {error}");
-        }
-        history_store.require_encryption(initial_settings.history_encryption);
-        if let Err(error) = history_store.set_encryption(initial_settings.history_encryption) {
-            log::error!("History encryption could not be applied: {error}");
         }
         let model_manager = Arc::new(ModelManager::new(models_dir));
         let pairing_path = PlatformSys::get_app_dir()
@@ -173,6 +216,7 @@ impl AppContext {
             audio_drain_done: Arc::new(Mutex::new(None)),
             runtime_recovery: Arc::new(RwLock::new(None)),
             dictation_target_hwnd: Arc::new(RwLock::new(0)),
+            correction_watch_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             registered_hotkey: Arc::new(RwLock::new(initial_settings.hotkey)),
             hotkey_error: Arc::new(RwLock::new(None)),
             bus: DoryBus::new(),
@@ -233,6 +277,7 @@ impl AppContext {
             audio_drain_done: Arc::new(Mutex::new(None)),
             runtime_recovery: Arc::new(RwLock::new(None)),
             dictation_target_hwnd: Arc::new(RwLock::new(0)),
+            correction_watch_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             registered_hotkey: Arc::new(RwLock::new(initial.hotkey)),
             hotkey_error: Arc::new(RwLock::new(None)),
             bus: DoryBus::new(),

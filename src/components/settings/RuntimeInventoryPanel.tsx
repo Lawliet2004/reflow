@@ -96,7 +96,7 @@ export function RuntimeInventoryPanel({ busy = false }: { busy?: boolean }) {
   return (
     <section
       aria-label="Runtime inventory"
-      className="space-y-3 border-t border-line pt-4"
+      className="space-y-3"
       aria-busy={loading || pending !== null || busy}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">

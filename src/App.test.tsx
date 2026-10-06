@@ -250,3 +250,37 @@ it("preserves a newer note draft when an earlier save finishes after navigating 
   expect(composer).toHaveValue("A newer idea I am still writing");
   expect(screen.getByRole("button", { name: "Save note" })).toBeEnabled();
 });
+
+it("opens settings as a dialog over the current page and closes it", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+  expect(screen.getByText("Speak freely.")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+  expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+});
+
+it("opens the settings dialog when the tray navigates to settings", async () => {
+  const listeners = new Map<string, (payload: any) => void>();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    listeners.set(event, handler);
+    return () => {};
+  });
+  render(<App />);
+  await screen.findByRole("heading", { name: /Speak freely/ });
+  await act(async () => listeners.get("ui:navigate")?.("settings"));
+  expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+});
+
+it("collapses the sidebar and remembers the choice", async () => {
+  localStorage.removeItem("reflow.sidebar-collapsed");
+  const { container } = render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Collapse sidebar" }));
+  expect(container.querySelector("#app-sidebar")).toHaveAttribute("data-collapsed", "true");
+  expect(localStorage.getItem("reflow.sidebar-collapsed")).toBe("1");
+  expect(screen.getByRole("button", { name: "Expand sidebar" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  localStorage.removeItem("reflow.sidebar-collapsed");
+});

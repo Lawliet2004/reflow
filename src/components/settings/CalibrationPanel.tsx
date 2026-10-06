@@ -95,7 +95,7 @@ export function CalibrationPanel() {
   };
   const winner = status?.candidates.find((row) => row.id === status.winner_id && row.eligible);
   return (
-    <section aria-label="Hardware calibration" className="space-y-3 border-t border-line pt-4">
+    <section aria-label="Hardware calibration" className="space-y-3">
       <h3 className="text-sm font-semibold text-ink">Measure speed on your hardware</h3>
       <p className="text-sm text-muted">
         Enter a short phrase in your language, then read it aloud when you run the test. Installed

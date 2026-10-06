@@ -43,6 +43,8 @@ pub enum SessionIntent {
 
 #[derive(Debug, Clone)]
 pub enum DoryEvent {
+    DictionaryChanged(Box<crate::settings::AppSettings>),
+    HistoryUpdated(Box<crate::history::HistoryEntry>),
     FileProgress(crate::file_jobs::FileProgress),
     AssistantResponse(String),
     State(AppStateEnum),

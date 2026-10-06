@@ -5,6 +5,9 @@ import { api } from "../services/tauriApi";
 import { HotkeyPicker } from "./HotkeyPicker";
 import { RecognitionCheck } from "./RecognitionCheck";
 import { LlmSelector } from "./LlmSelector";
+import { WritingTaskPicker } from "./WritingTaskPicker";
+import { SPEECH_MODEL_GUIDANCE } from "../writingTasks";
+import logoUrl from "../assets/logo.png";
 import type { IntelligenceTierState } from "../types";
 
 interface OnboardingProps {
@@ -112,8 +115,14 @@ export const Onboarding: React.FC<OnboardingProps> = ({
             {error}
           </p>
         )}
-        <p className="label-micro text-accent mb-2">First run</p>
-        <h1 className="font-display text-3xl font-semibold tracking-tight text-ink">
+        <img
+          src={logoUrl}
+          alt=""
+          aria-hidden
+          className="w-11 h-11 mb-5 pointer-events-none"
+          draggable={false}
+        />
+        <h1 className="font-display text-3xl font-medium text-ink">
           A few things. Then just speak.
         </h1>
         <p className="text-sm text-muted mt-1">
@@ -236,6 +245,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               })}
             </div>
 
+            <p className="text-xs text-muted leading-relaxed">{SPEECH_MODEL_GUIDANCE}</p>
+
             {installed || ready ? (
               <div className="flex items-center gap-2 text-sm text-success font-medium">
                 <Check className="w-4 h-4" />
@@ -303,11 +314,16 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               </p>
             )}
             <div className="pt-4 border-t border-line space-y-2">
-              <h3 className="text-sm font-semibold text-ink">Optional AI writing cleanup</h3>
+              <h3 className="text-sm font-semibold text-ink">How would you like to write?</h3>
               <p className="text-xs text-muted">
                 An ASR model turns speech into text. An LLM rewrites that text. You can finish setup
                 with no LLM and change it later on Home.
               </p>
+              <WritingTaskPicker
+                settings={settings}
+                onUpdateSettings={onUpdateSettings}
+                disabled={saving}
+              />
               <LlmSelector
                 settings={settings}
                 onUpdateSettings={onUpdateSettings}

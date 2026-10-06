@@ -216,6 +216,10 @@ fn fingerprint(ctx: &AppContext, caps: &Capabilities) -> String {
         stamp_tree(&crate::rewrite::flow_gguf_path(model), &mut files);
     }
     stamp_tree(&ctx.model_manager.get_model_dir("phonon-2"), &mut files);
+    stamp_tree(
+        &ctx.model_manager.get_model_dir("zipformer-20m"),
+        &mut files,
+    );
     let binary = crate::rewrite::llama_server_bin();
     if let Some(parent) = binary.parent() {
         stamp_tree(parent, &mut files);
@@ -226,7 +230,7 @@ fn fingerprint(ctx: &AppContext, caps: &Capabilities) -> String {
         .iter()
         .map(|g| (&g.name, &g.driver_version, g.total_vram_mb))
         .collect();
-    let value = serde_json::json!({"app":env!("CARGO_PKG_VERSION"),"cpu":caps.cpu.model,"cores":caps.cpu.physical_cores,"gpus":gpus,"cuda":caps.cuda,"vulkan":caps.vulkan,"files":files,"python":std::env::var("REFLOW_PYTHON").ok(),"asr_code":include_str!("../../../model-runtime/qwen3_asr_runtime.py"),"phonon_code":include_str!("../../../model-runtime/phonon_runtime.py"),"rules":include_str!("../rewrite/safety.rs"),"prompt":include_str!("../rewrite/prompt.rs")});
+    let value = serde_json::json!({"app":env!("CARGO_PKG_VERSION"),"cpu":caps.cpu.model,"cores":caps.cpu.physical_cores,"gpus":gpus,"cuda":caps.cuda,"vulkan":caps.vulkan,"files":files,"python":std::env::var("REFLOW_PYTHON").ok(),"asr_code":include_str!("../../../model-runtime/qwen3_asr_runtime.py"),"phonon_code":include_str!("../../../model-runtime/phonon_runtime.py"),"zipformer_code":include_str!("../../../model-runtime/zipformer_runtime.py"),"rules":include_str!("../rewrite/safety.rs"),"prompt":include_str!("../rewrite/prompt.rs")});
     hex::encode(Sha256::digest(value.to_string().as_bytes()))
 }
 pub fn cached_choice(
@@ -250,8 +254,11 @@ pub fn cached_choice(
     if choice.runtime != settings.asr.runtime {
         return None;
     }
-    // A saved Qwen calibration must not override an explicitly selected Phonon.
-    if settings.asr.model == "phonon-2" && choice.model != "phonon-2" {
+    // A saved Qwen calibration must not override an explicitly selected
+    // single-runtime model (Phonon, Zipformer).
+    if ["phonon-2", "zipformer-20m"].contains(&settings.asr.model.as_str())
+        && choice.model != settings.asr.model
+    {
         return None;
     }
     if settings.resolve_intent().run_llm != (choice.refinement_model != "none") {
@@ -316,8 +323,14 @@ pub async fn run(
     if !(3..=10).contains(&seconds) {
         return Err("Record between three and ten seconds.".into());
     }
-    if ctx.settings_store.get().asr.model == "phonon-2" && language != "en" {
-        return Err("Phonon-2 supports English only. Choose English for calibration.".into());
+    let selected_model = ctx.settings_store.get().asr.model;
+    if ["phonon-2", "zipformer-20m"].contains(&selected_model.as_str()) && language != "en" {
+        return Err(format!(
+            "{} supports English only. Choose English for calibration.",
+            crate::profile::manifest::asr_manifest(&selected_model)
+                .map(|m| m.label)
+                .unwrap_or("This model")
+        ));
     }
     if !speech_candidates(&ctx.settings_store.get().asr.model, &language)
         .iter()
@@ -414,9 +427,9 @@ pub async fn run(
     Ok(status.clone())
 }
 fn speech_candidates(selected: &str, language: &str) -> Vec<(&'static str, String)> {
-    if selected == "phonon-2" {
+    if matches!(selected, "phonon-2" | "zipformer-20m") {
         return if language == "en" {
-            vec![("python", "phonon-2".into())]
+            vec![("python", selected.to_string())]
         } else {
             vec![]
         };
@@ -432,32 +445,9 @@ fn speech_candidates(selected: &str, language: &str) -> Vec<(&'static str, Strin
     }
     if language == "en" {
         candidates.push(("python", "phonon-2".into()));
+        candidates.push(("python", "zipformer-20m".into()));
     }
     candidates
-}
-
-#[cfg(test)]
-mod phonon_tests {
-    use super::speech_candidates;
-
-    #[test]
-    fn phonon_calibration_preserves_selected_family() {
-        assert_eq!(
-            speech_candidates("phonon-2", "en"),
-            vec![("python", "phonon-2".into())]
-        );
-        assert!(speech_candidates("phonon-2", "hi").is_empty());
-    }
-
-    #[test]
-    fn english_comparison_includes_phonon_but_hindi_does_not() {
-        assert!(speech_candidates("0.6b", "en")
-            .iter()
-            .any(|(_, model)| model == "phonon-2"));
-        assert!(!speech_candidates("0.6b", "hi")
-            .iter()
-            .any(|(_, model)| model == "phonon-2"));
-    }
 }
 
 fn measure(
@@ -698,4 +688,28 @@ fn measure(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod phonon_tests {
+    use super::speech_candidates;
+
+    #[test]
+    fn phonon_calibration_preserves_selected_family() {
+        assert_eq!(
+            speech_candidates("phonon-2", "en"),
+            vec![("python", "phonon-2".into())]
+        );
+        assert!(speech_candidates("phonon-2", "hi").is_empty());
+    }
+
+    #[test]
+    fn english_comparison_includes_phonon_but_hindi_does_not() {
+        assert!(speech_candidates("0.6b", "en")
+            .iter()
+            .any(|(_, model)| model == "phonon-2"));
+        assert!(!speech_candidates("0.6b", "hi")
+            .iter()
+            .any(|(_, model)| model == "phonon-2"));
+    }
 }

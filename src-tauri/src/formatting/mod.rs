@@ -1,7 +1,6 @@
 pub mod backtrack;
 pub mod cleaner;
 pub mod context;
-pub mod hedge;
 pub mod normalizers;
 pub mod punctuation;
 pub mod replacements;
@@ -9,7 +8,6 @@ pub mod replacements;
 pub use backtrack::apply_backtrack;
 pub use cleaner::TextCleaner;
 pub use context::{ContextFormatter, DictationMode};
-pub use hedge::apply_hedge;
 pub use normalizers::apply_normalizers;
 pub use punctuation::PunctuationInferer;
 pub use replacements::{CustomReplacements, ReplacementRule};
@@ -117,7 +115,7 @@ pub fn format_partial(
 
 /// Keep the existing signature. `"raw"` trims only; `"smart"`/`"flow"` run the Light
 /// base pipeline (`CleanupLevel::parse` maps `"smart"` → Light and `"flow"` → Medium,
-/// and Medium shares the Light steps without hedge).
+/// and Medium shares the Light steps).
 pub fn format_transcript(
     raw: &str,
     processing_mode: &str,
@@ -163,8 +161,22 @@ pub fn format_transcript_with_capitalization(
     text = TextCleaner::clean(&text, req.filler_removal_enabled);
     text = apply_backtrack(&text);
     text = req.custom_replacements.apply(&text);
+    // Canonical technical spellings are safe to apply deterministically only
+    // when the target is a coding tool; elsewhere the LLM decides casing with
+    // context.
+    if req.dictation_mode == "developer_prompt" {
+        text = replacements::apply_technical_terms(&text);
+    }
     text = apply_normalizers(&text, req.dictation_mode);
-    text = PunctuationInferer::capitalize_sentences_with_first(&text, capitalize_first);
+    if req.style == VoiceStyle::Email || req.dictation_mode.eq_ignore_ascii_case("email") {
+        text = ContextFormatter::format_email(&text);
+    }
+    // Technical prose may contain paths and camelCase at sentence boundaries.
+    // Leave their casing intact; the rewrite gate protects them while the LLM
+    // corrects the surrounding language.
+    if req.dictation_mode != "developer_prompt" {
+        text = PunctuationInferer::capitalize_sentences_with_first(&text, capitalize_first);
+    }
 
     let d_mode = DictationMode::from_str(req.dictation_mode);
     let coding = matches!(d_mode, DictationMode::Coding);
@@ -177,13 +189,6 @@ pub fn format_transcript_with_capitalization(
 
     if !coding && should_drop_chat_period(req.style, req.focused_process, &text) {
         text = strip_trailing_period(&text);
-    }
-
-    if !coding {
-        text = apply_hedge(&text, req.cleanup_level, req.style, req.dictation_mode);
-        if req.cleanup_level == CleanupLevel::High && req.style == VoiceStyle::Decisive {
-            text = PunctuationInferer::capitalize_sentences_with_first(&text, capitalize_first);
-        }
     }
 
     text
@@ -258,6 +263,38 @@ pub fn assemble_asr_vocabulary(
 mod tests {
     use super::*;
 
+    #[test]
+    fn spoken_paragraphs_survive_the_complete_rule_pipeline() {
+        let rules = CustomReplacements::new(Vec::new());
+        assert_eq!(
+            format_transcript(
+                "um first paragraph period new paragraph uh second paragraph",
+                "smart",
+                "normal",
+                true,
+                true,
+                &rules
+            ),
+            "First paragraph.\n\nSecond paragraph."
+        );
+    }
+
+    #[test]
+    fn developer_prose_does_not_mutate_code_identifiers_or_paths() {
+        let rules = CustomReplacements::new(Vec::new());
+        let result = format_transcript(
+            "src/friday.ts calls getUserById. don't change the API",
+            "flow",
+            "developer_prompt",
+            true,
+            true,
+            &rules,
+        );
+        assert!(result.contains("src/friday.ts"), "{result}");
+        assert!(result.contains("getUserById"), "{result}");
+        assert!(result.contains("API"), "{result}");
+    }
+
     fn empty_rules() -> CustomReplacements {
         CustomReplacements::new(Vec::new())
     }
@@ -314,6 +351,39 @@ mod tests {
                 "pipeline mangled punctuation for {raw:?}"
             );
         }
+    }
+
+    /// A spoken enumeration becomes a bullet list end to end: the normalizer
+    /// builds it, capitalization leaves the items alone, and the terminal
+    /// punctuation pass does not append a stray "." to the last bullet.
+    #[test]
+    fn notes_high_produces_a_bullet_list() {
+        let out = fmt(
+            "these are the four things i want: 1, look at this, and 2, fix the login, 3, add tests",
+            CleanupLevel::High,
+            "notes",
+            VoiceStyle::Faithful,
+        );
+        assert_eq!(
+            out,
+            "These are the four things i want:\n\n• Look at this\n• Fix the login\n• Add tests"
+        );
+    }
+
+    /// A sentence after the last item is not part of the list: it lands in
+    /// its own paragraph, so terminal punctuation applies to it normally.
+    #[test]
+    fn notes_high_splits_a_trailing_sentence_off_the_list() {
+        let out = fmt(
+            "i need three things: 1, update the readme, 2, fix login, 3, add tests. let me know when it's done.",
+            CleanupLevel::High,
+            "notes",
+            VoiceStyle::Faithful,
+        );
+        assert_eq!(
+            out,
+            "I need three things:\n\n• Update the readme\n• Fix login\n• Add tests\n\nLet me know when it's done."
+        );
     }
 
     /// Self-repair must resolve with no LLM in the pipeline at all.
@@ -381,14 +451,30 @@ mod tests {
     }
 
     #[test]
-    fn high_decisive_rewrites_i_want_to() {
-        let out = fmt(
-            "I want to drink tea",
-            CleanupLevel::High,
-            "normal",
-            VoiceStyle::Decisive,
-        );
-        assert_eq!(out, "I will drink tea.");
+    fn high_decisive_fallback_preserves_wishes_and_uncertainty() {
+        // Stage 1 is also the fallback when the LLM is unavailable or rejects
+        // an edit. A tone preference must not turn a wish into a commitment.
+        for (source, expected) in [
+            ("I want to drink tea", "I want to drink tea."),
+            ("I would like to reconsider", "I would like to reconsider."),
+            ("I'd like to try again", "I'd like to try again."),
+            ("maybe we should postpone", "Maybe we should postpone."),
+            (
+                "maybe we should not postpone",
+                "Maybe we should not postpone.",
+            ),
+            ("I will visit tomorrow", "I will visit tomorrow."),
+            (
+                "Alex said, \"I want to stay\".",
+                "Alex said, \"I want to stay\".",
+            ),
+        ] {
+            assert_eq!(
+                fmt(source, CleanupLevel::High, "normal", VoiceStyle::Decisive),
+                expected,
+                "Decisive changed the source intention in {source:?}"
+            );
+        }
     }
 
     #[test]
@@ -445,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn coding_skips_hedge_on_high_decisive() {
+    fn coding_preserves_wishes_on_high_decisive() {
         let out = fmt(
             "I want to drink tea",
             CleanupLevel::High,
@@ -457,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn medium_does_not_apply_hedge() {
+    fn medium_decisive_preserves_wishes() {
         let out = fmt(
             "I want to drink tea",
             CleanupLevel::Medium,

@@ -161,6 +161,25 @@ mod tests {
         }
         #[cfg(windows)]
         assert_eq!(hotkey, "Shift+Win");
+        #[cfg(target_os = "macos")]
+        assert_eq!(hotkey, "Ctrl+Shift+Space");
+    }
+
+    #[test]
+    fn fresh_and_missing_legacy_hotkeys_use_the_platform_default() {
+        let settings = crate::settings::AppSettings::default();
+        assert_eq!(settings.hotkey, default_hotkey());
+        assert_eq!(settings.hotkeys.dictation, default_hotkey());
+        crate::hotkey::registry::HotkeyRegistry::from_settings(&settings)
+            .expect("fresh platform hotkeys must be supported");
+
+        let mut legacy = serde_json::json!({"settings_version": 4});
+        crate::settings::config::migrate_document(&mut legacy);
+        assert_eq!(legacy["hotkeys"]["dictation"], default_hotkey());
+
+        let mut saved = serde_json::json!({"settings_version": 4, "hotkey": "Shift+Win"});
+        crate::settings::config::migrate_document(&mut saved);
+        assert_eq!(saved["hotkeys"]["dictation"], "Shift+Win");
     }
 
     #[test]

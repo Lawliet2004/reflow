@@ -53,83 +53,7 @@ pub struct DictionarySuggestion {
     pub frequency: u32,
 }
 
-pub fn correction_suggestions(before: &str, after: &str) -> Vec<DictionarySuggestion> {
-    let tokens = |text: &str| {
-        text.split_whitespace()
-            .map(|s| {
-                s.trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
-                    .to_owned()
-            })
-            .collect::<Vec<_>>()
-    };
-    let a = tokens(before);
-    let b = tokens(after);
-    if a.len() != b.len() {
-        return vec![];
-    }
-    let changes = a.iter().zip(&b).filter(|(a, b)| a != b).collect::<Vec<_>>();
-    if changes.len() > 2 {
-        return vec![];
-    }
-    changes
-        .into_iter()
-        .filter_map(|(a, b)| {
-            // Dictionary terms are limited to 512 bytes. Longer prose/code
-            // tokens cannot become terms and must not trigger quadratic work.
-            if a.is_empty() || b.is_empty() || a.len() > 512 || b.len() > 512 {
-                return None;
-            }
-            let simple = |s: &str| s.to_lowercase().replace('-', "");
-            let ac = simple(a);
-            let bc = simple(b);
-            let same = ac == bc;
-            let close = a.chars().count() >= 4
-                && b.chars().count() >= 4
-                && (edit_distance(&ac, &bc) <= 1 || adjacent_transposition(&ac, &bc));
-            if !(same || close) {
-                return None;
-            }
-            Some(DictionarySuggestion {
-                before: a.clone(),
-                after: b.clone(),
-                frequency: 1,
-            })
-        })
-        .collect()
-}
-fn adjacent_transposition(a: &str, b: &str) -> bool {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    if a.len() != b.len() {
-        return false;
-    }
-    let differences: Vec<usize> = a
-        .iter()
-        .zip(&b)
-        .enumerate()
-        .filter_map(|(i, (x, y))| (x != y).then_some(i))
-        .collect();
-    differences.len() == 2
-        && differences[1] == differences[0] + 1
-        && a[differences[0]] == b[differences[1]]
-        && a[differences[1]] == b[differences[0]]
-}
-fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, x) in a.chars().enumerate() {
-        let mut previous = row[0];
-        row[0] = i + 1;
-        for (j, y) in b.iter().enumerate() {
-            let old = row[j + 1];
-            row[j + 1] = (row[j] + 1)
-                .min(old + 1)
-                .min(previous + usize::from(x != *y));
-            previous = old;
-        }
-    }
-    row[b.len()]
-}
+pub use crate::dictionary::correction_suggestions;
 
 pub fn note_entry(text: String) -> HistoryEntry {
     HistoryEntry {
@@ -189,31 +113,10 @@ pub fn edit_history_transcript(
         .history_store
         .get_entry(&id)?
         .ok_or("Transcript no longer exists")?;
-    let mut settings = ctx.settings_store.get();
-    for suggestion in correction_suggestions(&entry.final_transcript, &text) {
-        let pair = format!("{}\n{}", suggestion.before, suggestion.after);
-        if settings.dismissed_corrections.contains(&pair)
-            || settings
-                .dictionary_terms
-                .iter()
-                .any(|term| term.preferred_spelling == suggestion.after)
-        {
-            continue;
-        }
-        if let Some(existing) = settings
-            .dictionary_suggestions
-            .iter_mut()
-            .find(|s| s.before == suggestion.before && s.after == suggestion.after)
-        {
-            existing.frequency = existing.frequency.saturating_add(1);
-        } else if settings.dictionary_suggestions.len() < 200 {
-            settings.dictionary_suggestions.push(suggestion);
-        }
+    if entry.kind == "dictation" {
+        ctx.settings_store
+            .learn_dictionary_corrections(&entry.final_transcript, &text)?;
     }
-    // Persist suggestions first; if it fails, preserve the user's edit draft in the UI.
-    ctx.settings_store.merge_update(
-        serde_json::json!({"dictionary_suggestions": settings.dictionary_suggestions}),
-    )?;
     ctx.history_store.update_transcript(
         &id,
         &entry.smart_transcript,

@@ -13,6 +13,10 @@ use crate::capability::{capabilities, capabilities_uncached, Capabilities};
 use crate::platform::PlatformSys;
 use crate::profile::vram_reserve_mb;
 
+#[cfg(test)]
+#[path = "orphan_tests.rs"]
+mod orphan_tests;
+
 pub struct FlowModelSpec {
     pub id: &'static str,
     pub label: &'static str,
@@ -685,7 +689,7 @@ impl FlowRuntime {
     /// Evaluate the shared prompt prefix once, so the first real dictation does
     /// not pay for it.
     ///
-    /// Every rewrite sends an identical system + few-shot prefix and differs
+    /// Every rewrite sends identical system rules and differs
     /// only in the final user turn, so llama.cpp can serve the prefix from its
     /// slot cache. The catch is who pays for the first evaluation: prompt
     /// processing measures ~28 tokens/second when the model is on CPU, which is
@@ -873,11 +877,8 @@ impl FlowRuntime {
         // before we declare the launch a failure and fall back.
         let timeout_secs: u64 = 30;
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-        let http = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_millis(300))
-            .build()
-            .map_err(|e| FlowLaunchFailure::SpawnFailed(e.to_string()))?;
+        let http =
+            local_health_client().map_err(|e| FlowLaunchFailure::SpawnFailed(e.to_string()))?;
         while std::time::Instant::now() < deadline {
             // If the child has already exited, surface that as a launch
             // failure so the GPU→CPU fallback can take over.
@@ -922,6 +923,14 @@ impl FlowRuntime {
     }
 }
 
+pub(crate) fn local_health_client() -> Result<reqwest::blocking::Client, reqwest::Error> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_millis(300))
+        .build()
+}
+
 /// Ask the OS for a free loopback port.
 ///
 /// There is an unavoidable race here: we cannot hand a bound listener to
@@ -951,18 +960,21 @@ pub fn llama_server_bin() -> PathBuf {
 /// ~1.4 GB, free VRAM read 1440 MB, and the next launch's prompt-cache
 /// warm-up timed out.
 ///
-/// Only processes whose parent is gone are touched, so a server legitimately
-/// spawned by the running instance (or by anything else alive) is safe.
+/// Live parents are excluded. Linux PID-1 reparenting additionally requires a
+/// verified runtime generation and the app's exact model/loopback arguments.
 pub fn kill_orphaned_llama_servers() -> usize {
     use sysinfo::{ProcessesToUpdate, System};
     let own_pid = std::process::id();
     let managed_bin = PlatformSys::get_app_dir().join("bin");
+    let managed_models = PlatformSys::get_models_dir();
 
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        sysinfo::ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::Always),
+        sysinfo::ProcessRefreshKind::nothing()
+            .with_exe(sysinfo::UpdateKind::Always)
+            .with_cmd(sysinfo::UpdateKind::Always),
     );
 
     let mut killed = 0usize;
@@ -980,6 +992,8 @@ pub fn kill_orphaned_llama_servers() -> usize {
         if !is_managed_orphan(
             process.exe(),
             &managed_bin,
+            &managed_models,
+            process.cmd(),
             parent.as_u32(),
             own_pid,
             system.process(parent).is_some(),
@@ -987,7 +1001,7 @@ pub fn kill_orphaned_llama_servers() -> usize {
             continue;
         }
         log::warn!(
-            "Killing orphaned llama-server (pid {}, parent {} is gone)",
+            "Killing managed orphaned llama-server (pid {}, parent {})",
             pid.as_u32(),
             parent.as_u32()
         );
@@ -1001,18 +1015,121 @@ pub fn kill_orphaned_llama_servers() -> usize {
 fn is_managed_orphan(
     executable: Option<&std::path::Path>,
     managed_bin: &std::path::Path,
+    managed_models: &std::path::Path,
+    command: &[std::ffi::OsString],
     parent: u32,
     own_pid: u32,
     parent_alive: bool,
 ) -> bool {
-    if parent == own_pid || parent_alive {
+    let reparented = cfg!(target_os = "linux") && parent == 1;
+    if parent == own_pid || (parent_alive && !reparented) {
         return false;
     }
     let Some(executable) = executable else {
         return false;
     };
-    // Never terminate another application's server or an unverifiable process.
-    executable.parent() == Some(managed_bin)
+    let Some(generation) = managed_launcher_generation(executable, managed_bin) else {
+        return false;
+    };
+    // A dead original parent is sufficient for the exact managed launcher.
+    // PID 1 can also own independent services: require stronger ownership
+    // evidence before treating a reparented Linux server as ours.
+    !reparented || (generation && command_identifies_managed_server(command, managed_models))
+}
+
+/// Some(false) is the exact legacy launcher; Some(true) is a verified immutable
+/// generation. Canonical paths exclude sibling trees and symlink escapes.
+fn managed_launcher_generation(
+    executable: &std::path::Path,
+    managed_bin: &std::path::Path,
+) -> Option<bool> {
+    let executable = executable.canonicalize().ok()?;
+    let root = managed_bin.canonicalize().ok()?;
+    if executable.file_name()? != super::runtime_inventory::binary_name() {
+        return None;
+    }
+    let directory = executable.parent()?;
+    if directory == root {
+        return Some(false);
+    }
+    if directory.parent()? != root.join("runtimes") {
+        return None;
+    }
+    let id = directory.file_name()?.to_str()?;
+    let manifest = super::runtime_inventory::verify_generation(&root, id).ok()?;
+    let expected = super::runtime_inventory::entry_binary(&root, &manifest)
+        .ok()?
+        .canonicalize()
+        .ok()?;
+    (expected == executable).then_some(true)
+}
+
+fn unique_argument<'a>(
+    command: &'a [std::ffi::OsString],
+    flags: &[&str],
+) -> Option<&'a std::ffi::OsStr> {
+    let mut value = None;
+    for (index, argument) in command.iter().enumerate() {
+        if flags
+            .iter()
+            .any(|flag| argument.as_os_str() == std::ffi::OsStr::new(flag))
+        {
+            if value.is_some() {
+                return None;
+            }
+            value = Some(command.get(index + 1)?.as_os_str());
+        } else if argument.to_str().is_some_and(|argument| {
+            flags.iter().any(|flag| {
+                argument
+                    .strip_prefix(flag)
+                    .is_some_and(|suffix| suffix.starts_with('='))
+            })
+        }) {
+            // Reflow emits separate flag/value pairs. An alternate or duplicate
+            // assignment makes ownership ambiguous, so leave that process alone.
+            return None;
+        }
+    }
+    value
+}
+
+fn command_identifies_managed_server(
+    command: &[std::ffi::OsString],
+    managed_models: &std::path::Path,
+) -> bool {
+    if unique_argument(command, &["--host"]) != Some(std::ffi::OsStr::new("127.0.0.1"))
+        || !unique_argument(command, &["--port"])
+            .and_then(|port| port.to_str())
+            .and_then(|port| port.parse::<u16>().ok())
+            .is_some_and(|port| port > 0)
+    {
+        return false;
+    }
+    let Some(model) = unique_argument(command, &["-m", "--model"])
+        .and_then(|model| std::path::Path::new(model).canonicalize().ok())
+    else {
+        return false;
+    };
+    let Ok(root) = managed_models.canonicalize() else {
+        return false;
+    };
+    if !model.starts_with(root) {
+        return false;
+    }
+    FLOW_MODELS
+        .iter()
+        .filter(|spec| !spec.filename.is_empty())
+        .map(|spec| managed_models.join("flow").join(spec.filename))
+        .chain(
+            crate::profile::manifest::NATIVE_ASR_MODELS
+                .iter()
+                .map(|spec| managed_models.join(spec.dir_name).join(spec.filename)),
+        )
+        .any(|expected| {
+            expected
+                .canonicalize()
+                .is_ok_and(|expected| expected == model)
+        })
 }
 
 pub fn flow_gguf_path(flow_model: &str) -> PathBuf {
@@ -1283,18 +1400,6 @@ mod tests {
         let client = FlowClient::new_url("http://127.0.0.1:9".into(), timeout);
         assert_eq!(client.timeout, timeout);
         assert_eq!(client.timeout, FlowClient::new_missing().timeout);
-    }
-
-    #[test]
-    fn orphan_selection_only_accepts_managed_processes_with_dead_parents() {
-        let managed = std::path::Path::new("reflow/bin");
-        let owned = managed.join("llama-server.exe");
-        let other = std::path::Path::new("another-app/bin/llama-server.exe");
-        assert!(is_managed_orphan(Some(&owned), managed, 42, 1, false));
-        assert!(!is_managed_orphan(Some(&owned), managed, 42, 1, true));
-        assert!(!is_managed_orphan(Some(&owned), managed, 1, 1, false));
-        assert!(!is_managed_orphan(Some(other), managed, 42, 1, false));
-        assert!(!is_managed_orphan(None, managed, 42, 1, false));
     }
 
     /// `--threads` must be the physical core count when the CPU does real

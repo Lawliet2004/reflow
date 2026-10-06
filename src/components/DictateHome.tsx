@@ -23,6 +23,7 @@ import {
   IntelligenceTierState,
 } from "../types";
 import { api } from "../services/tauriApi";
+import { createEventScope } from "../services/eventScope";
 import { FileTranscription, FileTranscriptionController } from "./FileTranscription";
 import { LanguageOptions } from "./LanguageOptions";
 import { derivePhase, BackendStage } from "./hud/stages";
@@ -32,6 +33,7 @@ import { StageRail } from "./hud/StageRail";
 import { relativeTime } from "../historyDisplay";
 import { LlmSelector } from "./LlmSelector";
 import { selectedLlm } from "../llmSelection";
+import { WritingTaskPicker } from "./WritingTaskPicker";
 
 interface DictateHomeProps {
   appState: AppState;
@@ -53,9 +55,21 @@ interface DictateHomeProps {
 }
 const CLEANUP: { id: CleanupLevel; label: string; description: string }[] = [
   { id: "raw", label: "Original", description: "Keep the words exactly as recognized." },
-  { id: "light", label: "Clean", description: "Tidy punctuation and remove filler words." },
-  { id: "medium", label: "Polished", description: "Smooth the phrasing with on-device AI." },
-  { id: "high", label: "Refined", description: "Give your words a more considered edit." },
+  {
+    id: "light",
+    label: "Minimal",
+    description: "Tidy punctuation and fillers; make minimal changes.",
+  },
+  {
+    id: "medium",
+    label: "Natural",
+    description: "Repair grammar and repetitions while keeping your voice.",
+  },
+  {
+    id: "high",
+    label: "Structured",
+    description: "Improve flow and organize longer text into paragraphs.",
+  },
 ];
 export const DictateHome: React.FC<DictateHomeProps> = ({
   appState,
@@ -77,6 +91,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
 }) => {
   const [draft, setDraft] = useState<{ source: string; text: string } | null>(null);
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [seconds, setSeconds] = useState(0);
@@ -110,6 +125,13 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   const cleanup = settings.cleanup_level ?? "light";
   const phase = derivePhase(appState, transcript, null, backendStage);
   useEffect(() => {
+    const scope = createEventScope();
+    void scope.listen<HistoryEntry>("history:updated", () => {
+      setHistoryRevision((value) => value + 1);
+    });
+    return () => scope.dispose();
+  }, []);
+  useEffect(() => {
     let alive = true;
     if (!isRecording && !isProcessing)
       api
@@ -121,7 +143,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
     return () => {
       alive = false;
     };
-  }, [isRecording, isProcessing]);
+  }, [isRecording, isProcessing, historyRevision]);
   useEffect(() => {
     if (!isRecording) return;
     const started = Date.now();
@@ -192,32 +214,28 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
         : modelStatus?.is_downloading
           ? `Downloading speech model · ${Math.round(modelStatus.download_progress_pct ?? 0)}%`
           : "Let’s get your voice ready";
+  const words = editableText.trim() ? editableText.trim().split(/\s+/).length : 0;
+  const busy = isRecording || isProcessing;
   return (
     <div className="workspace-page dictate-page animate-fade-rise">
       <header className="page-heading">
         <h1>Speak freely.</h1>
+        <select
+          className="field language-picker"
+          aria-label="Language"
+          value={settings.language}
+          onChange={(event) =>
+            onUpdateSettings({
+              language: event.target.value,
+              auto_detect_language: event.target.value === "auto",
+            })
+          }
+        >
+          <LanguageOptions />
+        </select>
       </header>
-      <section className="dictation-studio" aria-label="Dictation studio">
-        <div className="studio-toolbar">
-          <span className="flex items-center gap-2 text-sm font-medium">
-            <span className={`status-dot ${isRecording ? "is-live" : ""}`} />
-            {isRecording ? "Recording" : isProcessing ? "Processing" : "Dictation"}
-          </span>
-          <select
-            className="field language-picker"
-            aria-label="Language"
-            value={settings.language}
-            onChange={(event) =>
-              onUpdateSettings({
-                language: event.target.value,
-                auto_detect_language: event.target.value === "auto",
-              })
-            }
-          >
-            <LanguageOptions />
-          </select>
-        </div>
-        <div className="studio-center">
+      <section className="manuscript" aria-label="Dictation studio">
+        <div className="manuscript-head">
           <button
             className={`record-button ${isRecording ? "is-recording" : ""}`}
             // RMS speech sits around 0.05-0.3; the same 3.4x gain as the waveform.
@@ -233,159 +251,66 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
             }}
           >
             {isProcessing ? (
-              <Loader2 size={30} className="animate-spin" />
+              <Loader2 size={26} className="animate-spin" />
             ) : isRecording ? (
-              <Square size={26} fill="currentColor" />
+              <Square size={22} fill="currentColor" />
             ) : (
-              <Mic size={32} strokeWidth={1.5} />
+              <Mic size={28} strokeWidth={1.5} />
             )}
           </button>
-          <h2>{status}</h2>
-          {isRecording && (
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => {
-                void api
-                  .cancelRecording()
-                  .catch((error: unknown) => setFeedback({ error: true, text: String(error) }));
-              }}
-            >
-              Cancel · Esc
-            </button>
-          )}
-          {isRecording ? (
-            <div className="flex items-center gap-3">
-              <Waveform level={transcript.audio_level} active barCount={24} height={24} />
-              <span className="text-sm text-muted tabular-nums">
-                {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
-              </span>
-            </div>
-          ) : isProcessing ? (
-            <div className="stage-track" data-phase={phase}>
-              <StageRail phase={phase} polishEnabled={polishEnabled} />
-            </div>
-          ) : modelReady ? (
-            <p className="shortcut-hint">
-              {!settings.push_to_talk ? "Press" : "Hold"}{" "}
-              {settings.hotkey.split("+").map((key, index) => (
-                <kbd key={index} className="kbd">
-                  {key}
-                </kbd>
-              ))}{" "}
-              in any app, or click the microphone.
-            </p>
-          ) : (
-            <p>
-              Set up your speech model in{" "}
-              <button className="text-link" onClick={onOpenSettings}>
-                Settings <ArrowUpRight size={13} />
-              </button>
-            </p>
-          )}
-          {isRecording && transcript.full_text && (
-            <p className="live-transcript">{transcript.full_text}</p>
-          )}
-        </div>
-        <div className="studio-footer">
-          <span>
-            <ShieldCheck size={14} /> Speech is processed on your computer.
-          </span>
-        </div>
-      </section>
-      {settings.meeting_mode && (
-        <section
-          className="panel p-4 flex items-center justify-between gap-4"
-          aria-label="Meeting recording"
-        >
-          <div>
-            <h2 className="font-semibold">Capture a meeting</h2>
-            <p className="text-sm text-muted">
-              Record your mic and computer playback. Saved to History without pasting.
-            </p>
+          <div className="manuscript-status">
+            <h2>{status}</h2>
+            {isRecording ? (
+              <div className="manuscript-live">
+                <Waveform level={transcript.audio_level} active barCount={24} height={22} />
+                <span className="text-sm text-muted tabular-nums">
+                  {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    void api
+                      .cancelRecording()
+                      .catch((error: unknown) => setFeedback({ error: true, text: String(error) }));
+                  }}
+                >
+                  Cancel · Esc
+                </button>
+              </div>
+            ) : isProcessing ? (
+              <div className="stage-track" data-phase={phase}>
+                <StageRail phase={phase} polishEnabled={polishEnabled} />
+              </div>
+            ) : modelReady ? (
+              <p className="shortcut-hint">
+                {!settings.push_to_talk ? "Press" : "Hold"}{" "}
+                {settings.hotkey.split("+").map((key, index) => (
+                  <kbd key={index} className="kbd">
+                    {key}
+                  </kbd>
+                ))}{" "}
+                in any app, or click the microphone.
+              </p>
+            ) : modelStatus?.is_downloading ? (
+              <p>You can keep working while it downloads.</p>
+            ) : (
+              <>
+                <p>Download a speech model once. After that, everything runs on this computer.</p>
+                {onOpenSettings && (
+                  <button className="btn btn-primary" onClick={onOpenSettings}>
+                    Set up speech model <ArrowUpRight size={14} />
+                  </button>
+                )}
+              </>
+            )}
           </div>
-          <button
-            className="btn btn-secondary shrink-0"
-            disabled={!canStart}
-            onClick={() => {
-              void api
-                .startMeeting()
-                .catch((e: unknown) => setFeedback({ error: true, text: String(e) }));
-            }}
-          >
-            Record meeting
-          </button>
-        </section>
-      )}
-      <section className="cleanup-strip" aria-label="Writing preferences">
-        <div>
-          <h2>Make it sound like you.</h2>
-          <p>{CLEANUP.find((item) => item.id === cleanup)?.description}</p>
         </div>
-        <div
-          className="segmented-control"
-          role="radiogroup"
-          aria-label="Cleanup level"
-          tabIndex={-1}
-          onKeyDown={onCleanupKey}
-        >
-          {CLEANUP.map((item) => (
-            <button
-              key={item.id}
-              role="radio"
-              aria-checked={cleanup === item.id}
-              tabIndex={cleanup === item.id ? 0 : -1}
-              disabled={
-                isRecording ||
-                isProcessing ||
-                (!polishEnabled && (item.id === "medium" || item.id === "high"))
-              }
-              onClick={() => selectCleanup(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <LlmSelector
-          settings={settings}
-          onUpdateSettings={onUpdateSettings}
-          tiers={intelligenceTiers}
-          disabled={isRecording || isProcessing}
-          onOpenSettings={onOpenSettings}
-        />
-        {polishEnabled && (
-          <label className="flex items-center gap-2 text-sm text-muted">
-            Writing style
-            <select
-              className="field"
-              value={settings.style ?? "neutral"}
-              disabled={isRecording || isProcessing}
-              onChange={(event) =>
-                onUpdateSettings({ style: event.target.value as TranscriptStyle })
-              }
-            >
-              {["faithful", "neutral", "decisive", "email", "chat"].map((style) => (
-                <option value={style} key={style}>
-                  {style[0].toUpperCase() + style.slice(1)}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-      </section>
-      <section className="transcript-sheet" aria-label="Your transcript">
-        <header>
-          <h2>Your words</h2>
-          <span>
-            {editableText.trim()
-              ? `${editableText.trim().split(/\s+/).length} words`
-              : "A clear space for your next thought"}
-          </span>
-        </header>
         <textarea
           aria-label="Transcript"
+          className="manuscript-text"
           value={editableText}
-          readOnly={isRecording || isProcessing}
+          readOnly={busy}
           aria-keyshortcuts="Control+Enter"
           onKeyDown={(event) => {
             if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && editableText.trim()) {
@@ -396,31 +321,32 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
           onChange={(event) => setDraft({ source: transcript.full_text, text: event.target.value })}
           placeholder="Start speaking. Your transcript will appear here, ready to edit and copy into any app."
         />
-        <footer>
-          <button
-            className="icon-btn"
-            aria-label="Clear transcript"
-            disabled={!editableText || isRecording || isProcessing}
-            onClick={() => setDraft({ source: transcript.full_text, text: "" })}
-          >
-            <RotateCcw size={15} />
-          </button>
-          <div className="flex items-center gap-2">
+        <footer className="manuscript-foot">
+          <span>
+            <ShieldCheck size={14} aria-hidden /> Speech is processed on your computer.
+            {words > 0 && ` · ${words} ${words === 1 ? "word" : "words"}`}
+          </span>
+          <div>
+            <button
+              className="icon-btn"
+              aria-label="Clear transcript"
+              title="Clear transcript"
+              disabled={!editableText || busy}
+              onClick={() => setDraft({ source: transcript.full_text, text: "" })}
+            >
+              <RotateCcw size={15} />
+            </button>
             {originalText !== undefined && originalText !== editableText && (
               <button
                 className="btn btn-ghost"
-                disabled={isRecording || isProcessing}
+                disabled={busy}
                 onClick={() => setDraft({ source: transcript.full_text, text: originalText })}
               >
                 Use original
               </button>
             )}
             {draft?.source === transcript.full_text && (
-              <button
-                className="btn btn-ghost"
-                disabled={isRecording || isProcessing}
-                onClick={() => setDraft(null)}
-              >
+              <button className="btn btn-ghost" disabled={busy} onClick={() => setDraft(null)}>
                 Undo transcript edit
               </button>
             )}
@@ -445,51 +371,136 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
       <span className="sr-only" role="status">
         {copied ? "Copied to clipboard." : ""}
       </span>
-      <section className="recent-section">
-        <header>
-          <h2>Recently said</h2>
-          <button className="text-link" onClick={onOpenHistory}>
-            View history <ArrowUpRight size={14} />
-          </button>
-        </header>
-        {recent.length ? (
-          <div className="recent-list">
-            {recent.map((entry) => (
-              <div key={entry.id}>
-                <p>{entry.final_transcript}</p>
-                <time
-                  dateTime={entry.created_at}
-                  title={new Date(entry.created_at).toLocaleString()}
-                >
-                  {relativeTime(entry.created_at)}
-                </time>
-                <button
-                  className="icon-btn"
-                  aria-label="Copy recent transcript"
-                  onClick={() => copy(entry.final_transcript, String(entry.id))}
-                >
-                  {copied === String(entry.id) ? (
-                    <Check size={14} className="text-success" />
-                  ) : (
-                    <Copy size={14} />
-                  )}
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted py-5">
-            Your finished dictations will be saved here. One less thought to lose.
-          </p>
-        )}
+      <section className="writing-bar" aria-label="Writing preferences">
+        <WritingTaskPicker
+          settings={settings}
+          onUpdateSettings={onUpdateSettings}
+          disabled={busy}
+        />
+        <div className="writing-bar-intro">
+          <h2>Fine-tune the edit.</h2>
+          <p>{CLEANUP.find((item) => item.id === cleanup)?.description}</p>
+        </div>
+        <div
+          className="segmented-control"
+          role="radiogroup"
+          aria-label="Cleanup level"
+          tabIndex={-1}
+          onKeyDown={onCleanupKey}
+        >
+          {CLEANUP.map((item) => (
+            <button
+              key={item.id}
+              role="radio"
+              aria-checked={cleanup === item.id}
+              tabIndex={cleanup === item.id ? 0 : -1}
+              disabled={busy || (!polishEnabled && (item.id === "medium" || item.id === "high"))}
+              onClick={() => selectCleanup(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="writing-bar-models">
+          <LlmSelector
+            settings={settings}
+            onUpdateSettings={onUpdateSettings}
+            tiers={intelligenceTiers}
+            disabled={busy}
+            onOpenSettings={onOpenSettings}
+          />
+          {polishEnabled && (
+            <label>
+              Writing style
+              <select
+                className="field"
+                value={settings.style ?? "neutral"}
+                disabled={busy}
+                onChange={(event) =>
+                  onUpdateSettings({ style: event.target.value as TranscriptStyle })
+                }
+              >
+                {["faithful", "neutral", "decisive", "email", "chat"].map((style) => (
+                  <option value={style} key={style}>
+                    {style[0].toUpperCase() + style.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       </section>
-      <FileTranscription
-        onOpenHistory={onOpenHistory}
-        disabled={isRecording || isProcessing}
-        controller={fileTranscription}
-      />
+      {settings.meeting_mode && (
+        <section
+          className="panel p-5 mt-8 flex items-center justify-between gap-4"
+          aria-label="Meeting recording"
+        >
+          <div>
+            <h2 className="font-display text-lg font-medium">Capture a meeting</h2>
+            <p className="text-sm text-muted">
+              Record your mic and computer playback. Saved to History without pasting.
+            </p>
+          </div>
+          <button
+            className="btn btn-secondary shrink-0"
+            disabled={!canStart}
+            onClick={() => {
+              void api
+                .startMeeting()
+                .catch((e: unknown) => setFeedback({ error: true, text: String(e) }));
+            }}
+          >
+            Record meeting
+          </button>
+        </section>
+      )}
+      <div className="home-secondary">
+        <section className="recent-section" aria-label="Recently said">
+          <header>
+            <h2>Recently said</h2>
+            <button className="text-link" onClick={onOpenHistory}>
+              View history <ArrowUpRight size={14} />
+            </button>
+          </header>
+          {recent.length ? (
+            <div className="recent-list">
+              {recent.map((entry) => (
+                <div key={entry.id}>
+                  <p>{entry.final_transcript}</p>
+                  <time
+                    dateTime={entry.created_at}
+                    title={new Date(entry.created_at).toLocaleString()}
+                  >
+                    {relativeTime(entry.created_at)}
+                  </time>
+                  <button
+                    className="icon-btn"
+                    aria-label="Copy recent transcript"
+                    onClick={() => copy(entry.final_transcript, String(entry.id))}
+                  >
+                    {copied === String(entry.id) ? (
+                      <Check size={14} className="text-success" />
+                    ) : (
+                      <Copy size={14} />
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="recent-empty">
+              Your finished dictations will be saved here. One less thought to lose.
+            </p>
+          )}
+        </section>
+        <FileTranscription
+          onOpenHistory={onOpenHistory}
+          disabled={busy}
+          controller={fileTranscription}
+        />
+      </div>
       {settings.developer_mode && latencyMetrics && (
-        <details className="panel p-5">
+        <details className="panel p-5 mt-8">
           <summary className="cursor-pointer text-sm font-medium">Dictation diagnostics</summary>
           <div className="mt-4">
             <LatencyWaterfall metrics={latencyMetrics} percentiles={latencyPercentiles} />

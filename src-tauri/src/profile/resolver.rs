@@ -714,6 +714,9 @@ pub fn select_asr_load_for_runtime(
             measured,
         );
     }
+    if requested_model == "zipformer-20m" {
+        return select_zipformer_load(preset, requested_device, requested_precision);
+    }
     if runtime != "native" {
         return select_asr_load(
             preset,
@@ -815,6 +818,9 @@ pub fn select_asr_load(
             caps,
             measured,
         );
+    }
+    if requested_model == "zipformer-20m" {
+        return select_zipformer_load(preset, requested_device, requested_precision);
     }
     let forced_precision = Precision::parse(requested_precision);
     let requested = asr_manifest(requested_model).unwrap_or(&ASR_MODELS[0]);
@@ -1053,6 +1059,46 @@ fn select_phonon_load(
         model_id: model.id,
         device,
         precision,
+        downgrade: (!notes.is_empty()).then(|| notes.join(" ")),
+        error,
+    }
+}
+
+/// Zipformer ships a single CPU/int8 configuration, so there is no ladder —
+/// only the reporting contract: explain corrections, refuse forced nonsense.
+fn select_zipformer_load(
+    preset: Preset,
+    requested_device: &str,
+    requested_precision: &str,
+) -> AsrSelection {
+    let model = &super::manifest::ZIPFORMER_MODEL;
+    let mut notes = Vec::new();
+    if !matches!(requested_device, "auto" | "cpu") {
+        notes.push("Zipformer 20M is CPU-optimized; the GPU selection does not apply.".to_string());
+    }
+    let supported = model.supported_precisions_on(Device::Cpu);
+    let error = Precision::parse(requested_precision)
+        .filter(|p| !supported.contains(p))
+        .and_then(|p| {
+            if preset == Preset::Custom {
+                Some(unsupported_precision_error(
+                    model,
+                    Device::Cpu,
+                    p,
+                    &supported,
+                ))
+            } else {
+                notes.push(format!(
+                    "Zipformer 20M ships int8 weights; {} is unavailable.",
+                    p.as_str()
+                ));
+                None
+            }
+        });
+    AsrSelection {
+        model_id: model.id,
+        device: Device::Cpu,
+        precision: Precision::Int8,
         downgrade: (!notes.is_empty()).then(|| notes.join(" ")),
         error,
     }

@@ -14,6 +14,9 @@ use crate::settings::{AppSettings, DictionaryTerm, Mode, Snippet};
 
 const BUNDLE_VERSION: u32 = 1;
 const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_MODEL_METADATA_FILES: usize = 128;
+const MAX_MODEL_METADATA_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_MODEL_METADATA_FILE_BYTES: u64 = 64 * 1024 * 1024;
 // Machine placement, network/API privileges, encryption, devices, paths and
 // output commands deliberately stay local, including in replace mode.
 const PORTABLE_KEYS: &[&str] = &[
@@ -39,6 +42,15 @@ const PORTABLE_KEYS: &[&str] = &[
     "waveform_style",
     "reduce_motion",
     "ui_font_scale",
+    "accent_custom",
+    "surface_tone",
+    "reading_font",
+    "heading_font",
+    "ui_density",
+    "corner_style",
+    "window_material",
+    "hud_shape",
+    "hud_opacity",
     "voice_commands_enabled",
     "send_key",
     "excluded_apps",
@@ -322,6 +334,68 @@ fn verified_copy(source: &Path, destination: &Path, sha256: &str) -> Result<u64,
     Ok(copied)
 }
 
+/// Check the whole metadata set before copying any file. Read each checked file
+/// once, with a byte cap, so growth after the directory scan cannot evade the
+/// aggregate bound or change the JSON between validation and staging.
+fn copy_model_metadata(
+    source_dir: &Path,
+    stage: &Path,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<u64, String> {
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(source_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if !matches!(extension, "json" | "txt" | "jinja" | "tiktoken") {
+            continue;
+        }
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if file_type.is_symlink() || !file_type.is_file() {
+            return Err("Model metadata must be regular files.".into());
+        }
+        if files.len() >= max_files {
+            return Err("Model metadata contains too many files.".into());
+        }
+        let bytes = entry.metadata().map_err(|e| e.to_string())?.len();
+        if bytes > MAX_MODEL_METADATA_FILE_BYTES {
+            return Err("Model metadata file is larger than 64 MB.".into());
+        }
+        total = total
+            .checked_add(bytes)
+            .ok_or("Model metadata is too large.")?;
+        if total > max_bytes {
+            return Err("Model metadata exceeds the total import limit.".into());
+        }
+        files.push((path, bytes));
+    }
+    for (path, expected_bytes) in files {
+        let mut contents = Vec::new();
+        std::fs::File::open(&path)
+            .map_err(|e| e.to_string())?
+            .take(expected_bytes + 1)
+            .read_to_end(&mut contents)
+            .map_err(|e| e.to_string())?;
+        if contents.len() as u64 != expected_bytes {
+            return Err("Model metadata changed during import. Try again.".into());
+        }
+        if path.extension().and_then(|value| value.to_str()) == Some("json") {
+            let value: Value = serde_json::from_slice(&contents).map_err(|e| e.to_string())?;
+            if value.get("auto_map").is_some() {
+                return Err("Model metadata requiring remote code is not supported.".into());
+            }
+        }
+        let name = path.file_name().ok_or("Model metadata file has no name.")?;
+        std::fs::write(stage.join(name), contents).map_err(|e| e.to_string())?;
+    }
+    Ok(total)
+}
+
 /// Pure disk import; no runtime launch or network. Stage all files before install.
 pub fn import_model_into(source: &Path, models_dir: &Path) -> Result<ImportedModel, String> {
     if !source.exists() {
@@ -376,35 +450,12 @@ pub fn import_model_into(source: &Path, models_dir: &Path) -> Result<ImportedMod
             .map_err(|e| format!("Required companion {}: {e}", auxiliary.filename))?;
         }
         if manifest.runtime == RuntimeKind::PythonAsr {
-            for entry in std::fs::read_dir(source_dir).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let metadata = entry.file_type().map_err(|e| e.to_string())?;
-                let path = entry.path();
-                let extension = path
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default();
-                if !matches!(extension, "json" | "txt" | "jinja" | "tiktoken") {
-                    continue;
-                }
-                if metadata.is_symlink() || !metadata.is_file() {
-                    return Err("Model metadata must be regular files.".into());
-                }
-                if entry.metadata().map_err(|e| e.to_string())?.len() > 64 * 1024 * 1024 {
-                    return Err("Model metadata file is larger than 64 MB.".into());
-                }
-                if extension == "json" {
-                    let value: Value = serde_json::from_reader(
-                        std::fs::File::open(&path).map_err(|e| e.to_string())?,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    if value.get("auto_map").is_some() {
-                        return Err("Model metadata requiring remote code is not supported.".into());
-                    }
-                }
-                bytes += std::fs::copy(&path, stage.join(entry.file_name()))
-                    .map_err(|e| e.to_string())?;
-            }
+            bytes += copy_model_metadata(
+                source_dir,
+                &stage,
+                MAX_MODEL_METADATA_FILES,
+                MAX_MODEL_METADATA_BYTES,
+            )?;
         }
         let target_directory = models_dir.join(manifest.dir_name);
         let destination = target_directory.join(manifest.filename);
@@ -461,6 +512,48 @@ pub async fn import_model_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_count_and_total_bytes_are_bounded_before_any_copy() {
+        let directory =
+            std::env::temp_dir().join(format!("reflow-metadata-limit-{}", uuid::Uuid::new_v4()));
+        let source = directory.join("source");
+        let stage = directory.join("stage");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::write(source.join("config.json"), b"{}").unwrap();
+        std::fs::write(source.join("tokens.txt"), b"1234").unwrap();
+        std::fs::write(source.join("ignored.bin"), b"ignored weights").unwrap();
+        assert!(copy_model_metadata(&source, &stage, 1, 6)
+            .unwrap_err()
+            .contains("too many files"));
+        assert_eq!(std::fs::read_dir(&stage).unwrap().count(), 0);
+        assert!(copy_model_metadata(&source, &stage, 2, 5)
+            .unwrap_err()
+            .contains("total import limit"));
+        assert_eq!(std::fs::read_dir(&stage).unwrap().count(), 0);
+        assert_eq!(copy_model_metadata(&source, &stage, 2, 6).unwrap(), 6);
+        assert_eq!(std::fs::read(stage.join("config.json")).unwrap(), b"{}");
+        assert_eq!(std::fs::read(stage.join("tokens.txt")).unwrap(), b"1234");
+        assert!(!stage.join("ignored.bin").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn metadata_requiring_remote_code_is_rejected_before_its_copy() {
+        let directory =
+            std::env::temp_dir().join(format!("reflow-metadata-code-{}", uuid::Uuid::new_v4()));
+        let source = directory.join("source");
+        let stage = directory.join("stage");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::write(source.join("config.json"), br#"{"auto_map":{}}"#).unwrap();
+        assert!(copy_model_metadata(&source, &stage, 2, 32)
+            .unwrap_err()
+            .contains("remote code"));
+        assert_eq!(std::fs::read_dir(&stage).unwrap().count(), 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn verified_copy_rejects_corruption_before_copying_and_checks_destination() {

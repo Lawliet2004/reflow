@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { HistoryEntry } from "../types";
 import { api } from "../services/tauriApi";
+import { createEventScope } from "../services/eventScope";
 import { hasAiEdit, historyCleaned, historyOriginal } from "../historyDisplay";
 import { TranscriptMenu } from "./TranscriptMenu";
 
@@ -123,6 +124,15 @@ export const HistoryView: React.FC = () => {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    const scope = createEventScope();
+    void scope.listen<HistoryEntry>("history:updated", () => {
+      requestId.current += 1;
+      setRevision((value) => value + 1);
+    });
+    return () => scope.dispose();
+  }, []);
 
   // Expire actions even when the user leaves the history page/menu open.
   useEffect(() => {
@@ -301,7 +311,7 @@ export const HistoryView: React.FC = () => {
     <div className="workspace-page history-page animate-fade-rise">
       <header className="page-heading flex-wrap">
         <div>
-          <h1 className="font-display font-semibold tracking-tight text-ink">History</h1>
+          <h1 className="text-ink">History</h1>
           <p>Find, revisit, and reuse your dictations. Saved on this computer.</p>
         </div>
         <div className="flex items-center gap-2">

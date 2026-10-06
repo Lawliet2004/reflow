@@ -93,4 +93,64 @@ describe("Overlay", () => {
     expect(hud?.getAttribute("role")).toBe("status");
     expect(hud?.getAttribute("aria-live")).toBe("polite");
   });
+
+  it("reacts to audio in the waveform pill and announces processing and completion", () => {
+    const { container, rerender } = render(
+      <Overlay appState="RECORDING" transcript={payload()} hudStyle="waveform" standalone />,
+    );
+    expect(screen.getByRole("status")).toHaveAttribute("data-style", "waveform");
+    expect(screen.getByText("Listening")).toHaveClass("sr-only");
+    const quietHeight = container.querySelector<HTMLElement>(".capsule-wave-bar")!.style.height;
+    rerender(
+      <Overlay
+        appState="RECORDING"
+        transcript={payload({ audio_level: 0.3 })}
+        hudStyle="waveform"
+        standalone
+      />,
+    );
+    expect(
+      parseFloat(container.querySelector<HTMLElement>(".capsule-wave-bar")!.style.height),
+    ).toBeGreaterThan(parseFloat(quietHeight));
+
+    rerender(
+      <Overlay appState="PROCESSING" transcript={payload()} hudStyle="waveform" standalone />,
+    );
+    expect(screen.getByText("Transcribing")).toHaveClass("sr-only");
+    expect(container.querySelector(".capsule-wave")).toHaveAttribute("data-active", "false");
+
+    rerender(
+      <Overlay
+        appState="READY"
+        transcript={payload({ full_text: "Private transcript" })}
+        extraMessage="Inserted"
+        hudStyle="waveform"
+        standalone
+      />,
+    );
+    expect(screen.getByText("Done")).toHaveClass("sr-only");
+    expect(container.querySelector(".capsule-check")).not.toBeNull();
+    expect(container.querySelector(".capsule-wave")).toBeNull();
+    expect(screen.queryByText("Private transcript")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["IDLE", "Copied — press Ctrl+V", "Copied — press Ctrl+V"],
+    ["READY", "No speech", "No speech detected"],
+    ["ERROR", "Failed", "Couldn't finish · open Reflow"],
+  ] as const)(
+    "keeps %s recovery messages visible in the waveform style",
+    (appState, extraMessage, label) => {
+      render(
+        <Overlay
+          appState={appState}
+          transcript={payload()}
+          extraMessage={extraMessage}
+          hudStyle="waveform"
+        />,
+      );
+      expect(screen.getByText(label)).toHaveClass("hud-label");
+      expect(screen.getByRole("status")).toHaveAttribute("data-message", "true");
+    },
+  );
 });

@@ -25,6 +25,10 @@ use crate::capability::capabilities;
 use crate::context::AppContext;
 use crate::platform::PlatformSys;
 
+#[cfg(test)]
+#[path = "runtime_restore_tests.rs"]
+mod restore_tests;
+
 /// The pinned llama.cpp build corresponding to the stable v0.5.0 release.
 pub const PINNED_LLAMA_TAG: &str = "b11146";
 
@@ -878,17 +882,54 @@ fn promote_for_context(
     ) {
         return Err("Runtime is staged; finish the active dictation before activating it.".into());
     }
+    let native = ctx.asr_runtime.lock().as_str() == "native";
+    promote_with_asr_restore(
+        &ctx.asr_handle,
+        native,
+        || ctx.flow_runtime.shutdown(),
+        promote,
+    )
+}
+
+fn promote_with_asr_restore(
+    asr: &crate::asr::AsrHandle,
+    native: bool,
+    stop_flow: impl FnOnce(),
+    promote: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let restore = if native {
+        asr.loaded_model_request_blocking()?
+    } else {
+        None
+    };
     let maintenance = super::runtime_inventory::Maintenance::begin()?;
     // New ensure calls fail while pending, so unloading the actor cannot wait
     // behind a launch blocked on the promotion's exclusive lock.
-    ctx.flow_runtime.shutdown();
-    if ctx.asr_runtime.lock().as_str() == "native" {
-        ctx.asr_handle.unload_model_blocking()?;
+    stop_flow();
+    if native {
+        asr.unload_model_blocking()?;
     }
-    let exclusive = maintenance.exclusive();
-    let outcome = promote();
-    drop(exclusive);
+    let outcome = {
+        let _exclusive = maintenance.exclusive();
+        promote()
+    };
+    // A native model uses FlowRuntime::ensure: reopening its server while
+    // maintenance is still pending would reject the restoration itself.
     drop(maintenance);
+    if let Some(request) = restore {
+        if let Err(error) = asr.load_model_with_precision_blocking(
+            &request.model_dir,
+            &request.backend,
+            &request.precision,
+        ) {
+            let restore_error =
+                format!("Native ASR could not be restored after runtime activation: {error}");
+            return Err(match outcome {
+                Ok(()) => restore_error,
+                Err(promotion_error) => format!("{promotion_error}; {restore_error}"),
+            });
+        }
+    }
     outcome
 }
 

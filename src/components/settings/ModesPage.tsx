@@ -13,6 +13,7 @@ import { HotkeyPicker } from "../HotkeyPicker";
 import { LanguageOptions } from "../LanguageOptions";
 import { Section, Row, Toggle } from "./ui";
 import { OutputPicker } from "./OutputPicker";
+import { WritingTaskPicker } from "../WritingTaskPicker";
 
 const PRESETS = [
   [
@@ -42,6 +43,7 @@ export function ModesPage({
   const [error, setError] = useState<string | null>(null);
   const [sample, setSample] = useState("Please send the release notes to the team tomorrow.");
   const [preview, setPreview] = useState<string | null>(null);
+  const [taskDraftId, setTaskDraftId] = useState<string | null>(null);
   const persist = async (patch: Partial<AppSettings>, close = false) => {
     setBusy(true);
     setError(null);
@@ -57,6 +59,7 @@ export function ModesPage({
   };
   const add = (name = "New mode", instructions = "") => {
     setPreview(null);
+    setTaskDraftId(null);
     setDraft({
       ...structuredClone(defaultModes()[0]),
       id: crypto.randomUUID(),
@@ -65,7 +68,10 @@ export function ModesPage({
     });
   };
   const update = (patch: Partial<Mode>) => {
-    if (draft) setDraft({ ...draft, ...patch });
+    if (draft) {
+      setDraft({ ...draft, ...patch });
+      setPreview(null);
+    }
   };
   const saveDraft = () => {
     if (!draft) return;
@@ -96,7 +102,15 @@ export function ModesPage({
         send_key: draft.send_key,
         language: draft.language ?? settings.language,
         auto_detect_language: draft.language === null || draft.language === "auto",
+        ...(taskDraftId === draft.id ? { auto_style_from_app: false } : {}),
       });
+    if (
+      settings.preset === "fast" &&
+      draft.intelligence_tier !== "raw_verbatim" &&
+      draft.cleanup_level !== "raw"
+    ) {
+      patch.preset = "auto";
+    }
     void persist(patch, true);
   };
   return (
@@ -171,6 +185,7 @@ export function ModesPage({
               className="btn btn-ghost"
               onClick={() => {
                 setPreview(null);
+                setTaskDraftId(null);
                 setDraft(
                   mode.id === "dictation"
                     ? {
@@ -230,6 +245,34 @@ export function ModesPage({
             }}
           >
             <h3 className="text-sm font-semibold">Edit mode</h3>
+            <WritingTaskPicker
+              settings={{
+                ...draft,
+                ...(draft.id === "dictation"
+                  ? {
+                      auto_style_from_app:
+                        taskDraftId === draft.id ? false : settings.auto_style_from_app,
+                      preset:
+                        taskDraftId === draft.id && settings.preset === "fast"
+                          ? "auto"
+                          : settings.preset,
+                    }
+                  : {}),
+              }}
+              onUpdateSettings={(patch) => {
+                setTaskDraftId(draft.id);
+                update({
+                  cleanup_level: patch.cleanup_level,
+                  intelligence_tier: patch.intelligence_tier,
+                  dictation_mode: patch.dictation_mode,
+                  style: patch.style,
+                  custom_instructions: "",
+                  translate_to: null,
+                  context: { selected_text: false, clipboard: false, window_title: false },
+                });
+              }}
+              disabled={busy}
+            />
             <label className="block text-sm">
               Mode name
               <input
@@ -303,8 +346,14 @@ export function ModesPage({
                 value={draft.dictation_mode}
                 onChange={(e) => update({ dictation_mode: e.target.value as DictationMode })}
               >
-                {["normal", "coding", "email", "chat", "notes"].map((value) => (
-                  <option key={value}>{value}</option>
+                {["normal", "coding", "developer_prompt", "email", "chat", "notes"].map((value) => (
+                  <option key={value} value={value}>
+                    {value === "developer_prompt"
+                      ? "Developer prompt"
+                      : value === "coding"
+                        ? "Literal code (no LLM)"
+                        : value}
+                  </option>
                 ))}
               </select>
             </Row>
@@ -315,9 +364,9 @@ export function ModesPage({
                 value={draft.intelligence_tier}
                 onChange={(e) => update({ intelligence_tier: e.target.value as IntelligenceTier })}
               >
-                <option value="raw_verbatim">Fast</option>
-                <option value="smart_flow">Polished</option>
-                <option value="deep_context">Polished · Deep</option>
+                <option value="raw_verbatim">No LLM · basic cleanup</option>
+                <option value="smart_flow">Qwen3.5 0.8B · lighter</option>
+                <option value="deep_context">Qwen3.5 2B · more capable</option>
               </select>
             </Row>
             <Row label="Cleanup">

@@ -90,20 +90,21 @@ fn resolve_intent_is_self_consistent_for_every_reachable_combination() {
 /// The headline bug: a fresh install advertised smart_flow refinement and never
 /// ran it, because `cleanup_level: light` doubled as the Stage 2 gate.
 ///
-/// The fix is that `run_llm` comes from the tier, so the shipped `light`
-/// Stage 1 is preserved *and* refinement happens.
+/// Fresh installs request Natural cleanup, with refinement enabled by the tier.
 #[test]
 fn fresh_install_actually_runs_refinement() {
     let defaults = AppSettings::default();
-    assert_eq!(defaults.cleanup_level, "light");
+    assert_eq!(defaults.cleanup_level, "medium");
+    assert_eq!(defaults.style, "faithful");
+    assert!(!defaults.auto_style_from_app);
 
     let intent = defaults.resolve_intent();
     assert_eq!(intent.tier, "smart_flow");
     assert_eq!(intent.flow_model, "qwen3.5-0.8b");
-    assert_eq!(intent.cleanup_level, "light");
+    assert_eq!(intent.cleanup_level, "medium");
     assert!(
         intent.run_llm,
-        "the default install must refine despite a light Stage 1"
+        "the default install must run its Natural cleanup pass"
     );
 }
 

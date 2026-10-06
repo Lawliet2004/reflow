@@ -16,6 +16,15 @@ pub const DEFAULT_ASR_CHANNEL_CAPACITY: usize = 64;
 /// Dedicated actor thread that owns the ASR engine instance.
 pub struct AsrActor;
 
+/// The successful request that owns the current model, including an
+/// asynchronous install whose auto-load subsequently became ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelLoadRequest {
+    pub model_dir: String,
+    pub backend: String,
+    pub precision: String,
+}
+
 /// Polymorphic reply channel supporting async oneshot and sync std::sync::mpsc channels.
 pub enum Reply<T: Send + 'static> {
     Async(oneshot::Sender<T>),
@@ -94,6 +103,9 @@ pub enum AsrCommand {
     RefreshStatus {
         reply: Reply<EngineStatus>,
     },
+    LoadedModelRequest {
+        reply: Reply<Result<Option<ModelLoadRequest>, String>>,
+    },
     SwapEngine {
         engine: Box<dyn ASREngine>,
         reply: Reply<()>,
@@ -141,6 +153,7 @@ impl AsrHandle {
             .name("asr-actor".into())
             .spawn(move || {
                 let mut active_session_id: Option<u64> = None;
+                let mut model_request: Option<ModelLoadRequest> = None;
                 let mut cancelled_sessions: std::collections::HashSet<u64> =
                     std::collections::HashSet::new();
                 while let Some(cmd) = receiver.blocking_recv() {
@@ -168,6 +181,13 @@ impl AsrHandle {
                         } => {
                             let res =
                                 engine.load_model_with_precision(&model_dir, &backend, &precision);
+                            if res.is_ok() {
+                                model_request = Some(ModelLoadRequest {
+                                    model_dir,
+                                    backend,
+                                    precision,
+                                });
+                            }
                             Self::sync_cache(
                                 &mut *engine,
                                 &status_c,
@@ -179,6 +199,9 @@ impl AsrHandle {
                         }
                         AsrCommand::UnloadModel { reply } => {
                             let res = engine.unload_model();
+                            if res.is_ok() {
+                                model_request = None;
+                            }
                             Self::sync_cache(
                                 &mut *engine,
                                 &status_c,
@@ -292,6 +315,13 @@ impl AsrHandle {
                             let res = engine.install_model_dir_with_options(
                                 &model_dir, &repo, &backend, &precision,
                             );
+                            if res.is_ok() {
+                                model_request = Some(ModelLoadRequest {
+                                    model_dir,
+                                    backend,
+                                    precision,
+                                });
+                            }
                             Self::sync_cache(
                                 &mut *engine,
                                 &status_c,
@@ -310,12 +340,24 @@ impl AsrHandle {
                             *status_c.write() = status.clone();
                             reply.send(status);
                         }
+                        AsrCommand::LoadedModelRequest { reply } => {
+                            let status = engine.engine_status();
+                            *status_c.write() = status.clone();
+                            reply.send(if status.loaded {
+                                model_request.clone().map(Some).ok_or_else(|| {
+                                    "The loaded ASR model has no restorable load request".into()
+                                })
+                            } else {
+                                Ok(None)
+                            });
+                        }
                         AsrCommand::SwapEngine {
                             engine: new_engine,
                             reply,
                         } => {
                             *cancel_c.write() = None;
                             engine = new_engine;
+                            model_request = None;
                             engine.set_progress_tracker(progress_c.clone());
                             *progress_c.write() = super::engine::InferenceProgress::default();
                             active_session_id = None;
@@ -502,6 +544,19 @@ impl AsrHandle {
         let (tx, rx) = std::sync::mpsc::channel();
         self.sender
             .try_send(AsrCommand::UnloadModel {
+                reply: Reply::Sync(tx),
+            })
+            .map_err(|e| format!("ASR actor channel error: {e}"))?;
+        rx.recv()
+            .map_err(|e| format!("ASR actor dropped reply: {e}"))?
+    }
+
+    /// Query the actor so asynchronous install readiness and the corresponding
+    /// load request are observed together before runtime maintenance.
+    pub fn loaded_model_request_blocking(&self) -> Result<Option<ModelLoadRequest>, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.sender
+            .try_send(AsrCommand::LoadedModelRequest {
                 reply: Reply::Sync(tx),
             })
             .map_err(|e| format!("ASR actor channel error: {e}"))?;

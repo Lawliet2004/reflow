@@ -1,8 +1,8 @@
-# Reflow
+<p align="center"><img src="docs/assets/reflow-lockup.png" alt="Reflow" width="420"></p>
 
 Local-first desktop dictation with a focused workspace for your words.
 
-**Version 0.2.0** redesigns the desktop interface and strengthens recording ownership, settings persistence, phone pairing, and clipboard safety. Read the [release notes](docs/release-0.2.0.md) and [verification record](docs/release-verification-0.2.0.md).
+**Version 0.4.0** adds Zipformer speech recognition, automatic dictionary learning, and task-based writing cleanup. This release also hardens startup privacy recovery, model-runtime activation, and audio session ownership. Read the [release notes](docs/release-0.4.0.md) and [backend audit](docs/backend-audit-0.4.0.md).
 
 ## ✨ Features & Architecture
 

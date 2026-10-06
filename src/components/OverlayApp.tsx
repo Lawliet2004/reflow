@@ -2,9 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   AppSettings,
   AppState,
+  Appearance,
   InjectionFeedback,
   StreamingTranscriptPayload,
   normalizeSettings,
+  pickAppearance,
 } from "../types";
 import { api } from "../services/tauriApi";
 import { createEventScope } from "../services/eventScope";
@@ -40,22 +42,12 @@ export const OverlayApp: React.FC = () => {
   }, []);
 
   // Same narrowing as App.tsx: depend on the fields applyTheme reads.
-  const appTheme = settings?.app_theme;
-  const accentColor = settings?.accent_color;
-  const reduceMotion = settings?.reduce_motion;
-  const uiFontScale = settings?.ui_font_scale;
-  const overlayTheme = settings?.overlay_theme;
+  const appearanceKey = settings ? JSON.stringify(pickAppearance(settings)) : null;
 
   useEffect(() => {
-    if (!appTheme) return;
-    return applyTheme({
-      app_theme: appTheme,
-      accent_color: accentColor ?? "sky",
-      reduce_motion: reduceMotion ?? false,
-      ui_font_scale: uiFontScale ?? "normal",
-      overlay_theme: overlayTheme ?? "dark",
-    });
-  }, [appTheme, accentColor, reduceMotion, uiFontScale, overlayTheme]);
+    if (!appearanceKey) return;
+    return applyTheme(JSON.parse(appearanceKey) as Appearance);
+  }, [appearanceKey]);
 
   useEffect(() => {
     const scope = createEventScope();
@@ -118,10 +110,6 @@ export const OverlayApp: React.FC = () => {
     };
   }, []);
 
-  useEffect(() => {
-    document.documentElement.dataset.hudContrast = settings?.hud_contrast ?? "standard";
-  }, [settings?.hud_contrast]);
-
   if (response)
     return (
       <AssistantAnswer
@@ -144,6 +132,9 @@ export const OverlayApp: React.FC = () => {
       hudTheme={settings?.overlay_theme ?? "dark"}
       waveformStyle={settings?.waveform_style ?? "bars"}
       hudScale={settings?.hud_scale ?? "standard"}
+      hudShape={settings?.hud_shape ?? "pill"}
+      hudStyle={settings?.hud_style ?? "status"}
+      hudOpacity={settings?.hud_opacity ?? 0.96}
     />
   );
 };

@@ -386,6 +386,29 @@ mod tests {
 
     #[test]
     fn torch_cuda_is_only_true_when_the_sidecar_says_so() {
+        // Sidecar protocol tests publish status concurrently. Exercise this
+        // process-wide state in its own test process so those status updates
+        // cannot change it between the setter and the hardware probe.
+        const CHILD: &str = "REFLOW_TORCH_CAPABILITY_TEST_CHILD";
+        if std::env::var(CHILD).as_deref() != Ok("1") {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "capability::collect::tests::torch_cuda_is_only_true_when_the_sidecar_says_so",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+                "isolated CUDA capability regression failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         set_torch_cuda(false, None);
         assert!(!capabilities_uncached().can_use_cuda());
 

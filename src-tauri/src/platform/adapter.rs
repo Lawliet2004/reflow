@@ -61,7 +61,7 @@ pub trait PlatformAdapter {
     fn session() -> DisplaySession;
 
     fn default_hotkey() -> &'static str {
-        if cfg!(target_os = "linux") {
+        if cfg!(target_os = "linux") || Self::session() == DisplaySession::Macos {
             "Ctrl+Shift+Space"
         } else {
             "Shift+Win"
@@ -248,4 +248,32 @@ pub fn simulate_paste_with_enigo(ctrl: bool, shift: bool, key: char) -> Result<(
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ClipboardMac;
+
+    impl PlatformAdapter for ClipboardMac {
+        fn session() -> DisplaySession {
+            DisplaySession::Macos
+        }
+
+        fn simulate_paste(_process: &str) -> Result<(), String> {
+            Err("clipboard preview".into())
+        }
+    }
+
+    #[test]
+    fn macos_preview_default_hotkey_has_a_registrable_key() {
+        let hotkey = ClipboardMac::default_hotkey();
+        assert_eq!(hotkey, "Ctrl+Shift+Space");
+        let normalized = crate::hotkey::HotkeyManager::normalize_shortcut(hotkey);
+        assert!(crate::hotkey::HotkeyManager::modifier_only_flags(&normalized).is_none());
+        normalized
+            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            .expect("the macOS default must parse as a global shortcut");
+    }
 }

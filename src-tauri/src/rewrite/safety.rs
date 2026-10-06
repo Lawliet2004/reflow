@@ -115,6 +115,8 @@ pub fn polish_would_add_nothing(text: &str) -> bool {
     true
 }
 
+const MEANINGFUL_REPEATS: &[&str] = &["very", "really", "so", "had", "that", "no"];
+
 /// Reject unsafe LLM rewrites. Returns the trimmed candidate when it is safe.
 pub fn accept_rewrite(
     original: &str,
@@ -138,9 +140,18 @@ pub fn accept_rewrite(
         return None;
     }
 
+    // Spoken line/paragraph breaks are intentional, even when the words match.
+    if trimmed.matches('\n').count() < original.trim().matches('\n').count() {
+        return None;
+    }
+
     if numeric_literals(original) != numeric_literals(trimmed)
+        || spoken_quantities(original) != spoken_quantities(trimmed)
         || !preserves_identifiers(original, trimmed)
+        || punctuation_arguments(original) != punctuation_arguments(trimmed)
         || !preserves_scripts(original, trimmed)
+        || !preserves_enumerated_items(original, trimmed)
+        || !preserves_prose_content(original, trimmed)
     {
         return None;
     }
@@ -159,6 +170,42 @@ pub fn accept_rewrite(
 
     let orig_tokens = tokenize(original);
     let cand_tokens = tokenize(trimmed);
+    // A short possessive label may reach the gate without its list marker.
+    // Protect the complete name, rather than accepting a one-word deletion
+    // because it is small relative to the transcript's edit-distance budget.
+    let label = item_words(original);
+    if label.len() <= 8
+        && label.first().is_some_and(|word| {
+            matches!(
+                word.as_str(),
+                "my" | "your" | "our" | "his" | "her" | "their"
+            )
+        })
+        && drops_label_words(&label, &item_words(trimmed))
+    {
+        return None;
+    }
+    // These are the repetitions Stage 1 deliberately retains for grammar or
+    // emphasis. A model must not silently turn them into accidental stutters.
+    for word in MEANINGFUL_REPEATS {
+        if orig_tokens
+            .windows(2)
+            .any(|pair| pair[0] == *word && pair[1] == *word)
+        {
+            let before = orig_tokens
+                .iter()
+                .filter(|token| token.as_str() == *word)
+                .count();
+            let after = cand_tokens
+                .iter()
+                .flat_map(|word| word.split('-'))
+                .filter(|token| *token == *word)
+                .count();
+            if after < before {
+                return None;
+            }
+        }
+    }
     let max_len = orig_tokens.len().max(cand_tokens.len());
     // Bound the quadratic comparison. Oversized changes retain the original.
     if max_len > 8192 {
@@ -177,6 +224,414 @@ pub fn accept_rewrite(
     }
 
     Some(trimmed.to_string())
+}
+
+/// Preserve item names/modifiers without maintaining a compound-noun dictionary.
+/// Articles, hesitation fillers and case/punctuation can change; the remaining
+/// item words must match in order. This deliberately favours a complete fallback
+/// over guessing whether a renamed object is an equivalent one.
+pub(crate) fn preserves_item_words(original: &str, candidate: &str) -> bool {
+    item_words(original) == item_words(candidate)
+        && punctuation_arguments(original) == punctuation_arguments(candidate)
+}
+
+// A standalone dot can be a command argument. Lexical tokenization discards
+// punctuation, so retain these literal arguments separately even in fragments.
+fn punctuation_arguments(text: &str) -> Vec<(usize, &str)> {
+    let mut arguments = Vec::new();
+    let mut words_before = 0;
+    for word in text
+        .lines()
+        .flat_map(|line| strip_list_marker(line).split_whitespace())
+    {
+        let argument = word.trim_matches(['`', '"', '\'', ',', ';']);
+        if matches!(argument, "." | "..") {
+            arguments.push((words_before, argument));
+        } else {
+            words_before += lexical_words(word).len();
+        }
+    }
+    arguments
+}
+
+fn item_words(text: &str) -> Vec<String> {
+    let mut words = lexical_words(text);
+    // Only a leading article can be incidental. An internal "A" in "my A
+    // grade report" or an article inside a quoted title is part of its name.
+    if !text.trim_start().starts_with(['"', '“', '‘', '\''])
+        && words
+            .first()
+            .is_some_and(|word| matches!(word.as_str(), "a" | "an" | "the"))
+    {
+        words.remove(0);
+    }
+    words
+}
+
+fn lexical_words(text: &str) -> Vec<String> {
+    tokenize(text)
+        .into_iter()
+        .flat_map(|word| word.split('-').map(str::to_owned).collect::<Vec<_>>())
+        .filter(|word| !matches!(word.as_str(), "um" | "uh" | "er" | "ah" | "hmm"))
+        .collect()
+}
+
+/// Grammar may change, but edit distance alone cannot justify new objects or
+/// names. Confirmed inventories use their stricter item checks; ordinary prose
+/// retains content order and scoped prepositions. Grammar corrections do not
+/// justify exchanging a source/destination or stemming an unfamiliar name.
+fn preserves_prose_content(original: &str, candidate: &str) -> bool {
+    if crate::formatting::normalizers::enumeration_items(original).is_some() {
+        return true;
+    }
+    if original.trim_end().ends_with(':') {
+        return preserves_group_header(original, candidate);
+    }
+    preserves_prose_words(original, candidate)
+}
+
+fn preserves_prose_words(original: &str, candidate: &str) -> bool {
+    // Capitalization can identify a name even where the grammar is ambiguous.
+    // Preserve its exact word in both signatures, including case-only edits.
+    let protected: std::collections::HashSet<String> = [original, candidate]
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .filter(|word| word.chars().any(char::is_uppercase))
+        .flat_map(tokenize)
+        .collect();
+    let (after, after_prepositions) = prose_signature(candidate, &protected);
+    let preserves = |source: &str| {
+        let (before, before_prepositions) = prose_signature(source, &protected);
+        if before != after {
+            return false;
+        }
+        // Adding an agent to a passive clause can reverse an active statement's
+        // roles despite keeping the same noun order. Cleanup cannot invent "by".
+        if !before_prepositions
+            .iter()
+            .filter(|(_, word)| word == "by")
+            .eq(after_prepositions.iter().filter(|(_, word)| word == "by"))
+        {
+            return false;
+        }
+        // Grammar can supply a missing preposition, but an existing one must
+        // remain at the same position relative to the content it connects.
+        let mut remaining = after_prepositions.iter();
+        before_prepositions
+            .iter()
+            .all(|before| remaining.by_ref().any(|after| before == after))
+    };
+    preserves(original) || phrase_restart_source(original).is_some_and(|source| preserves(&source))
+}
+
+/// Source-only allowance for the adjacent phrase restarts Stage 1 already
+/// removes. The candidate still has to preserve the entire cleaned signature;
+/// all other safeguards compare against the untouched original.
+fn phrase_restart_source(original: &str) -> Option<String> {
+    // Semicolons separate complete clauses rather than unfinished restarts.
+    if original.contains(';') {
+        return None;
+    }
+    let cleaned = crate::formatting::cleaner::TextCleaner::remove_duplicates(original);
+    let before = expanded_prose_words(original);
+    let after = expanded_prose_words(&cleaned);
+    if before.len() <= after.len()
+        || MEANINGFUL_REPEATS.iter().any(|word| {
+            before
+                .iter()
+                .filter(|token| token.as_str() == *word)
+                .count()
+                != after.iter().filter(|token| token.as_str() == *word).count()
+        })
+    {
+        return None;
+    }
+    // Keep the cleaner's quote/name/sentence-boundary protections, but verify
+    // that its punctuation-insensitive matching deleted only exact word copies.
+    // Match from the end because the cleaner retains the final phrase attempt.
+    let mut kept = vec![false; before.len()];
+    let mut cursor = before.len();
+    for word in after.iter().rev() {
+        while cursor > 0 && before[cursor - 1] != *word {
+            cursor -= 1;
+        }
+        if cursor == 0 {
+            return None;
+        }
+        cursor -= 1;
+        kept[cursor] = true;
+    }
+    let mut start = 0;
+    while start < before.len() {
+        if kept[start] {
+            start += 1;
+            continue;
+        }
+        let end = (start..before.len())
+            .find(|index| kept[*index])
+            .unwrap_or(before.len());
+        let removed = end - start;
+        let exact_restart = (2..=6).any(|width| {
+            removed.is_multiple_of(width)
+                && end + width <= before.len()
+                && before[start..end]
+                    .chunks(width)
+                    .all(|copy| copy == &before[end..end + width])
+        });
+        if !exact_restart {
+            return None;
+        }
+        start = end;
+    }
+    Some(cleaned)
+}
+
+fn expanded_prose_words(text: &str) -> Vec<String> {
+    text.lines()
+        .flat_map(|line| lexical_words(strip_list_marker(line)))
+        .flat_map(|word| {
+            let word = word.replace('’', "'");
+            let expanded = match word.as_str() {
+                "im" | "i'm" => "i am",
+                "i've" => "i have",
+                "i'll" => "i will",
+                "i'd" => "i would",
+                "we're" => "we are",
+                "we've" => "we have",
+                "we'll" => "we will",
+                "we'd" => "we would",
+                "you're" => "you are",
+                "you've" => "you have",
+                "you'll" => "you will",
+                "you'd" => "you would",
+                "they're" => "they are",
+                "they've" => "they have",
+                "they'll" => "they will",
+                "they'd" => "they would",
+                "it's" => "it is",
+                "he's" => "he is",
+                "he'll" => "he will",
+                "he'd" => "he would",
+                "she's" => "she is",
+                "she'll" => "she will",
+                "she'd" => "she would",
+                "it'll" => "it will",
+                "that's" => "that is",
+                "let's" => "let us",
+                "won't" => "will not",
+                "can't" => "can not",
+                _ => "",
+            };
+            if !expanded.is_empty() {
+                expanded
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            } else if let Some(verb) = word.strip_suffix("n't") {
+                vec![verb.to_owned(), "not".into()]
+            } else {
+                vec![word]
+            }
+        })
+        .collect()
+}
+
+fn scoped_preposition(word: &str) -> bool {
+    matches!(
+        word,
+        "to" | "of" | "in" | "on" | "at" | "for" | "from" | "with" | "by" | "as"
+    )
+}
+
+fn grammatical_glue(word: &str) -> bool {
+    scoped_preposition(word)
+        || matches!(
+            word,
+            "a" | "an" | "the" | "am" | "is" | "are" | "was" | "were" | "be" | "been" | "being"
+        )
+}
+
+fn prose_signature(
+    text: &str,
+    protected: &std::collections::HashSet<String>,
+) -> (Vec<String>, Vec<(usize, String)>) {
+    let words = expanded_prose_words(text);
+    let mut content = Vec::new();
+    let mut prepositions = Vec::new();
+    for (index, word) in words.iter().enumerate() {
+        if scoped_preposition(word) {
+            prepositions.push((content.len(), word.clone()));
+        } else if matches!(word.as_str(), "have" | "has" | "had") {
+            // Possession is content. Only the explicit have + be auxiliary
+            // chain can be treated as grammatical glue here.
+            if !words
+                .get(index + 1)
+                .is_some_and(|next| matches!(next.as_str(), "be" | "been" | "being"))
+            {
+                content.push("have".into());
+            }
+        } else if matches!(word.as_str(), "do" | "does" | "did") {
+            content.push("do".into());
+        } else if !grammatical_glue(word) {
+            content.push(if protected.contains(word) {
+                word.clone()
+            } else {
+                agreement_form(&words, index)
+            });
+        }
+    }
+    (content, prepositions)
+}
+
+// Only normalize present-tense agreement in a narrow grammatical frame, never
+// arbitrary noun/name suffixes. Unknown contexts and ed/ing forms stay exact.
+fn agreement_form(words: &[String], index: usize) -> String {
+    let word = &words[index];
+    let previous = index.checked_sub(1).map(|i| words[i].as_str());
+    let next = words.get(index + 1).map(String::as_str);
+    // "to" also introduces recipients. Limit its agreement allowance to an
+    // infinitive following a subject pronoun with a pronominal object.
+    if previous == Some("to")
+        && !(index.checked_sub(2).is_some_and(|i| {
+            matches!(
+                words[i].as_str(),
+                "i" | "you" | "he" | "she" | "we" | "they"
+            )
+        }) && next.is_some_and(|word| {
+            matches!(word, "me" | "you" | "him" | "her" | "it" | "us" | "them")
+        }))
+    {
+        return word.clone();
+    }
+    if !previous.is_some_and(|word| {
+        matches!(
+            word,
+            "i" | "you"
+                | "he"
+                | "she"
+                | "it"
+                | "we"
+                | "they"
+                | "to"
+                | "can"
+                | "could"
+                | "should"
+                | "will"
+                | "would"
+                | "must"
+                | "shall"
+                | "may"
+                | "might"
+        )
+    }) || !next.is_some_and(|word| {
+        scoped_preposition(word)
+            || matches!(
+                word,
+                "me" | "you"
+                    | "him"
+                    | "her"
+                    | "it"
+                    | "us"
+                    | "them"
+                    | "my"
+                    | "your"
+                    | "his"
+                    | "our"
+                    | "their"
+                    | "this"
+                    | "that"
+                    | "these"
+                    | "those"
+                    | "a"
+                    | "an"
+                    | "the"
+            )
+    }) {
+        return word.clone();
+    }
+    if let Some(base) = word.strip_suffix("ies") {
+        return format!("{base}y");
+    }
+    if let Some(base) = word.strip_suffix("es") {
+        if ["ss", "sh", "ch", "x", "z", "o"]
+            .iter()
+            .any(|suffix| base.ends_with(suffix))
+        {
+            return base.to_owned();
+        }
+    }
+    word.strip_suffix('s')
+        .filter(|base| !base.ends_with('s'))
+        .unwrap_or(word)
+        .to_owned()
+}
+
+fn drops_label_words(original: &[String], candidate: &[String]) -> bool {
+    if candidate.len() >= original.len() {
+        return false;
+    }
+    let mut remaining = original.iter();
+    candidate
+        .iter()
+        .all(|word| remaining.by_ref().any(|original| original == word))
+}
+
+fn preserves_enumerated_items(original: &str, candidate: &str) -> bool {
+    use crate::formatting::normalizers::enumeration_groups;
+    let Some(before) = enumeration_groups(original) else {
+        return true;
+    };
+    if let Some(after) = enumeration_groups(candidate) {
+        return before.len() == after.len()
+            && before.iter().zip(after.iter()).all(|(before, after)| {
+                before.items.len() == after.items.len()
+                    && before
+                        .items
+                        .iter()
+                        .zip(&after.items)
+                        .all(|(before, after)| preserves_item_words(before, after))
+                    && preserves_group_header(&before.header, &after.header)
+                    && lexical_words(&before.tail) == lexical_words(&after.tail)
+            });
+    }
+    // A short spoken enumeration may legitimately become ordinary prose.
+    // Compare all prepared content, not just a subsequence: a subsequence would
+    // still accept an invented extra object or an "instead of" substitution.
+    let Some(content) = crate::formatting::normalizers::spoken_list_content(original) else {
+        return false;
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let last_item = lines
+        .iter()
+        .rposition(|line| strip_list_marker(line) != line.trim_start());
+    let prose_words = |insert_separator: bool| {
+        let mut words = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            // Only this structural conjunction can be introduced. The "and"
+            // inside "rock and roll records" remains part of the item's name.
+            if insert_separator && Some(index) == last_item {
+                words.push("and".into());
+            }
+            words.extend(lexical_words(strip_list_marker(line)));
+        }
+        words
+    };
+    let candidate_words = lexical_words(candidate);
+    prose_words(false) == candidate_words || prose_words(true) == candidate_words
+}
+
+fn preserves_group_header(original: &str, candidate: &str) -> bool {
+    if original.trim().is_empty() || candidate.trim().is_empty() {
+        return original.trim().is_empty() && candidate.trim().is_empty();
+    }
+    fn without_connector(text: &str) -> &str {
+        let text = text.trim();
+        match text.split_once(char::is_whitespace) {
+            Some((first, rest)) if first.eq_ignore_ascii_case("and") => rest.trim_start(),
+            _ => text,
+        }
+    }
+    preserves_prose_words(without_connector(original), without_connector(candidate))
 }
 
 pub(crate) fn looks_like_meta(text: &str) -> bool {
@@ -256,6 +711,7 @@ fn drops_first_person(original: &str, candidate: &str) -> bool {
         "we've",
         "we'll",
         "we'd",
+        "let's",
         "us",
         "our",
         "ours",
@@ -421,6 +877,7 @@ fn tokenize(text: &str) -> Vec<String> {
         .map(|word| {
             word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
                 .to_lowercase()
+                .replace('’', "'")
         })
         .filter(|word| !word.is_empty())
         .collect()
@@ -456,23 +913,114 @@ fn preserves_scripts(original: &str, candidate: &str) -> bool {
 }
 
 fn numeric_literals(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric() && !matches!(c, '.' | ':' | '-' | '/' | ','))
-        .map(|s| s.trim_matches(|c: char| matches!(c, '.' | ':' | '-' | '/' | ',')))
-        .filter(|s| s.chars().any(|c| c.is_numeric()))
-        .map(str::to_lowercase)
+    text.lines()
+        .flat_map(|line| {
+            // A line-leading "• "/"1. "/"2) " is list structure, not content:
+            // without stripping it, turning spoken "first … second …" into a
+            // numbered list reads as two invented numbers.
+            strip_list_marker(line)
+                .split(|c: char| !c.is_alphanumeric() && !matches!(c, '.' | ':' | '-' | '/' | ','))
+                .map(|s| s.trim_matches(|c: char| matches!(c, '.' | ':' | '-' | '/' | ',')))
+                .filter(|s| s.chars().any(|c| c.is_numeric()))
+                .map(str::to_lowercase)
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
+/// Enumeration labels describe structure; quantities inside items describe
+/// meaning. Comparing them in order catches invented/dropped counts and counts
+/// swapped between items, which the general token-distance check can miss.
+/// Leave number wording intact just as the literal-number guard does for digits.
+fn spoken_quantities(text: &str) -> Vec<String> {
+    let content = crate::formatting::normalizers::spoken_list_content(text);
+    tokenize(content.as_deref().unwrap_or(text))
+        .into_iter()
+        .flat_map(|word| word.split('-').map(str::to_owned).collect::<Vec<_>>())
+        .filter(|word| {
+            matches!(
+                word.as_str(),
+                "zero"
+                    | "one"
+                    | "two"
+                    | "three"
+                    | "four"
+                    | "five"
+                    | "six"
+                    | "seven"
+                    | "eight"
+                    | "nine"
+                    | "ten"
+                    | "eleven"
+                    | "twelve"
+                    | "thirteen"
+                    | "fourteen"
+                    | "fifteen"
+                    | "sixteen"
+                    | "seventeen"
+                    | "eighteen"
+                    | "nineteen"
+                    | "twenty"
+                    | "thirty"
+                    | "forty"
+                    | "fifty"
+                    | "sixty"
+                    | "seventy"
+                    | "eighty"
+                    | "ninety"
+                    | "hundred"
+                    | "thousand"
+                    | "million"
+                    | "billion"
+                    | "trillion"
+            )
+        })
+        .collect()
+}
+
+fn strip_list_marker(line: &str) -> &str {
+    let s = line.trim_start();
+    if let Some(rest) = s.strip_prefix(['•', '-', '*']) {
+        if rest.starts_with(char::is_whitespace) {
+            return rest.trim_start();
+        }
+    }
+    let digits = s.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 && matches!(s.as_bytes().get(digits), Some(b'.') | Some(b')')) {
+        let rest = &s[digits + 1..];
+        if rest.starts_with(char::is_whitespace) {
+            return rest.trim_start();
+        }
+    }
+    s
+}
+
 fn preserves_identifiers(original: &str, candidate: &str) -> bool {
+    fn token(word: &str) -> &str {
+        word.trim_matches(|c: char| {
+            matches!(
+                c,
+                '.' | ',' | ';' | '!' | '?' | '(' | ')' | '"' | '`' | '[' | ']'
+            )
+        })
+    }
+    let candidate_tokens: std::collections::HashSet<&str> =
+        candidate.split_whitespace().map(token).collect();
     original.split_whitespace().all(|word| {
-        let word =
-            word.trim_matches(|c: char| matches!(c, '.' | ',' | ';' | '!' | '?' | '(' | ')' | '"'));
+        let word = token(word);
+        let camel_case = word
+            .chars()
+            .zip(word.chars().skip(1))
+            .any(|(before, after)| before.is_lowercase() && after.is_uppercase());
         let technical = word.contains('@')
-            || word.contains("://")
+            || word.contains('/')
+            || word.contains('.')
             || word.contains('_')
             || word.contains('\\')
+            || (word.starts_with('-') && word.chars().any(|c| c.is_alphabetic()))
+            || camel_case
             || word.chars().filter(|c| c.is_uppercase()).count() > 1;
-        !technical || candidate.to_lowercase().contains(&word.to_lowercase())
+        !technical || candidate_tokens.contains(word)
     })
 }
 
@@ -504,6 +1052,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn content_grounding_preserves_roles_names_and_command_arguments() {
+        for (original, unsafe_edit) in [
+            ("Send from Sarah to Pat:", "Send from Pat to Sarah:"),
+            ("Send from Sarah to Pat.", "Send to Sarah from Pat."),
+            ("I want the painting.", "I want the paint."),
+            ("Please call Miles.", "Please call Mile."),
+            ("• git add .", "• git add"),
+            ("• Bread\n• Muffins", "For Bob:\n• Bread\n• Muffins"),
+        ] {
+            assert!(
+                accept_rewrite(original, unsafe_edit, "high").is_none(),
+                "{original:?} -> {unsafe_edit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_line_and_paragraph_breaks_survive_rewriting() {
+        for level in ["light", "medium", "high"] {
+            assert!(accept_rewrite(
+                "First paragraph.\n\nSecond paragraph.",
+                "First paragraph. Second paragraph.",
+                level
+            )
+            .is_none());
+            assert!(accept_rewrite(
+                "First line.\nSecond line.",
+                "First line. Second line.",
+                level
+            )
+            .is_none());
+            assert!(accept_rewrite(
+                "first paragraph\n\nsecond paragraph",
+                "First paragraph.\n\nSecond paragraph.",
+                level
+            )
+            .is_some());
+        }
+    }
+
+    #[test]
+    fn developer_identifiers_paths_and_flags_keep_their_exact_spelling() {
+        for (original, candidate) in [
+            ("please keep useState", "Please keep usestate."),
+            ("please keep getUserById", "Please keep getUserByIdExtra."),
+            ("please edit src/api.ts", "Please edit src/other.ts."),
+            ("please use --dry-run", "Please use --force."),
+        ] {
+            assert!(
+                accept_rewrite(original, candidate, "medium").is_none(),
+                "{original} -> {candidate}"
+            );
+        }
+        assert!(accept_rewrite(
+            "please keep useState in src/api.ts with --dry-run",
+            "Please keep `useState` in `src/api.ts` with `--dry-run`.",
+            "medium"
+        )
+        .is_some());
+    }
+
+    #[test]
     fn rejects_changed_numbers_dates_and_technical_entities() {
         for (original, candidate) in [
             (
@@ -531,6 +1141,175 @@ mod tests {
             "high"
         )
         .is_some());
+    }
+
+    #[test]
+    fn spoken_quantities_keep_their_items_and_allow_hyphenation() {
+        assert!(accept_rewrite(
+            "bring twenty one phones and two chargers",
+            "Bring twenty-one phones and two chargers.",
+            "medium"
+        )
+        .is_some());
+        assert!(accept_rewrite(
+            "first two phones second three chargers",
+            "• Three phones\n• Two chargers",
+            "high"
+        )
+        .is_none());
+        assert!(accept_rewrite(
+            "bring one of the mobiles and two power banks",
+            "Bring one of the mobiles and two power banks.",
+            "medium"
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn grammatical_repetition_and_emphasis_are_not_accidental_stutters() {
+        assert!(accept_rewrite(
+            "she had had a very very long day when I arrived",
+            "She had had a very, very long day when I arrived.",
+            "medium"
+        )
+        .is_some());
+        for candidate in [
+            "She had a very, very long day when I arrived.",
+            "She had had a very long day when I arrived.",
+        ] {
+            assert!(
+                accept_rewrite(
+                    "she had had a very very long day when I arrived",
+                    candidate,
+                    "medium"
+                )
+                .is_none(),
+                "{candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn adjacent_phrase_restarts_accept_cleanup_without_changing_content() {
+        for level in ["light", "medium", "high"] {
+            for (original, candidate) in [
+                (
+                    "I was thinking we could we could ship on Thursday.",
+                    "I was thinking we could ship on Thursday.",
+                ),
+                (
+                    "I was thinking we could, we could ship on Thursday.",
+                    "I was thinking we could ship on Thursday.",
+                ),
+                (
+                    "we should review we should review we should review the release notes",
+                    "We should review the release notes.",
+                ),
+                (
+                    "I might send I might send the draft to Sarah.",
+                    "I might send the draft to Sarah.",
+                ),
+                (
+                    "Put the draft on the on the desk.",
+                    "Put the draft on the desk.",
+                ),
+            ] {
+                assert_eq!(
+                    accept_rewrite(original, candidate, level).as_deref(),
+                    Some(candidate),
+                    "{level}: {original:?} -> {candidate:?}"
+                );
+                assert!(accept_rewrite(original, original, level).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn phrase_restart_cleanup_keeps_emphasis_names_and_literal_repetition() {
+        for (original, candidate) in [
+            (
+                "This is very good very good news.",
+                "This is very good news.",
+            ),
+            ("I had told I had told Sarah.", "I had told Sarah."),
+            (
+                "I ordered a New York New York poster.",
+                "I ordered a New York poster.",
+            ),
+            ("I ordered a Bora Bora poster.", "I ordered a Bora poster."),
+            (
+                "I wrote \"we could we could\" on the note.",
+                "I wrote \"we could\" on the note.",
+            ),
+            (
+                "We could ship. We could ship on Thursday.",
+                "We could ship on Thursday.",
+            ),
+            (
+                "We could ship; we could ship on Thursday.",
+                "We could ship on Thursday.",
+            ),
+            (
+                "Keep the New-York city NewYork city label.",
+                "Keep the NewYork city label.",
+            ),
+            (
+                "we could ship on Thursday",
+                "We could we could ship on Thursday.",
+            ),
+        ] {
+            assert!(
+                accept_rewrite(original, candidate, "high").is_none(),
+                "{original:?} -> {candidate:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn phrase_restart_cleanup_does_not_relax_raw_meaning_guards() {
+        for (original, candidate) in [
+            (
+                "I was thinking we could we could ship on Thursday.",
+                "I was thinking we will ship on Thursday.",
+            ),
+            (
+                "I might send I might send the draft to Sarah.",
+                "I send the draft to Sarah.",
+            ),
+            (
+                "I might send I might send the draft to Sarah.",
+                "I might send the draft to Pat.",
+            ),
+            (
+                "I will send to Sarah I will send to Sarah from Pat.",
+                "I will send from Sarah to Pat.",
+            ),
+            (
+                "I need two keys I need two keys for the door.",
+                "I need two keys for the door.",
+            ),
+            (
+                "I need 2 keys I need 2 keys for the door.",
+                "I need 2 keys for the door.",
+            ),
+            (
+                "Please call getUserById please call getUserById with the result.",
+                "Please call getuserbyid with the result.",
+            ),
+            (
+                "I will not I will not ship the draft.",
+                "I will ship the draft.",
+            ),
+            (
+                "I need the key, for opening the door.",
+                "I need the key to open the door.",
+            ),
+        ] {
+            assert!(
+                accept_rewrite(original, candidate, "high").is_none(),
+                "{original:?} -> {candidate:?}"
+            );
+        }
     }
 
     #[test]
@@ -669,6 +1448,39 @@ mod tests {
         assert!(accept_rewrite("im on my way", "I'm on my way.", "high").is_some());
     }
 
+    /// Turning a spoken enumeration into a list introduces marker digits and
+    /// bullets that are structure, not content — the number check must ignore
+    /// them or every list rewrite would be rejected as an invented number.
+    #[test]
+    fn list_markers_are_not_counted_as_changed_numbers() {
+        assert!(accept_rewrite(
+            "first apples second bananas",
+            "1. Apples\n2. Bananas",
+            "high"
+        )
+        .is_some());
+        assert!(accept_rewrite(
+            "first update the readme second fix the bug",
+            "• Update the readme\n• Fix the bug",
+            "high"
+        )
+        .is_some());
+        // A real number change is still caught.
+        assert!(accept_rewrite("pay 125.50 please", "Pay 125.60 please.", "high").is_none());
+    }
+
+    /// Email layout can change: the rewrite only
+    /// capitalises, punctuates and adds line breaks.
+    #[test]
+    fn email_layout_rewrite_is_accepted() {
+        assert!(accept_rewrite(
+            "hi sarah i wanted to follow up on the invoice can you send it by friday thanks john",
+            "Hi Sarah,\n\nI wanted to follow up on the invoice. Can you send it by Friday?\n\nThanks,\nJohn",
+            "high"
+        )
+        .is_some());
+    }
+
     #[test]
     fn accepts_light_edits_and_trims() {
         let orig = "i think we should ship this today";
@@ -680,10 +1492,10 @@ mod tests {
     }
 
     #[test]
-    fn high_allows_more_token_change_than_medium() {
+    fn high_cleanup_does_not_permit_unrelated_content_substitution() {
         let orig = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
         let cand = "alpha bravo charlie delta whisky xray yankee zulu lima mike";
         assert!(accept_rewrite(orig, cand, CleanupLevel::Medium).is_none());
-        assert!(accept_rewrite(orig, cand, CleanupLevel::High).is_some());
+        assert!(accept_rewrite(orig, cand, CleanupLevel::High).is_none());
     }
 }

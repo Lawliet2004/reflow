@@ -1,10 +1,14 @@
 """Model-free regression tests for ASR memory use and device admission."""
 
 import importlib.util
+import io
+import json
 from contextlib import contextmanager
 import pathlib
+import queue
 import sys
 import tempfile
+import threading
 import tracemalloc
 import types
 import unittest
@@ -21,6 +25,44 @@ spec.loader.exec_module(runtime)
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_early_loading_ack_exposes_missing_models_and_worker_exceptions_in_status(self):
+        original_handle = runtime.handle
+        for dispatch_error in [None, FileNotFoundError("fixture dispatch failed")]:
+            with self.subTest(dispatch_error=dispatch_error), tempfile.TemporaryDirectory() as directory:
+                # A real protocol request passes through main's immediate ack
+                # and its command worker; no model/dependency loading is needed.
+                request = {"cmd": "load_model", "model_dir": directory, "id": 23}
+                incoming = types.SimpleNamespace(buffer=io.BytesIO((json.dumps(request) + "\n").encode()))
+                replies = []
+
+                def dispatch(message):
+                    if message.get("cmd") == "load_model" and dispatch_error is not None:
+                        raise dispatch_error
+                    return original_handle(message)
+
+                with mock.patch.object(runtime, "STATE", runtime.RuntimeState()), \
+                        mock.patch.object(runtime, "_cmd_queue", queue.Queue()), \
+                        mock.patch.object(runtime, "_warm_imports"), \
+                        mock.patch.object(runtime, "log_err"), \
+                        mock.patch.object(runtime, "_write_response", side_effect=replies.append), \
+                        mock.patch.object(runtime, "handle", side_effect=dispatch), \
+                        mock.patch.object(sys, "stdin", incoming):
+                    runtime.main()
+                    workers = [thread for thread in threading.enumerate() if thread.name == "cmd-worker"]
+                    for worker in workers:
+                        worker.join(2)
+                        self.assertFalse(worker.is_alive(), "protocol worker did not finish")
+                    self.assertEqual(replies, [{"status": "loading", "id": 23}],
+                                     "the completed dispatch must not duplicate the early ack")
+                    status = original_handle({"cmd": "status"})
+                    self.assertFalse(status["loaded"])
+                    self.assertFalse(status["is_loading"])
+                    self.assertEqual(status["backend"], "load failed")
+                    self.assertEqual(status["device"], "none")
+                    self.assertEqual(status["failure_kind"], "weights_missing")
+                    self.assertIn("fixture dispatch failed" if dispatch_error else "Model not installed",
+                                  status["error"])
+
     def test_segment_progress_counts_all_parts_without_returning_a_partial_final(self):
         samples = np.full(33 * runtime.SAMPLE_RATE, .1, dtype=np.float32)
         pcm = (samples * 32768).astype("<i2").tobytes()

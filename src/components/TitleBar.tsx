@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../services/tauriApi";
-import logoUrl from "../assets/logo.png";
+import { PanelLeft } from "lucide-react";
 
 const WindowControls: React.FC = () => {
   const [isMaximized, setIsMaximized] = useState(false);
@@ -145,7 +145,11 @@ const WindowControls: React.FC = () => {
   );
 };
 
-export const TitleBar: React.FC<{ offline?: boolean }> = ({ offline }) => {
+export const TitleBar: React.FC<{
+  offline?: boolean;
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
+}> = ({ offline, sidebarCollapsed, onToggleSidebar }) => {
   const handleDoubleClick = async () => {
     if (!isTauri()) return;
     try {
@@ -160,21 +164,22 @@ export const TitleBar: React.FC<{ offline?: boolean }> = ({ offline }) => {
     <header
       data-tauri-drag-region
       onDoubleClick={handleDoubleClick}
-      className="titlebar h-10 w-full shrink-0 flex items-center justify-between bg-surface/80 backdrop-blur-md border-b border-line select-none z-50 text-ink"
+      className="titlebar h-10 w-full shrink-0 flex items-center justify-between select-none z-50 text-ink"
     >
-      <div className="flex items-center gap-2.5 px-3.5 h-full" data-tauri-drag-region>
-        <img
-          src={logoUrl}
-          alt="Reflow"
-          className="w-4 h-4 rounded-[4px] pointer-events-none drop-shadow-sm"
-          draggable={false}
-        />
-        <span
-          data-tauri-drag-region
-          className="text-sm font-semibold tracking-tight text-ink font-sans"
-        >
-          Reflow
-        </span>
+      <div className="flex items-center gap-2.5 pl-3 pr-3.5 h-full" data-tauri-drag-region>
+        {onToggleSidebar && (
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={onToggleSidebar}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="app-sidebar"
+          >
+            <PanelLeft size={16} strokeWidth={1.75} aria-hidden />
+          </button>
+        )}
         {offline && (
           <span
             role="status"
