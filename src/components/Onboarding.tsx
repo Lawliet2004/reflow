@@ -5,6 +5,9 @@ import { api } from "../services/tauriApi";
 import { HotkeyPicker } from "./HotkeyPicker";
 import { RecognitionCheck } from "./RecognitionCheck";
 import { LlmSelector } from "./LlmSelector";
+import { WritingTaskPicker } from "./WritingTaskPicker";
+import { SPEECH_MODEL_GUIDANCE } from "../writingTasks";
+import logoUrl from "../assets/logo.png";
 import type { IntelligenceTierState } from "../types";
 
 interface OnboardingProps {
@@ -83,9 +86,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
       await api.installModel(settings.asr.model);
     } catch (e) {
       console.error("Model install failed:", e);
-      setError(
-        "The model could not be installed. Check your connection and available disk space, then try again.",
-      );
+      setError(`Could not download the speech model: ${String(e)}`);
     } finally {
       setInstalling(false);
     }
@@ -114,8 +115,14 @@ export const Onboarding: React.FC<OnboardingProps> = ({
             {error}
           </p>
         )}
-        <p className="label-micro text-accent mb-2">First run</p>
-        <h1 className="font-display text-3xl font-semibold tracking-tight text-ink">
+        <img
+          src={logoUrl}
+          alt=""
+          aria-hidden
+          className="w-11 h-11 mb-5 pointer-events-none"
+          draggable={false}
+        />
+        <h1 className="font-display text-3xl font-medium text-ink">
           A few things. Then just speak.
         </h1>
         <p className="text-sm text-muted mt-1">
@@ -223,7 +230,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                   <button
                     key={m.id}
                     onClick={() => onUpdateSettings({ asr: { ...settings.asr, model: m.id } })}
-                    className={`text-left rounded-xl border p-3 transition-all cursor-pointer ${
+                    className={`text-left rounded-xl border p-3 transition-colors cursor-pointer ${
                       active
                         ? "border-accent bg-accent-soft"
                         : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
@@ -238,6 +245,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               })}
             </div>
 
+            <p className="text-xs text-muted leading-relaxed">{SPEECH_MODEL_GUIDANCE}</p>
+
             {installed || ready ? (
               <div className="flex items-center gap-2 text-sm text-success font-medium">
                 <Check className="w-4 h-4" />
@@ -251,8 +260,10 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 </div>
                 <div className="h-1.5 rounded-full bg-line overflow-hidden">
                   <div
-                    className="h-full bg-accent rounded-full transition-all"
-                    style={{ width: `${modelStatus?.download_progress_pct ?? 0}%` }}
+                    className="progress-fill bg-accent"
+                    style={{
+                      transform: `scaleX(${Math.max(0, Math.min(100, modelStatus?.download_progress_pct ?? 0)) / 100})`,
+                    }}
                   />
                 </div>
               </div>
@@ -262,9 +273,18 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 onClick={downloadModel}
                 disabled={installing}
               >
-                <Download className="w-4 h-4" />
-                Download model
+                {installing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+                {installing ? "Starting download…" : "Download model"}
               </button>
+            )}
+            {!installing && !downloading && !ready && modelStatus?.error && (
+              <p role="alert" className="text-sm text-danger">
+                Speech model error: {modelStatus.error}
+              </p>
             )}
             {installed && !ready && !modelStatus?.is_loading && (
               <button
@@ -294,11 +314,16 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               </p>
             )}
             <div className="pt-4 border-t border-line space-y-2">
-              <h3 className="text-sm font-semibold text-ink">Optional AI writing cleanup</h3>
+              <h3 className="text-sm font-semibold text-ink">How would you like to write?</h3>
               <p className="text-xs text-muted">
                 An ASR model turns speech into text. An LLM rewrites that text. You can finish setup
                 with no LLM and change it later on Home.
               </p>
+              <WritingTaskPicker
+                settings={settings}
+                onUpdateSettings={onUpdateSettings}
+                disabled={saving}
+              />
               <LlmSelector
                 settings={settings}
                 onUpdateSettings={onUpdateSettings}

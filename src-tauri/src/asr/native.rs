@@ -20,6 +20,10 @@ const MAX_AUDIO_SAMPLES: usize = SAMPLE_RATE * 3600;
 #[path = "native_cancellation_tests.rs"]
 mod cancellation_tests;
 
+#[cfg(test)]
+#[path = "local_http_privacy_tests.rs"]
+mod privacy_tests;
+
 pub struct NativeAsrEngine {
     runtime: Arc<FlowRuntime>,
     status: Arc<RwLock<EngineStatus>>,
@@ -245,6 +249,7 @@ impl ASREngine for NativeAsrEngine {
             .build()
             .map_err(|error| format!("Native ASR request executor: {error}"))?;
         let http = reqwest::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(180))
             .redirect(reqwest::redirect::Policy::none())
             .build()

@@ -352,8 +352,10 @@ pub fn update_settings(
         }
     }
 
-    if updated.overlay_position != previous.overlay_position {
-        overlay::position_overlay(&app, &updated.overlay_position);
+    if updated.overlay_position != previous.overlay_position
+        || updated.hud_scale != previous.hud_scale
+    {
+        overlay::position_overlay(&app, &updated.overlay_position, &updated.hud_scale);
     }
 
     if updated.api_enabled != previous.api_enabled
@@ -888,8 +890,18 @@ pub fn install_model(
     prepare_asr_runtime(ctx.inner(), &app)?;
     let model_dir = ctx.model_manager.get_model_dir(&active);
     let repo = ctx.model_manager.repo_for(&active);
-    ctx.asr_handle
-        .install_model_dir_blocking(&model_dir.to_string_lossy(), repo)?;
+    if matches!(active.as_str(), "phonon-2" | "zipformer-20m") {
+        let (_, backend, precision) = resolve_asr_load(ctx.inner())?;
+        ctx.asr_handle.install_model_dir_with_options_blocking(
+            &model_dir.to_string_lossy(),
+            repo,
+            &backend,
+            &precision,
+        )?;
+    } else {
+        ctx.asr_handle
+            .install_model_dir_blocking(&model_dir.to_string_lossy(), repo)?;
+    }
     spawn_model_status_watch(app, ctx.inner().clone());
     Ok(())
 }
@@ -901,12 +913,97 @@ pub fn remove_model(model_size: Option<String>, ctx: State<'_, AppContext>) -> R
         .try_lock()
         .map_err(|_| "Finish the current operation before removing a model.")?;
     let settings = ctx.settings_store.get();
-    let active = crate::model::manager::runtime_model_id(
-        &model_size.unwrap_or(settings.asr.model),
+    let target = crate::model::manager::runtime_model_id(
+        &model_size.unwrap_or_else(|| settings.asr.model.clone()),
         &settings.asr.runtime,
     );
-    let _ = ctx.asr_handle.unload_model_blocking();
-    ctx.model_manager.remove_model(&active)
+    let active =
+        crate::model::manager::runtime_model_id(&settings.asr.model, &settings.asr.runtime);
+    // Only the loaded model needs the engine to let go of it — deleting a
+    // dormant model must not tear down the one serving dictation. Downloads
+    // only ever target the active model, so this check also keeps us from
+    // deleting files out from under the installer.
+    if target == active {
+        if ctx.asr_handle.engine_status().is_downloading {
+            return Err("A download for this model is still in progress.".into());
+        }
+        let _ = ctx.asr_handle.unload_model_blocking();
+    }
+    ctx.model_manager.remove_model(&target)
+}
+
+/// One row in the "Downloaded models" list: a weight set or runtime that
+/// occupies disk, complete or interrupted mid-download.
+#[derive(serde::Serialize)]
+pub struct DownloadedModel {
+    /// Removal key: ASR manager id ("1.7b", "native-1.7b", …) for `asr`,
+    /// intelligence tier for `llm`, `"llama_server"` for `runtime`.
+    pub id: String,
+    pub kind: &'static str,
+    pub label: String,
+    pub size_bytes: u64,
+    /// Selected in settings right now; removing it unloads the live engine.
+    pub active: bool,
+    /// Files exist but the install never finished (resumable `.part`, partial dir).
+    pub partial: bool,
+}
+
+/// Everything model-related that currently occupies disk, so the settings UI
+/// can offer deletion for more than just the active selection.
+#[tauri::command]
+pub fn get_downloaded_models(ctx: State<'_, AppContext>) -> Vec<DownloadedModel> {
+    let settings = ctx.settings_store.get();
+    let active_asr =
+        crate::model::manager::runtime_model_id(&settings.asr.model, &settings.asr.runtime);
+    let mut out = Vec::new();
+    for spec in crate::model::manager::MODELS {
+        let installed = ctx.model_manager.is_installed(spec.id);
+        if !installed && !ctx.model_manager.get_model_dir(spec.id).exists() {
+            continue;
+        }
+        out.push(DownloadedModel {
+            id: spec.id.to_string(),
+            kind: "asr",
+            label: spec.label.to_string(),
+            size_bytes: ctx.model_manager.size_on_disk(spec.id),
+            active: spec.id == active_asr,
+            partial: !installed,
+        });
+    }
+    for (tier, model_id) in [
+        ("smart_flow", "qwen3.5-0.8b"),
+        ("deep_context", "qwen3.5-2b"),
+    ] {
+        let dest = crate::rewrite::flow_gguf_path(model_id);
+        // Interrupted downloads keep a resumable `.gguf.part` file.
+        let part = dest.with_extension("gguf.part");
+        if !dest.exists() && !part.exists() {
+            continue;
+        }
+        out.push(DownloadedModel {
+            id: tier.to_string(),
+            kind: "llm",
+            label: crate::rewrite::server::flow_model_spec(model_id)
+                .label
+                .to_string(),
+            size_bytes: std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0)
+                + std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0),
+            active: settings.flow_model == model_id,
+            partial: !dest.exists(),
+        });
+    }
+    let bin = crate::rewrite::llama_server_bin();
+    if bin.exists() {
+        out.push(DownloadedModel {
+            id: "llama_server".to_string(),
+            kind: "runtime",
+            label: "llama-server runtime".to_string(),
+            size_bytes: std::fs::metadata(&bin).map(|m| m.len()).unwrap_or(0),
+            active: settings.flow_model != "none",
+            partial: false,
+        });
+    }
+    out
 }
 
 #[tauri::command]
@@ -1883,12 +1980,23 @@ fn clear_active(ctx: &AppContext, tier: &str) {
 
 #[tauri::command]
 pub fn remove_intelligence_model(tier: String, ctx: State<'_, AppContext>) -> Result<(), String> {
+    let _operation = ctx
+        .session_operation
+        .try_lock()
+        .map_err(|_| "Finish the current operation before removing a model.")?;
     let normalized = tier.trim().to_ascii_lowercase();
     let flow_id = match normalized.as_str() {
         "smart_flow" => "qwen3.5-0.8b",
         "deep_context" => "qwen3.5-2b",
         _ => return Err(format!("Tier '{tier}' has no model to remove")),
     };
+    if ctx
+        .active_intelligence_downloads
+        .lock()
+        .contains(&normalized)
+    {
+        return Err("A download for this model is still in progress.".into());
+    }
     let path = crate::rewrite::flow_gguf_path(flow_id);
     let active = ctx.settings_store.get();
     if active.flow_model == flow_id {
@@ -1896,6 +2004,12 @@ pub fn remove_intelligence_model(tier: String, ctx: State<'_, AppContext>) -> Re
     }
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| format!("Failed to remove model: {e}"))?;
+    }
+    // An interrupted download leaves a resumable `.part` file behind.
+    let part = path.with_extension("gguf.part");
+    if part.exists() {
+        std::fs::remove_file(&part)
+            .map_err(|e| format!("Failed to remove partial download: {e}"))?;
     }
     Ok(())
 }

@@ -26,6 +26,10 @@ import {
 } from "lucide-react";
 import type { IntelligenceDownloadEvent } from "../../App";
 import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
+import { WritingTaskPicker } from "../WritingTaskPicker";
+import { LlmSelector } from "../LlmSelector";
+import { flowModelForTier } from "../../types";
+import { llmSelectionPatch } from "../../llmSelection";
 
 interface Props {
   intelligence: IntelligenceHub;
@@ -77,6 +81,8 @@ export const CleanupPage: React.FC<Props> = ({
   const [previewOut, setPreviewOut] = useState("");
   const [previewLatency, setPreviewLatency] = useState<number | null>(null);
   const [previewModel, setPreviewModel] = useState<string>("");
+  const [previewUsed, setPreviewUsed] = useState(false);
+  const [previewNotice, setPreviewNotice] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [removing, setRemoving] = useState<IntelligenceTier | null>(null);
 
@@ -116,16 +122,7 @@ export const CleanupPage: React.FC<Props> = ({
     isDownloading(t) && intelligenceDownload?.tier === t ? intelligenceDownload.speed_mbps : 0;
 
   const handleSelectTier = (t: IntelligenceTier) =>
-    onUpdateSettings({
-      intelligence_tier: t,
-      cleanup_level:
-        t === "raw_verbatim"
-          ? "raw"
-          : settings.cleanup_level === "raw"
-            ? "medium"
-            : settings.cleanup_level,
-      ...(t !== "raw_verbatim" && settings.preset === "fast" ? { preset: "auto" as const } : {}),
-    });
+    onUpdateSettings(llmSelectionPatch(settings, flowModelForTier(t)));
 
   const handleInstall = async (t: IntelligenceTier) => {
     if (t === "raw_verbatim") return;
@@ -164,11 +161,16 @@ export const CleanupPage: React.FC<Props> = ({
 
   const runPreview = async () => {
     setPreviewing(true);
+    setPreviewOut("");
+    setPreviewLatency(null);
+    setPreviewNotice(null);
     try {
       const result = await api.previewTierCleanup(sample, tier, settings.style);
       setPreviewOut(result.text);
       setPreviewLatency(result.latency_ms);
       setPreviewModel(result.model_used);
+      setPreviewUsed(result.rewriter_used === true);
+      setPreviewNotice(result.rewriter_error ?? null);
     } catch (e) {
       intelligence.notifyToast(
         "error",
@@ -178,6 +180,7 @@ export const CleanupPage: React.FC<Props> = ({
       setPreviewOut("");
       setPreviewLatency(null);
       setPreviewModel("");
+      setPreviewUsed(false);
     } finally {
       setPreviewing(false);
     }
@@ -188,217 +191,224 @@ export const CleanupPage: React.FC<Props> = ({
   return (
     <Section
       icon={<Sparkles className="w-4 h-4 text-accent" />}
-      title="Intelligence & Cleanup Engine"
-      description="Choose how Reflow polishes your dictation. Stage 1 rules always run. Stage 2 (optional) uses a small on-device LLM."
+      title="Writing & cleanup"
+      description="Choose the task, then tune the edit. Speech recognition and text cleanup are separate choices."
     >
+      <WritingTaskPicker settings={settings} onUpdateSettings={onUpdateSettings} />
+      <LlmSelector
+        settings={settings}
+        onUpdateSettings={onUpdateSettings}
+        tiers={intelligenceTiers}
+      />
+      <p className="text-xs text-muted leading-relaxed">
+        Cleanup keeps your meaning, numbers and technical identifiers. If the model is unavailable
+        or its edit is rejected, Reflow keeps the rule-cleaned transcript and reports the reason.
+      </p>
       {runtimeDownloadError && (
         <p role="alert" className="text-sm text-danger">
           Runtime installation failed: {runtimeDownloadError}
         </p>
       )}
-      <div className="grid grid-cols-1 gap-3">
-        {(Object.keys(INTELLIGENCE_TIERS) as IntelligenceTier[]).map((id) => {
-          const meta = INTELLIGENCE_TIERS[id];
-          const active = tier === id;
-          const installed = isInstalled(id);
-          const downloading = isDownloading(id);
-          const progress = downloadProgress(id);
-          const speed = downloadSpeed(id);
-          const isRemoving = removing === id;
-          const isDeepContext = id === "deep_context";
-          const needsGpu = isDeepContext && !hasGpu;
-          return (
-            <div
-              key={id}
-              className={`relative rounded-2xl border transition-all p-4 ${
-                active
-                  ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
-                  : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <button
-                  type="button"
-                  onClick={() => handleSelectTier(id)}
-                  aria-pressed={active}
-                  className="flex items-start gap-3 text-left flex-1 min-w-0"
-                >
-                  <div
-                    className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                      active ? "bg-accent text-white" : "bg-surface-2 text-ink-2"
-                    }`}
+      <details>
+        <summary className="text-sm font-medium text-ink cursor-pointer mb-3">
+          Cleanup models &amp; downloads
+        </summary>
+        <div className="grid grid-cols-1 gap-3">
+          {(Object.keys(INTELLIGENCE_TIERS) as IntelligenceTier[]).map((id) => {
+            const meta = INTELLIGENCE_TIERS[id];
+            const active = tier === id;
+            const installed = isInstalled(id);
+            const downloading = isDownloading(id);
+            const progress = downloadProgress(id);
+            const speed = downloadSpeed(id);
+            const isRemoving = removing === id;
+            const isDeepContext = id === "deep_context";
+            const needsGpu = isDeepContext && !hasGpu;
+            return (
+              <div
+                key={id}
+                className={`relative rounded-2xl border transition-colors p-4 ${
+                  active
+                    ? "border-accent bg-accent-soft shadow-xs ring-1 ring-accent"
+                    : "border-line bg-surface hover:border-line-strong hover:bg-base-2"
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTier(id)}
+                    aria-pressed={active}
+                    className="flex items-start gap-3 text-left flex-1 min-w-0"
                   >
-                    {TIER_ICONS[id]}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p
-                        className={`text-base font-semibold ${active ? "text-accent" : "text-ink"}`}
-                      >
-                        {meta.label}
-                      </p>
-                      <span
-                        className={`px-1.5 py-0.5 rounded text-2xs font-bold tracking-wider ${
-                          id === "smart_flow"
-                            ? "bg-success/15 text-success"
-                            : id === "deep_context"
-                              ? "bg-violet-500/15 text-violet-600 dark:text-violet-300"
-                              : "bg-muted/15 text-ink-2"
-                        }`}
-                      >
-                        {meta.badgeText}
-                      </span>
+                    <div
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                        active ? "bg-accent text-white" : "bg-surface-2 text-ink-2"
+                      }`}
+                    >
+                      {TIER_ICONS[id]}
                     </div>
-                    <p className="text-xs text-muted mt-0.5 leading-snug">{meta.tagline}</p>
-                    <p className="text-sm text-ink-2 mt-2 leading-relaxed">{meta.description}</p>
-                    <div className="flex flex-wrap gap-1.5 mt-2.5">
-                      <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
-                        {meta.latencyEstimate}
-                      </span>
-                      {meta.downloadSizeMB > 0 && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
-                          {formatSize(meta.downloadSizeMB)}
-                        </span>
-                      )}
-                      {meta.ramRequiredMB > 0 && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
-                          {formatSize(meta.ramRequiredMB)} RAM
-                        </span>
-                      )}
-                      {meta.vramRequiredMB > 0 && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
-                          {formatSize(meta.vramRequiredMB)} VRAM
-                        </span>
-                      )}
-                      {id === "raw_verbatim" && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
-                          0 MB extra
-                        </span>
-                      )}
-                      {id === "smart_flow" && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
-                          86% IFEval
-                        </span>
-                      )}
-                      {id === "deep_context" && (
-                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
-                          201 Languages
-                        </span>
-                      )}
-                    </div>
-                    {needsGpu && (
-                      <div className="mt-2.5 flex items-start gap-1.5 text-xs text-warning">
-                        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                        <span>
-                          {lowSpecPc
-                            ? "Requires 4 GB+ free memory or a dedicated GPU. Slower on CPU-only laptops."
-                            : "Best with a dedicated GPU. CPU inference will be slower."}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p
+                          className={`text-base font-semibold ${active ? "text-accent" : "text-ink"}`}
+                        >
+                          {meta.label}
+                        </p>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-2xs font-bold tracking-wider ${
+                            id === "smart_flow"
+                              ? "bg-success/15 text-success"
+                              : id === "deep_context"
+                                ? "bg-violet-500/15 text-violet-600 dark:text-violet-300"
+                                : "bg-muted/15 text-ink-2"
+                          }`}
+                        >
+                          {meta.badgeText}
                         </span>
                       </div>
-                    )}
-                    <p className="text-2xs text-muted mt-2 italic">
-                      Powered by {id === "raw_verbatim" ? "Stage 1 rules only" : meta.modelFile}
-                    </p>
-                  </div>
-                </button>
-                {active && (
-                  <div className="w-5 h-5 rounded-full bg-accent text-white flex items-center justify-center shrink-0">
-                    <Check className="w-3 h-3 stroke-[3]" />
-                  </div>
-                )}
-              </div>
-
-              {id !== "raw_verbatim" && (
-                <div className="mt-3 pt-3 border-t border-line/60 flex items-center gap-2 flex-wrap">
-                  {installed ? (
-                    <>
-                      <span className="inline-flex items-center gap-1.5 text-xs text-success font-medium">
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                        Installed
-                      </span>
-                      <div className="flex-1" />
-                      <button
-                        type="button"
-                        className="btn btn-ghost !py-1.5 !px-3 !text-xs"
-                        onClick={() => handleRemove(id)}
-                        disabled={isRemoving}
-                      >
-                        {isRemoving ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Trash2 className="w-3.5 h-3.5" />
+                      <p className="text-xs text-muted mt-0.5 leading-snug">{meta.tagline}</p>
+                      <p className="text-sm text-ink-2 mt-2 leading-relaxed">{meta.description}</p>
+                      <div className="flex flex-wrap gap-1.5 mt-2.5">
+                        <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
+                          {meta.latencyEstimate}
+                        </span>
+                        {meta.downloadSizeMB > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
+                            {formatSize(meta.downloadSizeMB)}
+                          </span>
                         )}
-                        Remove
-                      </button>
-                    </>
-                  ) : downloading ? (
-                    <div className="w-full space-y-1.5">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="inline-flex items-center gap-1.5 text-accent font-medium">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          Downloading {meta.modelFile}
-                        </span>
-                        <span className="text-muted">
-                          {progress}% · {speed.toFixed(1)} MB/s
-                        </span>
+                        {meta.ramRequiredMB > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
+                            {formatSize(meta.ramRequiredMB)} RAM
+                          </span>
+                        )}
+                        {meta.vramRequiredMB > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
+                            {formatSize(meta.vramRequiredMB)} VRAM
+                          </span>
+                        )}
+                        {id === "raw_verbatim" && (
+                          <span className="px-2 py-0.5 rounded-full bg-base-2 border border-line text-2xs text-ink-2 font-medium">
+                            0 MB extra
+                          </span>
+                        )}
                       </div>
-                      <div className="h-1.5 rounded-full bg-line overflow-hidden">
-                        <div
-                          className="h-full bg-accent transition-all duration-300 rounded-full"
-                          style={{ width: `${progress}%` }}
-                        />
-                      </div>
+                      {needsGpu && (
+                        <div className="mt-2.5 flex items-start gap-1.5 text-xs text-warning">
+                          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                          <span>
+                            {lowSpecPc
+                              ? "Requires 4 GB+ free memory or a dedicated GPU. Slower on CPU-only laptops."
+                              : "Best with a dedicated GPU. CPU inference will be slower."}
+                          </span>
+                        </div>
+                      )}
+                      <p className="text-2xs text-muted mt-2 italic">
+                        Powered by {id === "raw_verbatim" ? "Stage 1 rules only" : meta.modelFile}
+                      </p>
                     </div>
-                  ) : isWeightsOnly(id) ? (
-                    <>
-                      <span className="inline-flex items-center gap-1.5 text-xs text-warning font-medium">
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        Weights only — runtime missing
-                      </span>
-                      <div className="flex-1" />
-                      {runtimeDownloadActive ? (
-                        <span className="inline-flex items-center gap-1.5 text-2xs text-accent font-medium">
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          Installing runtime… {runtimeDownload?.progress_pct ?? 0}%
+                  </button>
+                  {active && (
+                    <div className="w-5 h-5 rounded-full bg-accent text-white flex items-center justify-center shrink-0">
+                      <Check className="w-3 h-3 stroke-[3]" />
+                    </div>
+                  )}
+                </div>
+
+                {id !== "raw_verbatim" && (
+                  <div className="mt-3 pt-3 border-t border-line/60 flex items-center gap-2 flex-wrap">
+                    {installed ? (
+                      <>
+                        <span className="inline-flex items-center gap-1.5 text-xs text-success font-medium">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Installed
                         </span>
-                      ) : (
+                        <div className="flex-1" />
+                        <button
+                          type="button"
+                          className="btn btn-ghost !py-1.5 !px-3 !text-xs"
+                          onClick={() => handleRemove(id)}
+                          disabled={isRemoving}
+                        >
+                          {isRemoving ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                          Remove
+                        </button>
+                      </>
+                    ) : downloading ? (
+                      <div className="w-full space-y-1.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="inline-flex items-center gap-1.5 text-accent font-medium">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            Downloading {meta.modelFile}
+                          </span>
+                          <span className="text-muted">
+                            {progress}% · {speed.toFixed(1)} MB/s
+                          </span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-line overflow-hidden">
+                          <div
+                            className="progress-fill bg-accent"
+                            style={{
+                              transform: `scaleX(${Math.max(0, Math.min(100, progress)) / 100})`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ) : isWeightsOnly(id) ? (
+                      <>
+                        <span className="inline-flex items-center gap-1.5 text-xs text-warning font-medium">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          Weights only — runtime missing
+                        </span>
+                        <div className="flex-1" />
+                        {runtimeDownloadActive ? (
+                          <span className="inline-flex items-center gap-1.5 text-2xs text-accent font-medium">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            Installing runtime… {runtimeDownload?.progress_pct ?? 0}%
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-primary !py-1.5 !px-3 !text-xs"
+                            onClick={onInstallRuntime}
+                          >
+                            <Cpu className="w-3.5 h-3.5" />
+                            Install runtime
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-xs text-muted">
+                          Download the GGUF weights to use this tier.
+                        </span>
+                        <div className="flex-1" />
                         <button
                           type="button"
                           className="btn btn-primary !py-1.5 !px-3 !text-xs"
-                          onClick={onInstallRuntime}
+                          onClick={() => handleInstall(id)}
+                          disabled={installing === id}
                         >
-                          <Cpu className="w-3.5 h-3.5" />
-                          Install runtime
+                          {installing === id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Download className="w-3.5 h-3.5" />
+                          )}
+                          Download ({formatSize(meta.downloadSizeMB)})
                         </button>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <span className="text-xs text-muted">
-                        Download the GGUF weights to use this tier.
-                      </span>
-                      <div className="flex-1" />
-                      <button
-                        type="button"
-                        className="btn btn-primary !py-1.5 !px-3 !text-xs"
-                        onClick={() => handleInstall(id)}
-                        disabled={installing === id}
-                      >
-                        {installing === id ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Download className="w-3.5 h-3.5" />
-                        )}
-                        Download ({formatSize(meta.downloadSizeMB)})
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </details>
 
       {(tier === "smart_flow" || tier === "deep_context") && (
         <div className="mt-5 space-y-3">
@@ -445,7 +455,7 @@ export const CleanupPage: React.FC<Props> = ({
 
       <div className="rounded-xl border border-line bg-surface p-3.5 space-y-2.5">
         <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-ink">Live playground</p>
+          <p className="text-sm font-semibold text-ink">Try your cleanup settings</p>
           <span className="text-2xs text-muted">
             Tests {activeMeta.label}
             {flowStatus?.ready && flowStatus.backend
@@ -456,6 +466,7 @@ export const CleanupPage: React.FC<Props> = ({
           </span>
         </div>
         <textarea
+          aria-label="Sample transcript"
           className="field w-full min-h-[64px] resize-y"
           value={sample}
           onChange={(e) => setSample(e.target.value)}
@@ -477,14 +488,21 @@ export const CleanupPage: React.FC<Props> = ({
           </button>
           {previewLatency !== null && (
             <span className="text-xs text-muted">
-              {previewLatency < 5 ? "Stage 1 only" : `Cleaned in ${previewLatency}ms`}
-              {previewModel && previewModel !== "none" && ` with ${previewModel}`}
+              {previewUsed
+                ? `Cleaned in ${previewLatency}ms`
+                : `Basic cleanup · ${previewLatency}ms`}
+              {previewUsed && previewModel && previewModel !== "none" && ` with ${previewModel}`}
             </span>
           )}
         </div>
+        {previewNotice && (
+          <p role="status" className="text-xs text-warning leading-relaxed">
+            AI rewrite was not applied. {previewNotice}
+          </p>
+        )}
         <div className="rounded-lg bg-surface-2 border border-line px-3 py-2.5">
           <p className="text-2xs text-muted mb-1">Output</p>
-          <p className="text-sm text-ink leading-6">
+          <p className="text-sm text-ink leading-6 whitespace-pre-wrap">
             {previewOut || "Click Test to see the cleaned result."}
           </p>
         </div>

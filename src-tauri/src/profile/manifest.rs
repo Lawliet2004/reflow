@@ -20,8 +20,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Precision {
-    /// Full precision on CPU (fp32) — the CPU path never quantizes, because
-    /// quantized weights on CPU cost RAM without buying speed.
+    /// Full precision. Qwen's CPU path uses this; Phonon uses packed int8 kernels.
     Fp32,
     Bf16,
     Int8,
@@ -212,11 +211,16 @@ impl ModelManifest {
 
     /// Estimated system-RAM peak for a CPU load, in MiB.
     ///
-    /// Higher than the VRAM figure for the same weights: the CPU path runs
-    /// fp32 and the allocator is less tightly managed.
+    /// CPU working set, including runtime overhead. Qwen runs fp32; Phonon's
+    /// optimized kernels keep packed int8 weights.
     pub fn estimated_cpu_ram_mb(&self) -> f32 {
-        let weights_mb =
-            (self.params as f32 * Precision::Fp32.bytes_per_weight()) / (1024.0 * 1024.0);
+        let weights_mb = (self.params as f32
+            * if matches!(self.id, "phonon-2" | "zipformer-20m") {
+                1.1
+            } else {
+                Precision::Fp32.bytes_per_weight()
+            })
+            / (1024.0 * 1024.0);
         weights_mb + self.overhead_mb * 1.2
     }
 
@@ -234,6 +238,17 @@ impl ModelManifest {
     pub fn supported_precisions_on(&self, device: Device) -> Vec<Precision> {
         if !self.devices.contains(&device) {
             return Vec::new();
+        }
+        if self.id == "phonon-2" {
+            return vec![if device == Device::Cpu {
+                Precision::Int8
+            } else {
+                Precision::Fp32
+            }];
+        }
+        if self.id == "zipformer-20m" {
+            // The pinned int8 export is the only artifact this model has.
+            return vec![Precision::Int8];
         }
         if device == Device::Cpu && self.precisions.contains(&Precision::Fp32) {
             return vec![Precision::Fp32];
@@ -280,6 +295,7 @@ impl ModelManifest {
 /// Language lists cover only what has been validated. Qwen3-ASR's model card
 /// advertises far more; those are added by Task 42 as each passes its corpus.
 pub const ASR_MODELS: &[ModelManifest] = &[
+    // Keep the Qwen entries first: their automatic size ladder is family-specific.
     ModelManifest {
         id: "0.6b",
         label: "Qwen3-ASR 0.6B",
@@ -328,6 +344,61 @@ pub const ASR_MODELS: &[ModelManifest] = &[
         overhead_mb: 1100.0,
     },
 ];
+
+/// Compact English ASR. The CPU engine expands/requantizes the packed archive
+/// to int8; CUDA uses the exact fp32 Parakeet graph, not a 164 MB allocation.
+pub const PHONON_MODEL: ModelManifest = ModelManifest {
+    id: "phonon-2",
+    label: "Phonon-2 · Fast English",
+    runtime: RuntimeKind::PythonAsr,
+    repo: "FermionResearch/Phonon-2",
+    revision: "ca1bef26bcd8ef4a7e16d0636d8a77bb25e298ee",
+    filename: "phonon-2.bps.tar.zst",
+    dir_name: "phonon-2",
+    sha256: "98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e",
+    auxiliary_files: &[],
+    download_bytes: 163_515_201,
+    params: 630_000_000,
+    precisions: &[Precision::Int8, Precision::Fp32],
+    devices: &[Device::Cpu, Device::Cuda],
+    languages: &["en"],
+    overhead_mb: 900.0,
+};
+
+/// Streaming Zipformer via sherpa-onnx. The download is the four pinned int8
+/// files only — the fp32 siblings in the same repo stay remote.
+pub const ZIPFORMER_MODEL: ModelManifest = ModelManifest {
+    id: "zipformer-20m",
+    label: "Zipformer 20M INT8",
+    runtime: RuntimeKind::PythonAsr,
+    repo: "csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+    revision: "d42f2d9f7ca24806fb667456a18a9f1b60f70d16",
+    filename: "encoder-epoch-99-avg-1.int8.onnx",
+    dir_name: "zipformer-20m",
+    sha256: "3810755ce7c3ab26b42a8bcf39d191308fa27fb0f53358823ba46141d03b7eb3",
+    auxiliary_files: &[
+        WeightFile {
+            filename: "decoder-epoch-99-avg-1.int8.onnx",
+            sha256: "21e2a2acd961b3ac72f55be2f10f1a285e1b0b0ba010d7c0b6eab141411b163c",
+        },
+        WeightFile {
+            filename: "joiner-epoch-99-avg-1.int8.onnx",
+            sha256: "e085d73b593cf9b0707f370dbd656d58327d3fe36d80d849202ef81df02cb01e",
+        },
+        WeightFile {
+            filename: "tokens.txt",
+            sha256: "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        },
+    ],
+    download_bytes: 43_649_301,
+    params: 20_000_000,
+    precisions: &[Precision::Int8],
+    devices: &[Device::Cpu],
+    languages: &["en"],
+    // onnxruntime plus the streaming feature buffers and the sherpa-onnx
+    // interpreter share; measured well under the big HF engines.
+    overhead_mb: 250.0,
+};
 
 /// Refinement models served by `llama-server`.
 pub const REFINEMENT_MODELS: &[ModelManifest] = &[
@@ -423,6 +494,12 @@ pub fn native_asr_manifest(id: &str) -> Option<&'static ModelManifest> {
 }
 
 pub fn asr_manifest(id: &str) -> Option<&'static ModelManifest> {
+    if id == PHONON_MODEL.id {
+        return Some(&PHONON_MODEL);
+    }
+    if id == ZIPFORMER_MODEL.id {
+        return Some(&ZIPFORMER_MODEL);
+    }
     ASR_MODELS.iter().find(|m| m.id == id)
 }
 
@@ -434,6 +511,8 @@ pub fn refinement_manifest(id: &str) -> Option<&'static ModelManifest> {
 pub fn all_manifests() -> impl Iterator<Item = &'static ModelManifest> {
     ASR_MODELS
         .iter()
+        .chain(std::iter::once(&PHONON_MODEL))
+        .chain(std::iter::once(&ZIPFORMER_MODEL))
         .chain(REFINEMENT_MODELS.iter())
         .chain(NATIVE_ASR_MODELS.iter())
 }

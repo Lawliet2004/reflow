@@ -705,6 +705,18 @@ pub fn select_asr_load_for_runtime(
     caps: &Capabilities,
     measured: MeasuredLookup<'_>,
 ) -> AsrSelection {
+    if requested_model == "phonon-2" {
+        return select_phonon_load(
+            preset,
+            requested_device,
+            requested_precision,
+            caps,
+            measured,
+        );
+    }
+    if requested_model == "zipformer-20m" {
+        return select_zipformer_load(preset, requested_device, requested_precision);
+    }
     if runtime != "native" {
         return select_asr_load(
             preset,
@@ -798,6 +810,18 @@ pub fn select_asr_load(
     caps: &Capabilities,
     measured: MeasuredLookup<'_>,
 ) -> AsrSelection {
+    if requested_model == "phonon-2" {
+        return select_phonon_load(
+            preset,
+            requested_device,
+            requested_precision,
+            caps,
+            measured,
+        );
+    }
+    if requested_model == "zipformer-20m" {
+        return select_zipformer_load(preset, requested_device, requested_precision);
+    }
     let forced_precision = Precision::parse(requested_precision);
     let requested = asr_manifest(requested_model).unwrap_or(&ASR_MODELS[0]);
     let wants_cpu = requested_device.trim().eq_ignore_ascii_case("cpu");
@@ -990,6 +1014,96 @@ pub fn select_asr_load(
     }
 }
 
+fn select_phonon_load(
+    preset: Preset,
+    requested_device: &str,
+    requested_precision: &str,
+    caps: &Capabilities,
+    measured: MeasuredLookup<'_>,
+) -> AsrSelection {
+    let model = &super::manifest::PHONON_MODEL;
+    let budget = (caps.free_vram_mb() - vram_reserve_mb(caps) - TRANSIENT_MARGIN_MB).max(0.0);
+    let gpu_peak = measured(model.id, Device::Cuda, Precision::Fp32)
+        .vram_mb
+        .unwrap_or_else(|| model.estimated_vram_mb(Precision::Fp32));
+    let wants_cpu = requested_device == "cpu";
+    let device = if !wants_cpu && caps.can_use_cuda() && gpu_peak <= budget {
+        Device::Cuda
+    } else {
+        Device::Cpu
+    };
+    let precision = if device == Device::Cpu {
+        Precision::Int8
+    } else {
+        Precision::Fp32
+    };
+    let supported = model.supported_precisions_on(device);
+    let forced = Precision::parse(requested_precision);
+    let mut notes = Vec::new();
+    if !wants_cpu && device == Device::Cpu {
+        notes.push("Phonon-2 runs on CPU because CUDA is unavailable or its expanded weights exceed free VRAM.".to_string());
+    }
+    let error = forced.filter(|p| !supported.contains(p)).and_then(|p| {
+        if preset == Preset::Custom {
+            Some(unsupported_precision_error(model, device, p, &supported))
+        } else {
+            notes.push(format!(
+                "Phonon-2 uses {} on {}.",
+                precision.as_str(),
+                device.as_str()
+            ));
+            None
+        }
+    });
+    AsrSelection {
+        model_id: model.id,
+        device,
+        precision,
+        downgrade: (!notes.is_empty()).then(|| notes.join(" ")),
+        error,
+    }
+}
+
+/// Zipformer ships a single CPU/int8 configuration, so there is no ladder —
+/// only the reporting contract: explain corrections, refuse forced nonsense.
+fn select_zipformer_load(
+    preset: Preset,
+    requested_device: &str,
+    requested_precision: &str,
+) -> AsrSelection {
+    let model = &super::manifest::ZIPFORMER_MODEL;
+    let mut notes = Vec::new();
+    if !matches!(requested_device, "auto" | "cpu") {
+        notes.push("Zipformer 20M is CPU-optimized; the GPU selection does not apply.".to_string());
+    }
+    let supported = model.supported_precisions_on(Device::Cpu);
+    let error = Precision::parse(requested_precision)
+        .filter(|p| !supported.contains(p))
+        .and_then(|p| {
+            if preset == Preset::Custom {
+                Some(unsupported_precision_error(
+                    model,
+                    Device::Cpu,
+                    p,
+                    &supported,
+                ))
+            } else {
+                notes.push(format!(
+                    "Zipformer 20M ships int8 weights; {} is unavailable.",
+                    p.as_str()
+                ));
+                None
+            }
+        });
+    AsrSelection {
+        model_id: model.id,
+        device: Device::Cpu,
+        precision: Precision::Int8,
+        downgrade: (!notes.is_empty()).then(|| notes.join(" ")),
+        error,
+    }
+}
+
 /// Ordered load ladder for one model on one device.
 ///
 /// Generalises the Python `build_attempts`: rungs that cannot fit the measured
@@ -1005,9 +1119,13 @@ pub fn build_attempts(
     let mut attempts = Vec::new();
 
     if !device.is_gpu() {
-        // The CPU path never quantizes: weight-only quantization on CPU costs
-        // RAM without buying throughput.
-        let peaks = measured(manifest.id, Device::Cpu, Precision::Fp32);
+        // Use the runtime's CPU format: Qwen fp32 or Phonon's packed int8.
+        let precision = manifest
+            .supported_precisions_on(Device::Cpu)
+            .first()
+            .copied()
+            .unwrap_or(Precision::Fp32);
+        let peaks = measured(manifest.id, Device::Cpu, precision);
         let peak = peaks
             .ram_mb
             .unwrap_or_else(|| manifest.estimated_cpu_ram_mb());
@@ -1016,7 +1134,7 @@ pub fn build_attempts(
         if peak <= budget_mb {
             attempts.push(LoadAttempt {
                 device: Device::Cpu,
-                precision: Precision::Fp32,
+                precision,
                 expected_peak_mb: peak,
                 measured: peaks.ram_mb.is_some(),
             });
@@ -1036,6 +1154,7 @@ pub fn build_attempts(
     let forced = forced_precision.map(|p| [p]);
     let order: &[Precision] = match &forced {
         Some(single) => single.as_slice(),
+        None if manifest.id == "phonon-2" => &[Precision::Fp32],
         None => AUTO_ORDER.as_slice(),
     };
 

@@ -17,6 +17,41 @@ spec.loader.exec_module(runtime)
 
 
 class NetworkPolicyTests(unittest.TestCase):
+    def test_hf_weight_redirect_reaches_official_cdn_and_journals_bytes(self):
+        import huggingface_hub
+        for host in ("us.aws.cdn.hf.co", "us.gcp.cdn.hf.co"):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as directory:
+                policy = pathlib.Path(directory, "network-policy.json")
+                policy.write_text('{"offline_mode":false}', encoding="utf-8")
+                with mock.patch.dict(os.environ, {"REFLOW_NETWORK_POLICY": str(policy)}):
+                    runtime.install_network_guard()
+                    responses = [
+                        httpx.Response(302, headers={"location": f"https://{host}/weights?signature=secret"},
+                                       stream=httpx.ByteStream(b"")),
+                        httpx.Response(200, stream=httpx.ByteStream(b"weights")),
+                    ]
+                    with mock.patch.object(httpx.HTTPTransport, "handle_request", side_effect=responses) as send:
+                        result = huggingface_hub.get_session().get("https://huggingface.co/model/resolve/pinned/weights")
+                        self.assertEqual(result.content, b"weights")
+                        self.assertEqual(send.call_count, 2)
+                    rows = pathlib.Path(directory, "network-journal.jsonl").read_text(encoding="utf-8")
+                    self.assertNotIn("secret", rows)
+                    entry = json.loads(rows.splitlines()[-1])
+                    self.assertEqual(entry["host"], host)
+                    self.assertEqual(entry["bytes"], 7)
+                huggingface_hub.close_session()
+
+    def test_cdn_allowlist_rejects_lookalikes_and_insecure_urls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            policy = pathlib.Path(directory, "network-policy.json")
+            policy.write_text('{"offline_mode":false}', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"REFLOW_NETWORK_POLICY": str(policy)}):
+                for url in ("https://us.aws.cdn.hf.co.attacker.test/weights",
+                            "https://attacker.hf.co/weights", "http://us.aws.cdn.hf.co/weights",
+                            "https://us.aws.cdn.hf.co:444/weights", "https://user@us.aws.cdn.hf.co/weights"):
+                    with self.subTest(url=url), self.assertRaises(RuntimeError):
+                        runtime.check_download_request(url)
+
     def test_missing_or_invalid_policy_blocks_before_installer_starts(self):
         with mock.patch.dict(os.environ, {"REFLOW_NETWORK_POLICY": "missing-policy-file"}):
             with mock.patch.object(runtime, "install_network_guard") as install:

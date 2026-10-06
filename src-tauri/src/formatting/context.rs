@@ -39,9 +39,105 @@ impl ContextFormatter {
         match mode {
             DictationMode::Coding => Self::format_coding(text),
             DictationMode::Chat => text.trim().to_string(),
-            DictationMode::Email => text.trim().to_string(),
+            DictationMode::Email => Self::format_email(text),
             DictationMode::Notes => text.trim().to_string(),
             DictationMode::Normal => text.trim().to_string(),
+        }
+    }
+
+    /// Copy explicit email boundaries; leave uncertain or existing structure
+    /// for the optional rewriter. Never supply a missing greeting or signature.
+    pub fn format_email(text: &str) -> String {
+        let text = text.trim();
+        let literal = text.char_indices().any(|(at, ch)| {
+            matches!(ch, '"' | '“' | '”' | '‘' | '`')
+                || ch == '\'' && (at == 0 || text[..at].ends_with(char::is_whitespace))
+        });
+        let listed = text.split_whitespace().any(|word| {
+            matches!(word, "•" | "-" | "*")
+                || word.ends_with(['.', ')'])
+                    && word
+                        .trim_end_matches(['.', ')'])
+                        .bytes()
+                        .all(|ch| ch.is_ascii_digit())
+        });
+        if text.contains('\n') || literal || listed {
+            return text.into();
+        }
+        let Some((greeting, body)) = text.split_once(',') else {
+            return text.into();
+        };
+        let words = greeting.split_whitespace().collect::<Vec<_>>();
+        if words.is_empty()
+            || words.len() > 4
+            || !matches!(
+                words[0].to_ascii_lowercase().as_str(),
+                "hi" | "hello" | "dear"
+            )
+            || words[1..].iter().any(|word| {
+                matches!(
+                    word.to_ascii_lowercase().as_str(),
+                    "i" | "you" | "we" | "it" | "is" | "are" | "can" | "could" | "will" | "please"
+                )
+            })
+            || body.trim().is_empty()
+        {
+            return text.into();
+        }
+        let body = body.trim();
+        let lower = body.to_ascii_lowercase();
+        let mut ambiguous = false;
+        for closing in [
+            "best regards",
+            "kind regards",
+            "best wishes",
+            "thank you",
+            "thanks",
+            "regards",
+            "sincerely",
+            "cheers",
+        ] {
+            let Some(at) = lower.rfind(closing) else {
+                continue;
+            };
+            if at > 0 && !body[..at].ends_with(char::is_whitespace) {
+                continue;
+            }
+            ambiguous = true;
+            let tail = &body[at + closing.len()..];
+            let (signoff, name) = if let Some(name) = tail.strip_prefix(',') {
+                (&body[at..at + closing.len() + 1], name.trim())
+            } else if tail.trim_matches(['.', '!']).is_empty() {
+                (&body[at..], "")
+            } else {
+                continue;
+            };
+            let names = name.split_whitespace().collect::<Vec<_>>();
+            if names.len() > 3
+                || names.iter().any(|word| {
+                    !word.chars().next().is_some_and(char::is_uppercase)
+                        || !word
+                            .chars()
+                            .all(|ch| ch.is_alphabetic() || matches!(ch, '-' | '\'' | '’' | '.'))
+                })
+                || !body[..at].trim_end().ends_with(['.', '?', '!', ';'])
+            {
+                continue;
+            }
+            return format!(
+                "{greeting},\n\n{}\n\n{signoff}{}",
+                body[..at].trim_end(),
+                if name.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{name}")
+                }
+            );
+        }
+        if ambiguous {
+            text.into()
+        } else {
+            format!("{greeting},\n\n{body}")
         }
     }
 
@@ -341,6 +437,57 @@ fn apply_casing(words: &[&str], transform: CaseTransform) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn email_layout_copies_present_greeting_and_signoff() {
+        for (source, expected) in [
+            (
+                "Hi Maya, please send the report. Thanks, Alex",
+                "Hi Maya,\n\nplease send the report.\n\nThanks,\nAlex",
+            ),
+            (
+                "Hello Sam, can you review the draft? Best regards, Priya Rao",
+                "Hello Sam,\n\ncan you review the draft?\n\nBest regards,\nPriya Rao",
+            ),
+            (
+                "Dear team, the release is ready. Regards, Jordan.",
+                "Dear team,\n\nthe release is ready.\n\nRegards,\nJordan.",
+            ),
+            (
+                "Hi everyone, the release is ready. Thanks.",
+                "Hi everyone,\n\nthe release is ready.\n\nThanks.",
+            ),
+            (
+                "Hi Maya, can you send the report?",
+                "Hi Maya,\n\ncan you send the report?",
+            ),
+        ] {
+            assert_eq!(ContextFormatter::format_email(source), expected, "{source}");
+            assert_eq!(
+                ContextFormatter::format(source, DictationMode::Email),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn email_layout_keeps_ambiguous_and_existing_structure_intact() {
+        for source in [
+            "Good morning Maya, please send the report. Thanks, Alex",
+            "Hi can you help, please send the report. Thanks, Alex",
+            "Hi Maya please send the report. Thanks, Alex",
+            "The note ends with Thanks, Alex",
+            "Hi team, the note ends with Thanks, Alex",
+            "Hi Maya, please send the report. Thanks for helping",
+            "Hi Maya, she said \"Thanks, Alex\".",
+            "Hi Maya, she said 'Thanks, Alex'.",
+            "Hi Maya,\n\nplease send the report.\n\nThanks,\nAlex",
+            "Hi team,\n\n• Read the report\n• Check the draft",
+            "Hi team, 1. Read the report 2. Check the draft",
+        ] {
+            assert_eq!(ContextFormatter::format_email(source), source, "{source}");
+        }
+    }
 
     #[test]
     fn transforms_camel_case() {

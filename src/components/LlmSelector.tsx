@@ -47,11 +47,13 @@ export function LlmSelector({
         {model === "none"
           ? "Speech recognition and basic cleanup work without an LLM."
           : state?.downloading
-            ? "Downloading. Speech recognition works while you wait."
+            ? "Downloading. Speech recognition and basic cleanup work while you wait."
             : needsInstall
               ? "Not installed. Speech recognition works without AI rewriting."
               : state?.installed
-                ? "Rewrites your transcript locally after speech recognition."
+                ? model === "qwen3.5-0.8b"
+                  ? "Installed. Start here for natural cleanup; adds a local rewrite after recognition."
+                  : "Installed. Try for developer prompts and longer writing; needs more memory and may take longer."
                 : "Optional local rewriting. Checking whether this model is installed…"}
         {needsInstall &&
           (onOpenSettings ? (

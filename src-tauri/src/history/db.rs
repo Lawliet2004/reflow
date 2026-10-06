@@ -76,6 +76,7 @@ pub struct HistoryStore {
     cipher: Mutex<Option<HistoryCipher>>,
     key_provider: Arc<dyn HistoryKeyProvider>,
     encryption_required: std::sync::atomic::AtomicBool,
+    source_requires_encryption: bool,
 }
 
 impl HistoryStore {
@@ -110,6 +111,12 @@ impl HistoryStore {
 
     pub fn encryption_enabled(&self) -> bool {
         self.cipher.lock().is_some()
+    }
+
+    /// Includes the preserved original when this store is a recovery database,
+    /// and fails closed when its encryption metadata could not be read.
+    pub fn source_requires_encryption(&self) -> bool {
+        self.source_requires_encryption
     }
 
     fn decode_entry(&self, mut entry: HistoryEntry) -> Result<HistoryEntry, String> {
@@ -344,6 +351,7 @@ impl HistoryStore {
             cipher: Mutex::new(cipher),
             key_provider,
             encryption_required: std::sync::atomic::AtomicBool::new(false),
+            source_requires_encryption: encrypted,
         })
     }
 
@@ -360,6 +368,10 @@ impl HistoryStore {
         match Self::new_with_key_provider(db_path.clone(), key_provider.clone()) {
             Ok(store) => store,
             Err(error) => {
+                // Inspect only metadata through a read-only connection. Missing
+                // keys must not make startup recovery defaults allow plaintext
+                // writes. Unknown/corrupt metadata also needs explicit opt-out.
+                let source_requires_encryption = source_encryption_state(&db_path).unwrap_or(true);
                 let recovery_path = recovery_database_path(&db_path);
                 let (mut store, storage) = match Self::new_with_key_provider(
                     recovery_path.clone(),
@@ -373,9 +385,10 @@ impl HistoryStore {
                         let mut conn =
                             Connection::open_in_memory().expect("SQLite in-memory database");
                         Self::migrate_schema(&mut conn).expect("fresh in-memory schema");
-                        (Self { conn: Arc::new(Mutex::new(conn)), recovery_notice: None, audio_retention: Mutex::new("disabled".into()), cipher: Mutex::new(None), key_provider, encryption_required: std::sync::atomic::AtomicBool::new(false) }, "New history is temporary and will be lost when the app closes. Export it before quitting.".into())
+                        (Self { conn: Arc::new(Mutex::new(conn)), recovery_notice: None, audio_retention: Mutex::new("disabled".into()), cipher: Mutex::new(None), key_provider, encryption_required: std::sync::atomic::AtomicBool::new(false), source_requires_encryption: false }, "New history is temporary and will be lost when the app closes. Export it before quitting.".into())
                     }
                 };
+                store.source_requires_encryption = source_requires_encryption;
                 store.recovery_notice = Some(format!("History could not be opened: {error}. The original at {} is preserved. {storage} Recovery history is unencrypted.", db_path.display()));
                 log::error!("{}", store.recovery_notice.as_deref().unwrap_or_default());
                 store
@@ -1108,6 +1121,58 @@ impl HistoryStore {
         Ok(affected > 0)
     }
 
+    /// A background observer must not overwrite a concurrent undo, retry or edit.
+    /// Compare decoded text while holding the DB lock, and retain all ASR fields.
+    pub fn update_observed_dictation(
+        &self,
+        id: &str,
+        expected: &str,
+        final_text: &str,
+    ) -> Result<bool, String> {
+        self.ensure_private_writes()?;
+        let conn = self.conn.lock();
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT final_transcript FROM history WHERE id = ?1 AND kind = 'dictation'",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(stored) = stored else {
+            return Ok(false);
+        };
+        let current = match self.cipher.lock().as_ref() {
+            Some(cipher) => cipher.open_text(id, "final_transcript", &stored)?,
+            None => stored.clone(),
+        };
+        if current != expected {
+            return Ok(false);
+        }
+        let encoded = self.encode_text(id, "final_transcript", final_text)?;
+        let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let affected = transaction
+            .execute(
+                "UPDATE history SET final_transcript = ?2, word_count = ?3, character_count = ?4
+             WHERE id = ?1 AND final_transcript = ?5 AND kind = 'dictation'",
+                params![
+                    id,
+                    encoded,
+                    final_text.split_whitespace().count() as i64,
+                    final_text.chars().count() as i64,
+                    stored
+                ],
+            )
+            .map_err(|e| format!("Failed to update corrected dictation: {e}"))?;
+        if affected > 0 {
+            transaction
+                .execute("DELETE FROM file_segments WHERE history_id = ?1", [id])
+                .map_err(|e| format!("Failed to invalidate old subtitle text: {e}"))?;
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(affected > 0)
+    }
+
     pub fn delete_entry(&self, id: &str) -> Result<bool, String> {
         let conn = self.conn.lock();
         let affected = conn
@@ -1165,6 +1230,34 @@ impl HistoryStore {
             .map_err(|e| format!("Failed to purge old history: {}", e))?;
 
         Ok(affected)
+    }
+}
+
+fn source_encryption_state(path: &std::path::Path) -> Option<bool> {
+    let conn =
+        Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let has_manifest: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_settings')", [], |row| row.get(0)).ok()?;
+    if !has_manifest {
+        return Some(false);
+    }
+    let flag: String = conn
+        .query_row(
+            "SELECT value FROM history_settings WHERE key='encryption'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let has_verification: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM history_settings WHERE key='verification')",
+            [],
+            |row| row.get(0),
+        )
+        .ok()?;
+    match (flag.as_str(), has_verification) {
+        ("0", false) => Some(false),
+        ("1", true) => Some(true),
+        _ => None,
     }
 }
 

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
 use crate::audio::resampler::AudioResampler;
-use crate::profile::manifest::ASR_MODELS;
+use crate::profile::manifest::{ASR_MODELS, PHONON_MODEL, ZIPFORMER_MODEL};
 
 const ASR_PUSH_CHUNK_SAMPLES: usize = 16_000;
 const CANCELLED_TRANSPORT: &str = "engine_cancelled: discarded dictation";
@@ -19,6 +19,10 @@ const CANCEL_GRACE: Duration = Duration::from_millis(400);
 #[cfg(test)]
 #[path = "sidecar_transport_tests.rs"]
 mod transport_tests;
+
+#[cfg(test)]
+#[path = "sidecar_load_deadline_tests.rs"]
+mod load_deadline_tests;
 
 /// Marker prefix for a sidecar read timeout.
 ///
@@ -62,6 +66,10 @@ const TIMEOUT_STATUS: Duration = Duration::from_secs(8);
 /// of torch/transformers/scipy (15-30s on a cold filesystem; see
 /// `_warm_imports` in the runtime), so this budget has to cover that warmup.
 const TIMEOUT_CONTROL: Duration = Duration::from_secs(90);
+/// Asynchronous model construction/quantization/warmup, after acknowledgement.
+/// Downloads have their own lifecycle and are excluded from this budget.
+/// Leave ample room for a cold CPU load while still retiring a stuck loader.
+const TIMEOUT_MODEL_LOAD: Duration = Duration::from_secs(15 * 60);
 /// Incremental audio submission.
 const TIMEOUT_PUSH_AUDIO: Duration = Duration::from_secs(30);
 /// Whole-utterance transcription floor. The real budget scales with how much
@@ -234,11 +242,16 @@ pub struct Qwen3AsrSidecar {
     /// While this is set, the sidecar is expected to go mute for tens of
     /// seconds: its main thread is blocked warming native imports and cannot
     /// answer probes at all. Silence in that window is the normal shape of a
-    /// load in progress, so it must never be recorded as an engine error.
+    /// load in progress, so it must not be recorded as an engine error before
+    /// the separate model-load deadline expires.
     /// Doing so is what made a healthy load surface as
     /// "Model failed to load: engine_timeout" and, because the recording path
     /// gates on that, silently disabled the hotkey.
     load_in_flight: bool,
+    /// The model-load clock is separate from `load_in_flight`, which also
+    /// covers CUDA-only warmup. Active downloads suspend this clock; an
+    /// install's auto-load starts it on the first loading status afterwards.
+    model_load_started_at: Option<Instant>,
     /// Samples handed to the engine since `start_stream`.
     ///
     /// Kept so the transcription timeout can be derived from how much audio
@@ -246,6 +259,10 @@ pub struct Qwen3AsrSidecar {
     /// 180s is far more than a 5-second utterance needs, and far less than ten
     /// minutes of hands-free dictation needs.
     pushed_samples: usize,
+    /// `true` while the loaded model decodes incrementally (Zipformer) and
+    /// `push_audio` may report live partial text via the `get_partial` probe.
+    /// Binary frames carry no reply, so the probe is the only channel.
+    streaming_partials: bool,
     progress: Option<super::engine::ProgressTracker>,
 }
 
@@ -282,7 +299,9 @@ impl Qwen3AsrSidecar {
             next_request_id: 1,
             consecutive_probe_timeouts: 0,
             load_in_flight: false,
+            model_load_started_at: None,
             pushed_samples: 0,
+            streaming_partials: false,
             progress: None,
         }
     }
@@ -375,7 +394,7 @@ impl Qwen3AsrSidecar {
     /// Timeout to use for a given command name.
     fn timeout_for(command: &str) -> Duration {
         match command {
-            "ping" => TIMEOUT_FAST,
+            "ping" | "get_partial" => TIMEOUT_FAST,
             "status" => TIMEOUT_STATUS,
             "push_audio_b64" => TIMEOUT_PUSH_AUDIO,
             "stop_stream" => TIMEOUT_TRANSCRIBE,
@@ -387,7 +406,7 @@ impl Qwen3AsrSidecar {
     /// of an in-flight model load, and which therefore must not tear the child
     /// down. See `send_command_timeout`.
     fn is_probe(command: &str) -> bool {
-        matches!(command, "ping" | "status")
+        matches!(command, "ping" | "status" | "get_partial")
     }
 
     fn send_command(&mut self, payload: Value) -> Result<Value, String> {
@@ -556,6 +575,20 @@ impl Qwen3AsrSidecar {
         Ok(writer)
     }
 
+    /// Unload and cancellation retire the process to release its allocations.
+    /// A later load/install/probe must recreate the transport before writing.
+    fn ensure_initialized(&mut self) -> Result<(), String> {
+        let running = self
+            .child
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        if running && self.stdin.is_some() && self.responses.is_some() {
+            return Ok(());
+        }
+        self.kill_child();
+        self.initialize()
+    }
+
     fn write_until(
         &mut self,
         payload: PipePayload,
@@ -633,8 +666,15 @@ impl Qwen3AsrSidecar {
     /// operations still tear the child down, because a wedged transcription is
     /// evidence the runtime itself is stuck.
     fn on_command_timeout(&mut self, command: &str, timeout: Duration) -> String {
+        self.on_command_timeout_at(command, timeout, Instant::now())
+    }
+
+    fn on_command_timeout_at(&mut self, command: &str, timeout: Duration, now: Instant) -> String {
         let err = engine_timeout_error(command, timeout);
         if Self::is_probe(command) {
+            if let Some(error) = self.retire_overdue_model_load(now) {
+                return error;
+            }
             self.consecutive_probe_timeouts = self.consecutive_probe_timeouts.saturating_add(1);
             // A load in progress is expected to be mute: the sidecar's main
             // thread is inside a blocking native import and physically cannot
@@ -667,6 +707,40 @@ impl Qwen3AsrSidecar {
             self.record_crash_and_check_breaker(&err);
             err
         }
+    }
+
+    fn observe_model_load(&mut self, now: Instant) {
+        if self.status_cache.is_downloading || !self.status_cache.is_loading {
+            self.model_load_started_at = None;
+        } else {
+            // Repeated loading responses or load requests must not extend a
+            // wedged loader's budget indefinitely.
+            self.model_load_started_at.get_or_insert(now);
+        }
+    }
+
+    fn retire_overdue_model_load(&mut self, now: Instant) -> Option<String> {
+        if self.status_cache.is_downloading {
+            self.model_load_started_at = None;
+            return None;
+        }
+        let started = self.model_load_started_at?;
+        if now.saturating_duration_since(started) < TIMEOUT_MODEL_LOAD {
+            return None;
+        }
+        let error = format!(
+            "{ENGINE_TIMEOUT_PREFIX} Model loading exceeded {} minutes. The stuck \
+             ASR runtime was stopped. Reload the model in Settings to try again.",
+            TIMEOUT_MODEL_LOAD.as_secs() / 60
+        );
+        self.kill_child();
+        // A long load timeout is not a rapid crash-loop strike. The existing
+        // ensure_initialized path may start a fresh process on the next load.
+        self.fallback(&error);
+        self.status_cache.device = "none".into();
+        self.status_cache.vram_mb = 0.0;
+        self.status_cache.failure_kind = Some("timeout".into());
+        Some(error)
     }
 
     pub fn is_circuit_breaker_open(&mut self) -> bool {
@@ -712,6 +786,7 @@ impl Qwen3AsrSidecar {
         log::error!("ASR sidecar unavailable ({reason})");
         self.use_fallback = false;
         self.load_in_flight = false;
+        self.model_load_started_at = None;
         self.status_cache.loaded = false;
         self.status_cache.is_loading = false;
         self.status_cache.backend = "unavailable".into();
@@ -719,6 +794,7 @@ impl Qwen3AsrSidecar {
     }
 
     fn kill_child(&mut self) {
+        self.model_load_started_at = None;
         if let Some(writer) = self.writer.take() {
             writer.closed.store(true, Ordering::Release);
         }
@@ -787,9 +863,7 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return Ok(());
         }
-        if self.child.is_none() {
-            return Err("ASR sidecar is not running".into());
-        }
+        self.ensure_initialized()?;
         match self.send_command(json!({"cmd": "probe_cuda"})) {
             Ok(resp) => {
                 if resp.get("status") == Some(&Value::String("error".into())) {
@@ -902,10 +976,16 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return self.fallback_mock.load_model(model_dir, backend);
         }
+        self.ensure_initialized()?;
 
-        let manifest = ASR_MODELS.iter().find(|m| {
-            Path::new(model_dir).file_name().and_then(|n| n.to_str()) == Some(m.dir_name)
-        });
+        let manifest = ASR_MODELS
+            .iter()
+            .chain(std::iter::once(&PHONON_MODEL))
+            .chain(std::iter::once(&ZIPFORMER_MODEL))
+            .find(|m| {
+                Path::new(model_dir).file_name().and_then(|n| n.to_str()) == Some(m.dir_name)
+            });
+        self.streaming_partials = manifest.is_some_and(|m| m.id == ZIPFORMER_MODEL.id);
         let cmd = json!({
             "cmd": "load_model",
             "model_id": manifest.map(|m| m.id),
@@ -923,6 +1003,7 @@ impl ASREngine for Qwen3AsrSidecar {
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown model load error");
                     self.load_in_flight = false;
+                    self.model_load_started_at = None;
                     return Err(err.to_string());
                 }
                 // "loading" | "ok" | "already-loading" — completion is
@@ -933,29 +1014,56 @@ impl ASREngine for Qwen3AsrSidecar {
                 self.status_cache.is_loading = true;
                 self.status_cache.backend = "loading…".into();
                 self.status_cache.error = None;
+                self.observe_model_load(Instant::now());
                 Ok(())
             }
             Err(e) => {
                 self.load_in_flight = false;
+                self.model_load_started_at = None;
                 Err(format!("Could not reach the ASR sidecar: {e}"))
             }
         }
     }
 
     fn install_model_dir(&mut self, model_dir: &str, repo: &str) -> Result<(), String> {
+        self.install_model_dir_with_options(model_dir, repo, "auto", "auto")
+    }
+
+    fn install_model_dir_with_options(
+        &mut self,
+        model_dir: &str,
+        repo: &str,
+        backend: &str,
+        precision: &str,
+    ) -> Result<(), String> {
         crate::network_policy::check_download()?;
         if self.use_fallback {
             return Err("ASR runtime unavailable".into());
         }
-        let manifest = ASR_MODELS.iter().find(|m| m.repo == repo);
+        self.ensure_initialized()?;
+        let manifest = ASR_MODELS
+            .iter()
+            .chain(std::iter::once(&PHONON_MODEL))
+            .chain(std::iter::once(&ZIPFORMER_MODEL))
+            .find(|m| m.repo == repo);
+        // Every manifest-pinned file is checksum-verified, not just the
+        // primary weight — Zipformer needs all three ONNX files plus
+        // tokens.txt intact before it can load.
         let cmd = json!({
             "cmd": "install_model",
             "revision": manifest.map(|m| m.revision),
-            "weight_files": manifest.map(|m| vec![json!({"filename": m.filename, "sha256": m.sha256})]),
+            "weight_files": manifest.map(|m| {
+                std::iter::once((m.filename, m.sha256))
+                    .chain(m.auxiliary_files.iter().map(|f| (f.filename, f.sha256)))
+                    .map(|(filename, sha256)| json!({"filename": filename, "sha256": sha256}))
+                    .collect::<Vec<_>>()
+            }),
             "model_id": manifest.map(|m| m.id),
             "expected_bytes": manifest.map(|m| m.download_bytes),
             "model_dir": model_dir,
-            "repo": repo
+            "repo": repo,
+            "device": backend,
+            "precision": precision,
         });
         match self.send_command(cmd) {
             Ok(resp) => {
@@ -965,6 +1073,15 @@ impl ASREngine for Qwen3AsrSidecar {
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown install error");
                     return Err(err.to_string());
+                }
+                if matches!(
+                    resp.get("status").and_then(Value::as_str),
+                    Some("downloading" | "already-downloading")
+                ) {
+                    // The next status may be delayed by warm imports. Do not
+                    // let a previously armed load clock interrupt this download.
+                    self.status_cache.is_downloading = true;
+                    self.model_load_started_at = None;
                 }
                 Ok(())
             }
@@ -980,6 +1097,7 @@ impl ASREngine for Qwen3AsrSidecar {
         // waiting behind inference or a wedged input/output pipe.
         self.kill_child();
         self.load_in_flight = false;
+        self.streaming_partials = false;
         self.status_cache = EngineStatus::default();
         Ok(())
     }
@@ -1070,6 +1188,14 @@ impl ASREngine for Qwen3AsrSidecar {
             }
         }
 
+        // A streaming model has fresh text after every push; report it as the
+        // live partial. A probe failure loses one update, not the session.
+        if self.streaming_partials {
+            match self.get_partial_transcript() {
+                Ok(text) => return Ok((!text.trim().is_empty()).then_some(text)),
+                Err(error) => log::debug!("get_partial skipped: {error}"),
+            }
+        }
         Ok(None)
     }
 
@@ -1077,7 +1203,15 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return self.fallback_mock.get_partial_transcript();
         }
-        Ok(String::new())
+        if !self.streaming_partials {
+            return Ok(String::new());
+        }
+        let resp = self.send_command(json!({"cmd": "get_partial"}))?;
+        Ok(resp
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string())
     }
 
     fn stop_stream(&mut self) -> Result<String, String> {
@@ -1185,6 +1319,10 @@ impl Qwen3AsrSidecar {
     /// the status command is answered instantly by the Python process.
     fn refresh_status(&mut self) -> Result<(), String> {
         let resp = self.send_command(json!({"cmd": "status"}))?;
+        self.apply_status_response(resp, Instant::now())
+    }
+
+    fn apply_status_response(&mut self, resp: Value, now: Instant) -> Result<(), String> {
         // The sidecar answered, so any earlier slow polls were transient.
         self.consecutive_probe_timeouts = 0;
         if resp.get("status") == Some(&Value::String("ok".into())) {
@@ -1290,6 +1428,9 @@ impl Qwen3AsrSidecar {
                     .and_then(|v| v.as_f64())
                     .map(|v| v as f32),
             };
+            // A live ready/failed/download response resolves or suspends the
+            // old clock before considering whether that clock has expired.
+            self.observe_model_load(now);
             if self.status_cache.spill_detected {
                 log::error!(
                     "VRAM spill detected: {}",
@@ -1305,6 +1446,9 @@ impl Qwen3AsrSidecar {
                 self.status_cache.torch_cuda_version.clone(),
             );
         }
+        if let Some(error) = self.retire_overdue_model_load(now) {
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -1318,6 +1462,50 @@ impl Drop for Qwen3AsrSidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loads_restart_the_transport_after_unload_or_process_exit() {
+        let root =
+            std::env::temp_dir().join(format!("reflow_sidecar_lifecycle_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("qwen3_asr_runtime.py"),
+            r#"
+import json, sys
+loaded = False
+for line in sys.stdin:
+    message = json.loads(line)
+    if message['cmd'] == 'load_model':
+        loaded = True
+    print(json.dumps({'id': message['id'], 'status': 'ok', 'pong': True,
+                      'loaded': loaded, 'is_loading': False, 'backend': 'fixture',
+                      'cuda_available': False, 'cuda_probe_pending': False}), flush=True)
+"#,
+        )
+        .unwrap();
+        let mut engine = Qwen3AsrSidecar::new();
+        engine.set_resource_dir(root.clone());
+        engine.initialize().unwrap();
+        let first = engine.child.as_ref().unwrap().id();
+        engine.load_model("fixture", "cpu").unwrap();
+        assert!(engine.engine_status().loaded);
+        assert_eq!(engine.child.as_ref().unwrap().id(), first);
+        engine.unload_model().unwrap();
+        engine.load_model("fixture", "cpu").unwrap();
+        assert!(engine.engine_status().loaded);
+        let second = engine.child.as_ref().unwrap().id();
+        assert_ne!(first, second);
+        engine.child.as_mut().unwrap().kill().unwrap();
+        engine.child.as_mut().unwrap().wait().unwrap();
+        engine.load_model("fixture", "cpu").unwrap();
+        assert!(engine.engine_status().loaded);
+        assert_ne!(second, engine.child.as_ref().unwrap().id());
+        engine.unload_model().unwrap();
+        engine.probe_cuda().unwrap();
+        assert!(engine.child.is_some());
+        engine.unload_model().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn audio_push_chunks_are_bounded_to_one_second() {

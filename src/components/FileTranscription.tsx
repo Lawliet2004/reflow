@@ -174,7 +174,7 @@ function FileTranscriptionView({
   return (
     <section className="panel p-5 space-y-4" aria-label="File transcription">
       <div>
-        <h2 className="font-semibold text-sm">Transcribe an audio file</h2>
+        <h2 className="font-display text-lg font-medium">Transcribe an audio file</h2>
         <p className="text-xs text-muted mt-1 leading-relaxed">
           Browse or drop a WAV, MP3, M4A, AAC, FLAC or Ogg file. Up to two hours, processed on your
           computer.

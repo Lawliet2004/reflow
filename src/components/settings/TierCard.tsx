@@ -44,7 +44,7 @@ export function TierCard({
         }
       }}
       className={cn(
-        "relative flex flex-col p-4 rounded-xl border transition-all text-left cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+        "relative flex flex-col p-4 rounded-xl border transition-colors text-left cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
         selected
           ? "bg-accent-soft border-accent shadow-sm ring-1 ring-accent"
           : "bg-surface border-line hover:border-line-strong",
@@ -111,8 +111,8 @@ export function TierCard({
           </div>
           <div className="w-full bg-line h-1.5 rounded-full overflow-hidden">
             <div
-              className="bg-accent h-full transition-all duration-300 rounded-full"
-              style={{ width: `${Math.max(5, Math.min(100, downloadProgress * 100))}%` }}
+              className="progress-fill bg-accent"
+              style={{ transform: `scaleX(${Math.max(0, Math.min(1, downloadProgress))})` }}
             />
           </div>
         </div>

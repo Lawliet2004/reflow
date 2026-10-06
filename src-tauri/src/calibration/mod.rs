@@ -181,9 +181,15 @@ fn python_files() -> Vec<PathBuf> {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_lowercase();
                 if name.ends_with(".dist-info")
-                    && ["torch-", "transformers-", "qwen_asr-", "bitsandbytes-"]
-                        .iter()
-                        .any(|prefix| name.starts_with(prefix))
+                    && [
+                        "torch-",
+                        "transformers-",
+                        "qwen_asr-",
+                        "bitsandbytes-",
+                        "fermion_research-",
+                    ]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
                 {
                     files.push(entry.path().join("METADATA"));
                 }
@@ -209,6 +215,11 @@ fn fingerprint(ctx: &AppContext, caps: &Capabilities) -> String {
     for model in ["qwen3.5-0.8b", "qwen3.5-2b"] {
         stamp_tree(&crate::rewrite::flow_gguf_path(model), &mut files);
     }
+    stamp_tree(&ctx.model_manager.get_model_dir("phonon-2"), &mut files);
+    stamp_tree(
+        &ctx.model_manager.get_model_dir("zipformer-20m"),
+        &mut files,
+    );
     let binary = crate::rewrite::llama_server_bin();
     if let Some(parent) = binary.parent() {
         stamp_tree(parent, &mut files);
@@ -219,7 +230,7 @@ fn fingerprint(ctx: &AppContext, caps: &Capabilities) -> String {
         .iter()
         .map(|g| (&g.name, &g.driver_version, g.total_vram_mb))
         .collect();
-    let value = serde_json::json!({"app":env!("CARGO_PKG_VERSION"),"cpu":caps.cpu.model,"cores":caps.cpu.physical_cores,"gpus":gpus,"cuda":caps.cuda,"vulkan":caps.vulkan,"files":files,"python":std::env::var("REFLOW_PYTHON").ok(),"asr_code":include_str!("../../../model-runtime/qwen3_asr_runtime.py"),"rules":include_str!("../rewrite/safety.rs"),"prompt":include_str!("../rewrite/prompt.rs")});
+    let value = serde_json::json!({"app":env!("CARGO_PKG_VERSION"),"cpu":caps.cpu.model,"cores":caps.cpu.physical_cores,"gpus":gpus,"cuda":caps.cuda,"vulkan":caps.vulkan,"files":files,"python":std::env::var("REFLOW_PYTHON").ok(),"asr_code":include_str!("../../../model-runtime/qwen3_asr_runtime.py"),"phonon_code":include_str!("../../../model-runtime/phonon_runtime.py"),"zipformer_code":include_str!("../../../model-runtime/zipformer_runtime.py"),"rules":include_str!("../rewrite/safety.rs"),"prompt":include_str!("../rewrite/prompt.rs")});
     hex::encode(Sha256::digest(value.to_string().as_bytes()))
 }
 pub fn cached_choice(
@@ -241,6 +252,13 @@ pub fn cached_choice(
     }
     let choice = saved.winner.choice;
     if choice.runtime != settings.asr.runtime {
+        return None;
+    }
+    // A saved Qwen calibration must not override an explicitly selected
+    // single-runtime model (Phonon, Zipformer).
+    if ["phonon-2", "zipformer-20m"].contains(&settings.asr.model.as_str())
+        && choice.model != settings.asr.model
+    {
         return None;
     }
     if settings.resolve_intent().run_llm != (choice.refinement_model != "none") {
@@ -279,6 +297,12 @@ pub fn apply(ctx: &AppContext, id: &str) -> Result<bool, String> {
     settings.language = cache.language;
     settings.auto_detect_language = false;
     settings.asr.runtime = cache.winner.choice.runtime;
+    settings.asr.model = cache
+        .winner
+        .choice
+        .model
+        .trim_start_matches("native-")
+        .into();
     ctx.settings_store.update(settings)?;
     Ok(true)
 }
@@ -299,12 +323,19 @@ pub async fn run(
     if !(3..=10).contains(&seconds) {
         return Err("Record between three and ten seconds.".into());
     }
-    if !["python", "native"].iter().any(|runtime| {
-        ["0.6b", "1.7b"].iter().any(|model| {
-            ctx.model_manager
-                .is_installed(&crate::model::manager::runtime_model_id(model, runtime))
-        })
-    }) {
+    let selected_model = ctx.settings_store.get().asr.model;
+    if ["phonon-2", "zipformer-20m"].contains(&selected_model.as_str()) && language != "en" {
+        return Err(format!(
+            "{} supports English only. Choose English for calibration.",
+            crate::profile::manifest::asr_manifest(&selected_model)
+                .map(|m| m.label)
+                .unwrap_or("This model")
+        ));
+    }
+    if !speech_candidates(&ctx.settings_store.get().asr.model, &language)
+        .iter()
+        .any(|(_, model)| ctx.model_manager.is_installed(model))
+    {
         return Err("Install a speech model before calibrating.".into());
     }
     if ctx.settings_store.get().resolve_intent().run_llm
@@ -395,6 +426,30 @@ pub async fn run(
     }
     Ok(status.clone())
 }
+fn speech_candidates(selected: &str, language: &str) -> Vec<(&'static str, String)> {
+    if matches!(selected, "phonon-2" | "zipformer-20m") {
+        return if language == "en" {
+            vec![("python", selected.to_string())]
+        } else {
+            vec![]
+        };
+    }
+    let mut candidates = Vec::new();
+    for runtime in ["python", "native"] {
+        for model in ["0.6b", "1.7b"] {
+            candidates.push((
+                runtime,
+                crate::model::manager::runtime_model_id(model, runtime),
+            ));
+        }
+    }
+    if language == "en" {
+        candidates.push(("python", "phonon-2".into()));
+        candidates.push(("python", "zipformer-20m".into()));
+    }
+    candidates
+}
+
 fn measure(
     ctx: &AppContext,
     resource_dir: Option<PathBuf>,
@@ -407,33 +462,33 @@ fn measure(
     let caps = crate::capability::capabilities_uncached();
     let mut assessments = Vec::new();
     let mut choices = Vec::new();
-    for runtime in ["python", "native"] {
-        for model in ["0.6b", "1.7b"] {
-            let model_id = crate::model::manager::runtime_model_id(model, runtime);
-            if !ctx.model_manager.is_installed(&model_id) {
+    for (runtime, model_id) in speech_candidates(&settings.asr.model, language) {
+        if !ctx.model_manager.is_installed(&model_id) {
+            continue;
+        }
+        let Some(manifest) = crate::profile::asr_manifest(&model_id) else {
+            continue;
+        };
+        for device in [Device::Cuda, Device::Vulkan, Device::Cpu] {
+            if !manifest.devices.contains(&device) {
                 continue;
             }
-            let Some(manifest) = crate::profile::asr_manifest(&model_id) else {
+            if device == Device::Cuda && !caps.can_use_cuda() {
                 continue;
-            };
-            for device in [Device::Cuda, Device::Vulkan, Device::Cpu] {
-                if device == Device::Cuda && !caps.can_use_cuda() {
+            }
+            if device == Device::Vulkan && !caps.can_use_vulkan() {
+                continue;
+            }
+            for precision in manifest.supported_precisions_on(device) {
+                let room = if device == Device::Cpu {
+                    caps.ram.available_mb > manifest.estimated_cpu_ram_mb() + 1024.0
+                } else {
+                    caps.free_vram_mb() > manifest.estimated_vram_mb(precision) + 384.0
+                };
+                if !room {
                     continue;
                 }
-                if device == Device::Vulkan && !caps.can_use_vulkan() {
-                    continue;
-                }
-                for precision in manifest.supported_precisions_on(device) {
-                    let room = if device == Device::Cpu {
-                        caps.ram.available_mb > manifest.estimated_cpu_ram_mb() + 1024.0
-                    } else {
-                        caps.free_vram_mb() > manifest.estimated_vram_mb(precision) + 384.0
-                    };
-                    if !room {
-                        continue;
-                    }
-                    choices.push((runtime, model_id.clone(), device, precision));
-                }
+                choices.push((runtime, model_id.clone(), device, precision));
             }
         }
     }
@@ -633,4 +688,28 @@ fn measure(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod phonon_tests {
+    use super::speech_candidates;
+
+    #[test]
+    fn phonon_calibration_preserves_selected_family() {
+        assert_eq!(
+            speech_candidates("phonon-2", "en"),
+            vec![("python", "phonon-2".into())]
+        );
+        assert!(speech_candidates("phonon-2", "hi").is_empty());
+    }
+
+    #[test]
+    fn english_comparison_includes_phonon_but_hindi_does_not() {
+        assert!(speech_candidates("0.6b", "en")
+            .iter()
+            .any(|(_, model)| model == "phonon-2"));
+        assert!(!speech_candidates("0.6b", "hi")
+            .iter()
+            .any(|(_, model)| model == "phonon-2"));
+    }
 }

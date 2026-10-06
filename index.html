@@ -13,10 +13,10 @@
         margin: 0;
       }
       html {
-        background: #f7f7f8;
+        background: #f4efe6;
       }
       html.dark {
-        background: #161617;
+        background: #1a1714;
       }
       html.mica,
       html.overlay-window,
@@ -27,17 +27,18 @@
     <script>
       (function () {
         try {
-          var t = localStorage.getItem("reflow_app_theme") || "system";
+          var root = document.documentElement;
+          var s = JSON.parse(localStorage.getItem("reflow_appearance") || "{}");
+          var t = s.theme || "system";
           var isDark =
             t === "dark" ||
             (t === "system" &&
               window.matchMedia &&
               window.matchMedia("(prefers-color-scheme: dark)").matches);
-          if (isDark) document.documentElement.classList.add("dark");
-          var a = localStorage.getItem("reflow_accent") || "sky";
-          document.documentElement.dataset.accent = a;
-          var fs = localStorage.getItem("reflow_font_scale") || "normal";
-          document.documentElement.dataset.fontScale = fs;
+          if (isDark) root.classList.add("dark");
+          var data = s.data || {};
+          for (var k in data) root.dataset[k] = data[k];
+          if (s.accentCustom) root.style.setProperty("--accent-custom", s.accentCustom);
         } catch (e) {}
       })();
     </script>

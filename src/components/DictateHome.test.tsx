@@ -1,7 +1,8 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { DictateHome } from "./DictateHome";
 import { api } from "../services/tauriApi";
+import * as bridge from "../services/tauriApi";
 import type { AppSettings } from "../types";
 
 async function home(update = vi.fn(), overrides: Partial<AppSettings> = {}) {
@@ -31,6 +32,38 @@ async function home(update = vi.fn(), overrides: Partial<AppSettings> = {}) {
 }
 
 describe("transcript actions", () => {
+  it("refreshes recent dictations after a correction in another application", async () => {
+    const listeners = new Map<string, (payload: unknown) => void>();
+    const unsubscribe = vi.fn();
+    vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+      listeners.set(event, handler);
+      return unsubscribe;
+    });
+    const view = await home();
+    await waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(1));
+    vi.mocked(api.getHistory).mockResolvedValue([
+      {
+        id: "corrected",
+        created_at: new Date().toISOString(),
+        duration_ms: 100,
+        language: "en",
+        raw_transcript: "Use type script",
+        smart_transcript: "Use type script",
+        final_transcript: "Use TypeScript",
+        application_name: "Chat",
+        application_process: "chat.exe",
+        word_count: 2,
+        character_count: 14,
+        model_version: "test",
+        processing_mode: "smart",
+      },
+    ]);
+    await act(async () => listeners.get("history:updated")?.({ id: "corrected" }));
+    expect(await screen.findByText("Use TypeScript")).toBeInTheDocument();
+    view.unmount();
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+
   it("lets users choose either LLM or speech only without installing models", async () => {
     const update = vi.fn();
     const install = vi.spyOn(api, "installIntelligenceModel").mockResolvedValue();
@@ -54,7 +87,7 @@ describe("transcript actions", () => {
   it("keeps the chosen LLM when changing cleanup intensity", async () => {
     const update = vi.fn();
     await home(update, { intelligence_tier: "deep_context", cleanup_level: "high" });
-    fireEvent.click(screen.getByRole("radio", { name: "Clean" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Minimal" }));
     expect(update).toHaveBeenLastCalledWith({ cleanup_level: "light" });
   });
 
@@ -64,8 +97,8 @@ describe("transcript actions", () => {
     view.unmount();
     await home(vi.fn(), { intelligence_tier: "raw_verbatim", cleanup_level: "light" });
     expect(screen.queryByRole("combobox", { name: "Writing style" })).not.toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Polished" })).toBeDisabled();
-    expect(screen.getByRole("radio", { name: "Refined" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Natural" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Structured" })).toBeDisabled();
   });
   it("restores an edited transcript without changing the clipboard or another app", async () => {
     await home();
@@ -123,7 +156,7 @@ describe("transcript actions", () => {
         onOpenHistory={vi.fn()}
       />,
     );
-    const clean = screen.getByRole("radio", { name: "Clean" });
+    const clean = screen.getByRole("radio", { name: "Minimal" });
     expect(clean).toHaveAttribute("aria-checked", "true");
     fireEvent.keyDown(clean, { key: "ArrowRight" });
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ cleanup_level: "medium" }));

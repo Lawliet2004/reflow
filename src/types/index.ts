@@ -11,7 +11,7 @@ export type AppState =
   | "UPDATING";
 
 export type ProcessingMode = "raw" | "smart" | "flow";
-export type DictationMode = "normal" | "coding" | "email" | "chat" | "notes";
+export type DictationMode = "normal" | "coding" | "developer_prompt" | "email" | "chat" | "notes";
 export type CleanupLevel = "raw" | "light" | "medium" | "high";
 export type FlowModel = "qwen3.5-0.8b" | "qwen3.5-2b" | "none";
 export type IntelligenceTier = "raw_verbatim" | "smart_flow" | "deep_context";
@@ -43,12 +43,12 @@ export interface TierMetadata {
 export const INTELLIGENCE_TIERS: Record<IntelligenceTier, TierMetadata> = {
   raw_verbatim: {
     id: "raw_verbatim",
-    label: "Fast",
+    label: "No LLM",
     modelId: "none",
     modelFile: "",
-    tagline: "Your exact words, no LLM",
+    tagline: "Basic cleanup without AI rewriting",
     description:
-      "Direct speech-to-text output. No LLM rewriting, no rephrasing, 100% literal words. Best for coding CLI, terminal, or exact records.",
+      "Use for quick messages and minimal editing. Original words skips cleanup too; speech recognition can still make mistakes.",
     latencyEstimate: "No polish step",
     downloadSizeMB: 0,
     vramRequiredMB: 0,
@@ -58,12 +58,12 @@ export const INTELLIGENCE_TIERS: Record<IntelligenceTier, TierMetadata> = {
   },
   smart_flow: {
     id: "smart_flow",
-    label: "Polished",
+    label: "Qwen3.5 0.8B",
     modelId: "qwen3.5-0.8b",
     modelFile: "Qwen3.5-0.8B-Q4_K_M.gguf",
     tagline: "Fast, natural cleanup and auto-repair",
     description:
-      "Drops 'ums', stutters, and spoken self-corrections while preserving your exact voice.",
+      "Start here for natural cleanup: repair repetitions, spoken corrections and grammar while keeping your voice. Test the result on your own dictations.",
     latencyEstimate: "Not measured on this computer",
     downloadSizeMB: 508,
     vramRequiredMB: 900,
@@ -73,14 +73,14 @@ export const INTELLIGENCE_TIERS: Record<IntelligenceTier, TierMetadata> = {
   },
   deep_context: {
     id: "deep_context",
-    label: "Polished · Deep",
+    label: "Qwen3.5 2B",
     modelId: "qwen3.5-2b",
     // No `-Instruct` infix: the unsloth GGUFs are not named that way, and the
     // Rust registry has a test asserting it.
     modelFile: "Qwen3.5-2B-Q4_K_M.gguf",
-    tagline: "Advanced multilingual reasoning",
+    tagline: "For developer prompts and longer writing",
     description:
-      "Multilingual cleanup for supported speech languages, including mixed-language technical dictation.",
+      "Try for more involved phrasing and paragraph structure. Needs more memory and may take longer; model size does not guarantee a better edit.",
     latencyEstimate: "Not measured on this computer",
     downloadSizeMB: 1400,
     vramRequiredMB: 1600,
@@ -130,13 +130,24 @@ export function polishEnabledFor(settings: {
 export type TranscriptStyle = "faithful" | "neutral" | "decisive" | "email" | "chat";
 export type HistoryRetention = "disabled" | "1_day" | "7_days" | "30_days" | "90_days" | "forever";
 export type AudioRetention = "disabled" | "1_day" | "7_days" | "30_days" | "forever";
-export type OverlayPosition = "bottom_center" | "top_center" | "bottom_right" | "top_right";
+export type OverlayPosition =
+  "top_left" | "top_center" | "top_right" | "bottom_left" | "bottom_center" | "bottom_right";
 export type ComputeBackend = "auto" | "cpu" | "gpu";
 export type AppTheme = "system" | "light" | "dark";
-export type AccentColor = "sky" | "indigo" | "emerald" | "amber" | "rose" | "violet" | "graphite";
+export type AccentColor =
+  "sky" | "indigo" | "emerald" | "amber" | "rose" | "violet" | "graphite" | "custom";
 export type HudScale = "compact" | "standard" | "large";
+export type HudStyle = "status" | "waveform";
 export type WaveformStyle = "bars" | "pulse" | "minimal";
-export type UIFontScale = "compact" | "normal" | "roomy";
+export type UIFontScale = "compact" | "normal" | "roomy" | "large";
+export type SurfaceTone = "warm" | "neutral" | "cool";
+export type ReadingFont = "serif" | "sans" | "mono";
+export type HeadingFont = "serif" | "sans";
+export type UIDensity = "compact" | "comfortable" | "spacious";
+export type CornerStyle = "sharp" | "soft" | "round";
+export type WindowMaterial = "mica" | "solid";
+export type HudShape = "pill" | "rounded" | "square";
+export type HudTheme = "dark" | "light" | "auto";
 
 /**
  * ASR and refinement are separate placement decisions.
@@ -204,6 +215,7 @@ export interface AppSettings {
 
   notes_folder?: string;
   dictionary_suggestions?: { before: string; after: string; frequency: number }[];
+  auto_learn_dictionary?: boolean;
   dismissed_corrections?: string[];
   hotkeys?: Hotkeys;
   output_action?: OutputAction;
@@ -234,13 +246,25 @@ export interface AppSettings {
   history_retention: HistoryRetention;
   audio_retention: AudioRetention;
   overlay_position: OverlayPosition;
-  overlay_theme: "dark" | "light" | "auto";
+  overlay_theme: HudTheme;
   app_theme: AppTheme;
   accent_color: AccentColor;
   hud_scale: HudScale;
   waveform_style: WaveformStyle;
   reduce_motion: boolean;
   ui_font_scale: UIFontScale;
+  /** `#rrggbb`, used when {@link AppSettings.accent_color} is `"custom"`. */
+  accent_custom?: string;
+  surface_tone?: SurfaceTone;
+  reading_font?: ReadingFont;
+  heading_font?: HeadingFont;
+  ui_density?: UIDensity;
+  corner_style?: CornerStyle;
+  window_material?: WindowMaterial;
+  hud_shape?: HudShape;
+  hud_style?: HudStyle;
+  /** HUD background opacity, 0.6–1. */
+  hud_opacity?: number;
   developer_mode: boolean;
   cleanup_level: CleanupLevel;
   intelligence_tier: IntelligenceTier;
@@ -782,6 +806,19 @@ export interface ModelStatus {
   asr_selection_notice?: string | null;
 }
 
+/** One entry in the Settings → Performance "Downloaded models" list. */
+export interface DownloadedModel {
+  /** Removal key: ASR dir id for `asr`, intelligence tier for `llm`, "llama_server" for `runtime`. */
+  id: string;
+  kind: "asr" | "llm" | "runtime";
+  label: string;
+  size_bytes: number;
+  /** Selected in settings right now; removing it unloads the live engine. */
+  active: boolean;
+  /** Files exist but the install never finished. */
+  partial: boolean;
+}
+
 export interface FlowStatus {
   active_tier: IntelligenceTier;
   active_model: FlowModel;
@@ -845,7 +882,7 @@ export function isModelReady(status: ModelStatus | null | undefined): boolean {
 export function isModelLoading(status: ModelStatus | null | undefined): boolean {
   if (!status) return true;
   if (!status.installed || status.is_downloading) return false;
-  return !isModelReady(status) && !status.error;
+  return Boolean(status.is_loading) && !isModelReady(status) && !status.error;
 }
 
 export interface StreamingTranscriptPayload {
@@ -970,7 +1007,6 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     voice_commands_enabled: settings.voice_commands_enabled ?? false,
     min_dictation_ms: settings.min_dictation_ms ?? 300,
     power_policy: settings.power_policy ?? { unload_on_battery: false, battery_preset: null },
-    hud_contrast: settings.hud_contrast ?? "standard",
     paste_delay_ms: settings.paste_delay_ms ?? 30,
     inject_method: settings.inject_method ?? "paste",
     append_space: settings.append_space ?? false,
@@ -1009,15 +1045,40 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     style: settings.style ?? "neutral",
     auto_style_from_app: settings.auto_style_from_app ?? true,
     developer_mode: settings.developer_mode ?? false,
-    app_theme: settings.app_theme ?? "system",
-    accent_color: settings.accent_color ?? "sky",
-    hud_scale: settings.hud_scale ?? "standard",
-    waveform_style: settings.waveform_style ?? "bars",
-    reduce_motion: settings.reduce_motion ?? false,
-    ui_font_scale: settings.ui_font_scale ?? "normal",
-    overlay_theme: settings.overlay_theme ?? "dark",
-    overlay_position: settings.overlay_position ?? "bottom_center",
+    ...pickAppearance(settings),
   };
+}
+
+/** Every setting the Appearance page owns, at its default. Also the reset target. */
+export const APPEARANCE_DEFAULTS = {
+  app_theme: "system" as AppTheme,
+  accent_color: "sky" as AccentColor,
+  accent_custom: "#2a6690",
+  surface_tone: "warm" as SurfaceTone,
+  window_material: "mica" as WindowMaterial,
+  reading_font: "serif" as ReadingFont,
+  heading_font: "serif" as HeadingFont,
+  ui_font_scale: "normal" as UIFontScale,
+  ui_density: "comfortable" as UIDensity,
+  corner_style: "soft" as CornerStyle,
+  reduce_motion: false,
+  overlay_position: "bottom_center" as OverlayPosition,
+  overlay_theme: "dark" as HudTheme,
+  hud_scale: "standard" as HudScale,
+  hud_shape: "pill" as HudShape,
+  hud_style: "status" as HudStyle,
+  hud_opacity: 0.96,
+  waveform_style: "bars" as WaveformStyle,
+  hud_contrast: "standard" as "standard" | "high",
+};
+
+export type Appearance = typeof APPEARANCE_DEFAULTS;
+
+export function pickAppearance(settings: Partial<AppSettings>): Appearance {
+  const out = { ...APPEARANCE_DEFAULTS } as Record<string, unknown>;
+  for (const key of Object.keys(APPEARANCE_DEFAULTS))
+    out[key] = settings[key as keyof AppSettings] ?? out[key];
+  return out as Appearance;
 }
 
 export interface InjectionResult {

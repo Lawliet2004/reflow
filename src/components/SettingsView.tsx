@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AppSettings, ModelStatus } from "../types";
 import type { IntelligenceHub } from "../hooks/useIntelligenceHub";
-import { PAGES, PAGE_ICONS } from "./settings/ui";
+import { PAGES, PAGE_GROUPS, PAGE_ICONS } from "./settings/ui";
 import { ModesPage } from "./settings/ModesPage";
 import { SnippetsPage } from "./settings/SnippetsPage";
 import { OutputPage } from "./settings/OutputPage";
@@ -15,6 +15,7 @@ import { PhonePage } from "./settings/PhonePage";
 import { ExpansionAdvanced } from "./settings/ExpansionAdvanced";
 import { AdvancedPage } from "./settings/AdvancedPage";
 import { Check, Search, X } from "lucide-react";
+import logoUrl from "../assets/logo.png";
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -27,6 +28,52 @@ interface SettingsViewProps {
   onRemoveRuntime: () => void;
   initialPage?: "general" | "model";
 }
+
+/** Native modal: focus trap, Esc, inert background and focus return come free. */
+export const SettingsDialog: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}> = ({ open, onClose, children }) => {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog || !open) return;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+    return () => {
+      if (typeof dialog.close === "function") dialog.close();
+      else dialog.removeAttribute("open");
+    };
+  }, [open]);
+  if (!open) return null;
+  return (
+    // Backdrop click is a pointer shortcut; Esc and the close button cover keyboard users.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
+    <dialog
+      ref={ref}
+      className="settings-dialog"
+      aria-labelledby="settings-title"
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <button
+        className="icon-btn settings-dialog-close"
+        aria-label="Close settings"
+        title="Close (Esc)"
+        onClick={onClose}
+      >
+        <X size={16} aria-hidden />
+      </button>
+      {children}
+    </dialog>
+  );
+};
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
@@ -90,7 +137,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   return (
     <div className="settings-layout">
       <nav aria-label="Settings categories" className="settings-navigation">
-        <h1 className="text-lg font-semibold tracking-tight px-3 mb-4">Settings</h1>
+        <h2 id="settings-title" className="px-2.5 mb-4">
+          Settings
+        </h2>
         <div className="relative mb-2 px-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
           <input
@@ -114,30 +163,52 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </button>
           )}
         </div>
-        {filtered.map((item) => {
-          const active = page === item.id;
+        {PAGE_GROUPS.map((group) => {
+          const items = filtered.filter((item) => group.ids.includes(item.id));
+          if (!items.length) return null;
           return (
-            <button
-              key={item.id}
-              onClick={() => setPage(item.id)}
-              aria-current={active ? "page" : undefined}
-              className={`sidebar-link sidebar-link-sm ${active ? "is-active" : ""}`}
-            >
-              {PAGE_ICONS[item.id]}
-              {item.label}
-            </button>
+            <React.Fragment key={group.label}>
+              <p className="settings-group-label">{group.label}</p>
+              {items.map((item) => {
+                const active = page === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setPage(item.id)}
+                    aria-current={active ? "page" : undefined}
+                    className={`sidebar-link sidebar-link-sm ${active ? "is-active" : ""}`}
+                  >
+                    {PAGE_ICONS[item.id]}
+                    {item.label}
+                  </button>
+                );
+              })}
+            </React.Fragment>
           );
         })}
         {filtered.length === 0 && <p className="text-xs text-muted px-2 py-1">No matches</p>}
+        <div className="mt-auto pt-6 px-3 flex items-center gap-2.5 max-[720px]:hidden">
+          <img
+            src={logoUrl}
+            alt=""
+            aria-hidden
+            className="w-6 h-6 pointer-events-none"
+            draggable={false}
+          />
+          <div>
+            <p className="text-xs font-semibold text-ink-2 leading-tight">Reflow</p>
+            <p className="text-2xs text-muted leading-tight">Speech stays on this computer.</p>
+          </div>
+        </div>
       </nav>
 
       <div className="flex-1 min-w-0 overflow-y-auto select-text">
-        <div className="settings-content space-y-6 animate-fade-rise">
+        <div key={page} className="settings-content space-y-6 animate-fade-rise">
           <header className="mb-1 flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-0 flex-1 basis-48">
-              <h2 className="font-display text-2xl font-semibold tracking-tight text-ink">
+              <h3 className="font-display text-2xl font-medium text-ink">
                 {current?.label ?? "No results"}
-              </h2>
+              </h3>
               <p className="text-sm text-muted mt-2">
                 {current?.description ?? "No settings match your search. Try a different word."}
               </p>
@@ -171,7 +242,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }}
           >
             {page === "general" && (
-              <GeneralPage settings={settings} onUpdateSettings={onUpdateSettings} />
+              <>
+                <GeneralPage settings={settings} onUpdateSettings={onUpdateSettings} />
+                <OutputPage settings={settings} onUpdateSettings={onUpdateSettings} />
+                <ModesPage settings={settings} onUpdateSettings={onUpdateSettings} />
+                <SnippetsPage settings={settings} onUpdateSettings={onUpdateSettings} />
+              </>
             )}
             {page === "appearance" && (
               <AppearancePage settings={settings} onUpdateSettings={onUpdateSettings} />
@@ -212,15 +288,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             )}
             {page === "dictionary" && (
               <DictionaryPage settings={settings} onUpdateSettings={onUpdateSettings} />
-            )}
-            {page === "modes" && (
-              <ModesPage settings={settings} onUpdateSettings={onUpdateSettings} />
-            )}
-            {page === "snippets" && (
-              <SnippetsPage settings={settings} onUpdateSettings={onUpdateSettings} />
-            )}
-            {page === "output" && (
-              <OutputPage settings={settings} onUpdateSettings={onUpdateSettings} />
             )}
             {page === "phone" && (
               <PhonePage settings={settings} onUpdateSettings={onUpdateSettings} />

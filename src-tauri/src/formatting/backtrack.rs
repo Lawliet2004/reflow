@@ -44,11 +44,24 @@ fn apply_value_corrections(text: &str) -> String {
 
     for class in [NUMERIC, DAYS, MONTHS] {
         // Both sides drawn from the same class; the second one wins.
-        let pattern = format!(r"(?i)\b{class}\s+{REPAIR_MARKERS}\s+({class})\b");
+        let pattern = format!(r"(?i)\b({class})\s+{REPAIR_MARKERS}\s+({class})\b");
         let re = Regex::new(&pattern).expect("backtrack value-correction regex");
         // Repeat so a chain ("5 actually 6 no wait 7") collapses fully.
         for _ in 0..4 {
-            let next = re.replace_all(&out, "$1").to_string();
+            let next = re
+                .replace_all(&out, |captures: &regex::Captures<'_>| {
+                    let before = captures.get(1).expect("value before marker");
+                    let after = captures.get(2).expect("value after marker");
+                    if class == NUMERIC
+                        && (!standalone_numeric_value(&out, before.start(), before.end())
+                            || !standalone_numeric_value(&out, after.start(), after.end()))
+                    {
+                        captures[0].to_string()
+                    } else {
+                        after.as_str().to_string()
+                    }
+                })
+                .to_string();
             if next == out {
                 break;
             }
@@ -59,16 +72,111 @@ fn apply_value_corrections(text: &str) -> String {
     out
 }
 
+/// A numeric regex match can be only the suffix/prefix of a decimal, date,
+/// currency amount or compound spoken number. Keep these ambiguous expressions
+/// complete instead of repairing one token inside them.
+fn standalone_numeric_value(text: &str, start: usize, end: usize) -> bool {
+    let before = &text[..start];
+    let after = &text[end..];
+    if before.ends_with(['.', ',', ':', '/', '-', '+', '$', '€', '£', '₹', '¥', '₩'])
+        || after.starts_with([':', '/', '-', '+', '%', '$', '€', '£', '₹', '¥', '₩'])
+        || after.starts_with(['.', ','])
+            && after.chars().nth(1).is_some_and(|ch| !ch.is_whitespace())
+    {
+        return false;
+    }
+    let mut previous = before.split_whitespace().rev();
+    let mut next = after.split_whitespace();
+    !numeric_continuation(previous.next(), previous.next())
+        && !numeric_continuation(next.next(), next.next())
+}
+
+fn numeric_continuation(nearest: Option<&str>, following: Option<&str>) -> bool {
+    nearest.is_some_and(numeric_component)
+        || nearest.is_some_and(|word| word.eq_ignore_ascii_case("and"))
+            && following.is_some_and(numeric_component)
+}
+
+fn numeric_component(word: &str) -> bool {
+    matches!(
+        word,
+        "+" | "-" | "−" | "$" | "€" | "£" | "₹" | "¥" | "₩" | "%"
+    ) || word.chars().any(char::is_numeric)
+        || word.split('-').any(|part| {
+            matches!(
+                part.trim_matches(|ch: char| !ch.is_alphanumeric())
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "zero"
+                    | "one"
+                    | "two"
+                    | "three"
+                    | "four"
+                    | "five"
+                    | "six"
+                    | "seven"
+                    | "eight"
+                    | "nine"
+                    | "ten"
+                    | "eleven"
+                    | "twelve"
+                    | "thirteen"
+                    | "fourteen"
+                    | "fifteen"
+                    | "sixteen"
+                    | "seventeen"
+                    | "eighteen"
+                    | "nineteen"
+                    | "twenty"
+                    | "thirty"
+                    | "forty"
+                    | "fifty"
+                    | "sixty"
+                    | "seventy"
+                    | "eighty"
+                    | "ninety"
+                    | "hundred"
+                    | "thousand"
+                    | "million"
+                    | "billion"
+                    | "trillion"
+                    | "point"
+                    | "minus"
+                    | "negative"
+                    | "plus"
+                    | "positive"
+                    | "noon"
+                    | "midnight"
+            )
+        })
+}
+
+fn unsupported_numeric_repair(text: &str, start: usize, end: usize) -> bool {
+    text[..start]
+        .split_whitespace()
+        .next_back()
+        .is_some_and(numeric_component)
+        && text[end..]
+            .split_whitespace()
+            .next()
+            .is_some_and(numeric_component)
+}
+
 /// `scratch that` removes the preceding clause/sentence (from the last .!? or start).
 fn apply_scratch_that(text: &str) -> String {
     let marker = Regex::new(r"(?i)\bscratch\s+that\b[,\.]?").expect("scratch that regex");
     let mut out = text.to_string();
     let mut guard = 0;
+    let mut search_from = 0;
     while guard < 32 {
         guard += 1;
-        let Some(m) = marker.find(&out) else {
+        let Some(m) = marker.find_at(&out, search_from) else {
             break;
         };
+        if unsupported_numeric_repair(&out, m.start(), m.end()) {
+            search_from = m.end();
+            continue;
+        }
         let before = &out[..m.start()];
         let mut cut = 0;
         for (i, ch) in before.char_indices() {
@@ -79,13 +187,22 @@ fn apply_scratch_that(text: &str) -> String {
         let prefix = &out[..cut];
         let suffix = &out[m.end()..];
         out = format!("{prefix}{suffix}");
+        search_from = 0;
     }
     out
 }
 
 fn strip_lone_no_wait(text: &str) -> String {
     let re = Regex::new(r"(?i)\s*\bno\s+wait\b[,\.]?").expect("no wait regex");
-    re.replace_all(text, " ").to_string()
+    re.replace_all(text, |captures: &regex::Captures<'_>| {
+        let marker = captures.get(0).expect("repair marker");
+        if unsupported_numeric_repair(text, marker.start(), marker.end()) {
+            marker.as_str().to_string()
+        } else {
+            " ".to_string()
+        }
+    })
+    .to_string()
 }
 
 fn squeeze_ws(text: &str) -> String {
@@ -220,5 +337,82 @@ mod tests {
         let out = apply_backtrack("at five i mean friday");
         assert!(out.to_lowercase().contains("five"), "{out}");
         assert!(out.to_lowercase().contains("friday"), "{out}");
+    }
+
+    #[test]
+    fn compound_numeric_values_are_not_partially_replaced() {
+        for text in [
+            "pay 12.50 actually 12.60",
+            "pay -12.50 i mean -12.60",
+            "pay minus five actually six",
+            "pay negative twelve actually thirteen",
+            "pay - 12 actually 13",
+            "pay $ 12 actually 13",
+            "pay $12.50 actually 12.60",
+            "pay €12 actually 13",
+            "pay 12.50% sorry 13.50%",
+            "send 1,250 actually 1,350 units",
+            "ship on 2026-10-01 actually 2026-10-02",
+            "ship on 10/01/2026 i mean 10/02/2026",
+            "ship on 2026 10 01 actually 2026 10 02",
+            "meet at 12:30:15 actually 12:30:30",
+            "bring twenty five actually thirty six notebooks",
+            "bring twenty-five i mean thirty-six notebooks",
+            "bring one hundred and five actually two hundred and six notebooks",
+            "bring one thousand five actually six notebooks",
+            "bring twelve point five actually thirteen point six units",
+        ] {
+            assert_eq!(apply_backtrack(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_compound_on_either_side_blocks_partial_numeric_repair() {
+        for text in [
+            "pay 12.50 actually 13",
+            "pay 12 actually 13.50",
+            "bring twenty five actually six notebooks",
+            "bring five actually twenty six notebooks",
+            "bring five actually one hundred notebooks",
+            "set 1/2 actually 3",
+            "set 1 actually 3/4",
+        ] {
+            assert_eq!(apply_backtrack(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn unsupported_numeric_repairs_keep_their_full_value_and_marker() {
+        for text in [
+            "pay 12.50 no wait 12.60",
+            "pay 12.50 scratch that 12.60",
+            "bring twenty five no wait thirty six notebooks",
+            "bring twenty five scratch that thirty six notebooks",
+            "ship on 2026-10-01 no wait 2026-10-02",
+            "meet at 12:30:15 scratch that 12:30:30",
+        ] {
+            assert_eq!(apply_backtrack(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn complete_standalone_numbers_and_simple_times_still_correct() {
+        for (source, expected) in [
+            ("meet at 5 actually 6", "meet at 6"),
+            ("meet at 12:30 actually 13:40", "meet at 13:40"),
+            ("meet at noon no wait midnight", "meet at midnight"),
+            (
+                "bring one i mean thirteen notebooks",
+                "bring thirteen notebooks",
+            ),
+            ("send 12500 actually 12600 units", "send 12600 units"),
+            (
+                "bring five scratch that six notebooks",
+                "bring six notebooks",
+            ),
+            ("meet at 5 actually 6 no wait 7", "meet at 7"),
+        ] {
+            assert_eq!(apply_backtrack(source), expected, "{source}");
+        }
     }
 }

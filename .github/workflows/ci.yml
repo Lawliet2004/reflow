@@ -14,6 +14,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2
+      - name: Rust dependency security
+        run: cargo audit --file src-tauri/Cargo.lock
+
   # Frontend gate. Runs on Linux because none of it is platform-specific and
   # it is the fastest signal on a pull request.
   frontend:
@@ -59,8 +69,10 @@ jobs:
         run: python model-runtime/qwen3_asr_runtime.py --selftest
       - name: Model-free ASR regressions
         run: python -m unittest discover -s model-runtime -p "test_*.py"
-      - name: Calibration quality metrics
-        run: python -m unittest discover -s scripts -p test_benchmark_runtime.py
+      - name: Calibration metrics and live-test protocol helpers
+        run: |
+          python -m unittest discover -s scripts -p test_benchmark_runtime.py
+          python -m unittest discover -s scripts -p test_zipformer_protocol.py
 
   rust-lint:
     runs-on: ubuntu-latest

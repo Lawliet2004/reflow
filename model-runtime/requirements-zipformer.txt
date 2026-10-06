@@ -1,0 +1,3 @@
+# Install into the same Python interpreter used by Reflow's speech sidecar.
+# sherpa-onnx bundles its onnxruntime native libraries inside the wheel.
+sherpa-onnx==1.13.4

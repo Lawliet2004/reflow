@@ -35,9 +35,11 @@ pub fn restore_dictation_focus() -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone)]
 struct OverlayGeom {
     position: String,
     kind: String,
+    size: String,
 }
 
 fn overlay_geom() -> &'static Mutex<OverlayGeom> {
@@ -46,21 +48,31 @@ fn overlay_geom() -> &'static Mutex<OverlayGeom> {
         Mutex::new(OverlayGeom {
             position: "bottom_center".into(),
             kind: "listening".into(),
+            size: "standard".into(),
         })
     })
 }
 
-/// A 200 × 40 capsule with four logical pixels around it for the shadow.
-/// The settled result uses the same size, so completion never moves the HUD.
-fn overlay_dims(kind: &str) -> (f64, f64) {
+/// The capsule (compact 172 × 34, standard 200 × 40, large 240 × 48) with four
+/// logical pixels around it for the shadow. The settled result uses the same
+/// size, so completion never moves the HUD. Must match `.hud-scale-*` in CSS.
+fn overlay_dims(kind: &str, size: &str) -> (f64, f64) {
     if kind == "response" {
-        (320.0, 180.0)
-    } else {
-        (208.0, 48.0)
+        return (320.0, 180.0);
+    }
+    match size {
+        "compact" => (180.0, 42.0),
+        "large" => (248.0, 56.0),
+        _ => (208.0, 48.0),
     }
 }
 
-fn position_overlay_sized(app: &tauri::AppHandle, position: &str, kind: &str) {
+fn position_overlay_sized(app: &tauri::AppHandle) {
+    let OverlayGeom {
+        position,
+        kind,
+        size,
+    } = overlay_geom().lock().clone();
     let Some(window) = app.get_webview_window("overlay") else {
         return;
     };
@@ -72,61 +84,53 @@ fn position_overlay_sized(app: &tauri::AppHandle, position: &str, kind: &str) {
     let scale = monitor.scale_factor();
     let screen = monitor.size();
     let origin = monitor.position();
-    let (win_w, win_h) = overlay_dims(kind);
+    let (win_w, win_h) = overlay_dims(&kind, &size);
     let screen_w = screen.width as f64 / scale;
     let screen_h = screen.height as f64 / scale;
     let origin_x = origin.x as f64 / scale;
     let origin_y = origin.y as f64 / scale;
 
-    let (x, y) = match position {
-        "top_center" => (origin_x + (screen_w - win_w) / 2.0, origin_y + 40.0),
-        "top_right" => (origin_x + screen_w - win_w - 24.0, origin_y + 40.0),
-        "bottom_right" => (
-            origin_x + screen_w - win_w - 24.0,
-            origin_y + screen_h - win_h - 40.0,
-        ),
-        _ => (
-            origin_x + (screen_w - win_w) / 2.0,
-            origin_y + screen_h - win_h - 48.0,
-        ),
+    let left = origin_x + 24.0;
+    let center = origin_x + (screen_w - win_w) / 2.0;
+    let right = origin_x + screen_w - win_w - 24.0;
+    let top = origin_y + 40.0;
+    let (x, y) = match position.as_str() {
+        "top_center" => (center, top),
+        "top_left" => (left, top),
+        "top_right" => (right, top),
+        "bottom_left" => (left, origin_y + screen_h - win_h - 40.0),
+        "bottom_right" => (right, origin_y + screen_h - win_h - 40.0),
+        _ => (center, origin_y + screen_h - win_h - 48.0),
     };
 
     let _ = window.set_size(tauri::LogicalSize::new(win_w, win_h));
     let _ = window.set_position(LogicalPosition::new(x, y));
 }
 
-pub fn position_overlay(app: &tauri::AppHandle, position: &str) {
-    let kind = {
+/// Applies the user's anchor and capsule size from settings.
+pub fn position_overlay(app: &tauri::AppHandle, position: &str, size: &str) {
+    {
         let mut geom = overlay_geom().lock();
         geom.position = position.to_string();
-        if geom.kind.is_empty() {
-            geom.kind = "listening".into();
-        }
-        geom.kind.clone()
-    };
-    position_overlay_sized(app, position, &kind);
+        geom.size = size.to_string();
+    }
+    position_overlay_sized(app);
 }
 
 pub fn resize_overlay(app: &tauri::AppHandle, kind: &str) {
-    let position = {
-        let mut geom = overlay_geom().lock();
-        geom.kind = kind.to_string();
-        if geom.position.is_empty() {
-            geom.position = "bottom_center".into();
-        }
-        geom.position.clone()
-    };
-    position_overlay_sized(app, &position, kind);
+    overlay_geom().lock().kind = kind.to_string();
+    position_overlay_sized(app);
 }
 
-pub fn show_overlay(app: &tauri::AppHandle, position: &str) {
+pub fn show_overlay(app: &tauri::AppHandle, position: &str, size: &str) {
     OVERLAY_GEN.fetch_add(1, Ordering::SeqCst);
     {
         let mut geom = overlay_geom().lock();
         geom.position = position.to_string();
+        geom.size = size.to_string();
         geom.kind = "listening".into();
     }
-    position_overlay_sized(app, position, "listening");
+    position_overlay_sized(app);
     if let Some(window) = app.get_webview_window("overlay") {
         let _ = window.set_focusable(false);
         let _ = window.set_ignore_cursor_events(true);
@@ -270,7 +274,9 @@ mod tests {
             window["height"].as_f64().unwrap(),
         );
         for phase in ["listening", "processing", "polishing", "preview"] {
-            assert_eq!(overlay_dims(phase), initial);
+            assert_eq!(overlay_dims(phase, "standard"), initial);
+            assert!(overlay_dims(phase, "compact").0 < initial.0);
+            assert!(overlay_dims(phase, "large").0 > initial.0);
         }
         assert!(initial.0 <= 208.0 && initial.1 <= 48.0);
         assert_eq!(window["focusable"], false);

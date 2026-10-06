@@ -13,7 +13,7 @@ use crate::formatting::{
 };
 use crate::history::HistoryEntry;
 use crate::injection::TextInjector;
-use crate::rewrite::{polish_or_fallback, FlowClient, RewriteRequest};
+use crate::rewrite::{FlowClient, RewriteRequest};
 use crate::settings::AppSettings;
 use crate::state::{AppStateEnum, InjectionFeedback, StreamingTranscriptPayload};
 
@@ -273,7 +273,14 @@ pub fn postprocess_with_context(
     let req = RewriteRequest {
         text: smart.clone(),
         cleanup_level,
-        style: settings.style.clone(),
+        style: match style {
+            VoiceStyle::Faithful => "faithful",
+            VoiceStyle::Neutral => "neutral",
+            VoiceStyle::Decisive => "decisive",
+            VoiceStyle::Email => "email",
+            VoiceStyle::Chat => "chat",
+        }
+        .into(),
         dictation_mode: settings.dictation_mode.clone(),
         vocabulary: session_vocabulary(settings),
         app_process: focused_process.to_string(),
@@ -309,35 +316,29 @@ pub fn postprocess_with_context(
             Ok(text) => (text, true, None),
             Err(error) => (smart.clone(), false, Some(error)),
         }
-    } else if !context.inputs(client.context_size).is_empty() {
-        let mut messages = crate::rewrite::prompt::build_messages(&req);
-        let mut content = messages.last().unwrap()["content"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        for (label, text) in context.inputs(client.context_size) {
-            content.push_str(&format!("\n\n{label}:\n{text}"));
-        }
-        messages.last_mut().unwrap()["content"] = content.into();
-        match client.rewrite_messages(&req, messages).and_then(|text| {
-            crate::rewrite::accept_rewrite(&smart, &text, &req.cleanup_level)
-                .ok_or_else(|| "Unsafe cleanup result".into())
-        }) {
-            Ok(text) => (text, true, None),
-            Err(error) => (smart.clone(), false, Some(error)),
-        }
     } else {
-        let outcome = polish_or_fallback(client, &smart, &req);
+        let outcome = crate::rewrite::client::polish_with_context_or_fallback(
+            client,
+            &smart,
+            &req,
+            &context.inputs(client.context_size),
+        );
         (outcome.final_text, outcome.used, outcome.error)
     };
     let rewrite_ms = rewrite_started.elapsed().as_millis() as u64;
     // Mirror the pre-rewrite guard: raw means verbatim, so the glossary must
-    // not be applied here either. Keeping the check local means the invariant
+    // not be applied here either. An unchanged/fallback result is already
+    // corrected; running replacements again could cascade A -> B -> C.
+    // Keeping the check local means the invariant
     // does not silently depend on how `run_llm` is defined elsewhere.
-    let final_text = if level == CleanupLevel::Raw {
+    let final_text = if level == CleanupLevel::Raw || polished == smart {
         polished
     } else {
-        TextCleaner::apply_glossary(&polished, &glossary)
+        let preferred = glossary
+            .iter()
+            .map(|(_, spelling)| (spelling.clone(), spelling.clone()))
+            .collect::<Vec<_>>();
+        TextCleaner::apply_glossary(&replacement_rules.restore_spellings(&polished), &preferred)
     };
     PostprocessOutcome {
         smart,
@@ -1027,7 +1028,17 @@ async fn finish_stop(
     // 80 ms sleep is not synchronization: under load the tail push_audio
     // could land after the sidecar had already reset its stream buffer,
     // silently dropping the last fraction of a second of speech.
-    await_audio_drain(ctx).await;
+    if let Err(error) = await_audio_drain(ctx).await {
+        // Revoke ownership before awaiting the actor: a late push reply must
+        // not mutate this recording or a later session while cancellation runs.
+        *ctx.current_session_id.write() = None;
+        ctx.recording_pcm.lock().clear();
+        *ctx.dictation_target_hwnd.write() = 0;
+        if let Err(cancel_error) = ctx.asr_handle.cancel_stream(session_id).await {
+            log::warn!("Could not cancel ASR after audio drain failure: {cancel_error}");
+        }
+        return Err(error);
+    }
     ctx.latency_timer.write().audio_drained_at = Some(Instant::now());
 
     let recorded_at = chrono::Utc::now();
@@ -1432,6 +1443,8 @@ async fn finish_stop(
     } else {
         ("Android".to_owned(), "companion".to_owned())
     };
+    let mut correction_target = None;
+    let mut correction_history_id = None;
 
     if inject && !silent_mic && !final_transcript.is_empty() {
         *ctx.state_enum.write() = AppStateEnum::Injecting;
@@ -1478,6 +1491,16 @@ async fn finish_stop(
         let (outcome, insertion_error) = recover_insertion(insertion);
         ctx.latency_timer.write().injection_finished_at = Some(Instant::now());
         injected = outcome.pasted;
+        if outcome.pasted
+            && !outcome.fallback_copy
+            && insertion_error.is_none()
+            && matches!(action, crate::settings::OutputAction::Paste)
+            && capture_kind == CaptureKind::Microphone
+            && session_intent == crate::dory::SessionIntent::Dictate
+            && settings.auto_learn_dictionary
+        {
+            correction_target = Some(*ctx.dictation_target_hwnd.read());
+        }
         app_title = outcome.app_title.clone();
         process_name = outcome.process_name.clone();
         let tier_status = rewriter_error
@@ -1643,18 +1666,21 @@ async fn finish_stop(
             };
             if let Err(error) = ctx.history_store.insert_entry(&entry) {
                 ctx.bus.emit(DoryEvent::Error(format!("History could not be saved: {error}. Copy the transcript from Home before closing.")));
-            } else if complete_audio {
-                if let Err(error) = ctx.history_store.save_audio(&entry.id, &pcm) {
-                    log::error!("Could not save dictation audio: {error}");
-                    ctx.bus.emit(DoryEvent::Error(format!(
-                        "Transcript saved, but audio could not be saved: {error}"
-                    )));
+            } else {
+                correction_history_id = Some(entry.id.clone());
+                if complete_audio {
+                    if let Err(error) = ctx.history_store.save_audio(&entry.id, &pcm) {
+                        log::error!("Could not save dictation audio: {error}");
+                        ctx.bus.emit(DoryEvent::Error(format!(
+                            "Transcript saved, but audio could not be saved: {error}"
+                        )));
+                    }
+                } else if storage_settings.audio_retention != "disabled" {
+                    ctx.bus.emit(DoryEvent::Error(
+                        "Transcript saved. Audio exceeded the retention buffer and was not saved."
+                            .into(),
+                    ));
                 }
-            } else if storage_settings.audio_retention != "disabled" {
-                ctx.bus.emit(DoryEvent::Error(
-                    "Transcript saved. Audio exceeded the retention buffer and was not saved."
-                        .into(),
-                ));
             }
         }
     }
@@ -1681,6 +1707,15 @@ async fn finish_stop(
         metrics: ctx.last_latency_metrics.read().clone(),
     });
     reset_ready(ctx);
+
+    if let Some(hwnd) = correction_target {
+        crate::correction_observer::start(
+            ctx.clone(),
+            hwnd,
+            final_transcript.clone(),
+            correction_history_id,
+        );
+    }
 
     Ok(StopOutcome {
         raw: raw_transcript,
@@ -1817,6 +1852,8 @@ fn begin_session(
     kind: CaptureKind,
     pressed_at: Option<Instant>,
 ) -> Result<(), SessionError> {
+    ctx.correction_watch_generation
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     *ctx.session_cancel.write() = Some(tokio::sync::watch::channel(false).0);
     *ctx.session_phone_token.write() = None;
     let mut timer = ctx.latency_timer.write();
@@ -1860,18 +1897,19 @@ fn reset_ready(ctx: &AppContext) {
 
 /// Block the stop path until the sample loop confirms every captured chunk
 /// reached the ASR engine, or until `AUDIO_DRAIN_TIMEOUT` elapses.
-async fn await_audio_drain(ctx: &AppContext) {
+async fn await_audio_drain(ctx: &AppContext) -> Result<(), SessionError> {
     let Some(rx) = ctx.audio_drain_done.lock().take() else {
-        // No loop was running for this session (or it already finished and
-        // consumed its slot); nothing to wait for.
-        return;
+        return Err(SessionError::other(
+            "Audio capture has no drain confirmation. The recording was not saved; please try again.",
+        ));
     };
     match tokio::time::timeout(AUDIO_DRAIN_TIMEOUT, rx).await {
-        Ok(Ok(())) => {}
+        Ok(Ok(())) => Ok(()),
         Ok(Err(_)) => {
-            // The loop task was dropped without signalling. Its audio is
-            // already in the sidecar or lost; either way, do not hang.
             log::warn!("Audio drain signal channel closed before completion");
+            Err(SessionError::other(
+                "Audio capture ended without confirming the complete recording. The recording was not saved; please try again.",
+            ))
         }
         Err(_) => {
             log::error!(
@@ -1879,6 +1917,9 @@ async fn await_audio_drain(ctx: &AppContext) {
                  utterance may be missing",
                 AUDIO_DRAIN_TIMEOUT
             );
+            Err(SessionError::other(
+                "Audio capture did not finish draining. The recording was not saved; please try again.",
+            ))
         }
     }
 }
@@ -1886,6 +1927,7 @@ async fn await_audio_drain(ctx: &AppContext) {
 fn spawn_sample_loop(ctx: &AppContext, session_id: u64, mut rx_samples: mpsc::Receiver<Vec<f32>>) {
     let state_ref = Arc::clone(&ctx.state_enum);
     let session_ref = Arc::clone(&ctx.current_session_id);
+    let cancel_ref = Arc::clone(&ctx.session_cancel);
     let settings_ref = Arc::clone(&ctx.settings_store);
     let latency_ref = Arc::clone(&ctx.latency_timer);
     let bus = ctx.bus.clone();
@@ -1898,6 +1940,13 @@ fn spawn_sample_loop(ctx: &AppContext, session_id: u64, mut rx_samples: mpsc::Re
     *ctx.audio_drain_done.lock() = Some(drain_rx);
 
     tokio::spawn(async move {
+        let owns_session = |active: &Option<u64>| {
+            *active == Some(session_id)
+                && !cancel_ref
+                    .read()
+                    .as_ref()
+                    .is_some_and(|sender| *sender.borrow())
+        };
         let mut first_audio = true;
         let mut last_level_emit = Instant::now();
         // Accumulate samples before pushing to the sidecar so we don't
@@ -1916,35 +1965,26 @@ fn spawn_sample_loop(ctx: &AppContext, session_id: u64, mut rx_samples: mpsc::Re
             let Some(chunk) = rx_samples.recv().await else {
                 break;
             };
-            {
-                let mut timer = latency_ref.write();
-                timer.peak_audio_queue_chunks =
-                    timer.peak_audio_queue_chunks.max(rx_samples.len() + 1);
-            }
-
-            {
-                let active = session_ref.read();
-                if *active != Some(session_id) {
-                    break;
-                }
-            }
-            if first_audio {
-                latency_ref.write().first_audio_at = Some(Instant::now());
-                first_audio = false;
-            }
-
             let rms = if chunk.is_empty() {
                 0.0
             } else {
                 (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt()
             };
             let level = (rms * 6.0).min(1.0);
-            *level_ref.write() = level;
             {
                 let active = session_ref.read();
-                if *active != Some(session_id) {
+                if !owns_session(&active) {
                     break;
                 }
+                let mut timer = latency_ref.write();
+                timer.peak_audio_queue_chunks =
+                    timer.peak_audio_queue_chunks.max(rx_samples.len() + 1);
+                if first_audio {
+                    timer.first_audio_at = Some(Instant::now());
+                    first_audio = false;
+                }
+                drop(timer);
+                *level_ref.write() = level;
                 pcm_ref.lock().extend_from_slice(&chunk);
                 pending_for_asr.extend_from_slice(&chunk);
             }
@@ -1954,13 +1994,17 @@ fn spawn_sample_loop(ctx: &AppContext, session_id: u64, mut rx_samples: mpsc::Re
                 let samples = std::mem::take(&mut pending_for_asr);
                 let current_seq = sequence_id;
                 sequence_id += 1;
-                match asr_handle
+                let result = asr_handle
                     .push_audio(session_id, current_seq, samples)
-                    .await
-                {
-                    Ok(Some(text))
-                        if !text.trim().is_empty() && *session_ref.read() == Some(session_id) =>
-                    {
+                    .await;
+                // Keep ownership through every shared mutation/event, but
+                // release this synchronous guard before the next async push.
+                let active = session_ref.read();
+                if !owns_session(&active) {
+                    break;
+                }
+                match result {
+                    Ok(Some(text)) if !text.trim().is_empty() => {
                         // First live partial for this session. Until
                         // chunk-on-silence lands this only fires for engines
                         // that return incremental text, but the metric and
@@ -2000,6 +2044,10 @@ fn spawn_sample_loop(ctx: &AppContext, session_id: u64, mut rx_samples: mpsc::Re
             }
 
             if last_level_emit.elapsed() >= Duration::from_millis(40) {
+                let active = session_ref.read();
+                if !owns_session(&active) {
+                    break;
+                }
                 bus.emit(DoryEvent::AudioLevel(level));
                 last_level_emit = Instant::now();
             }
@@ -2010,22 +2058,26 @@ fn spawn_sample_loop(ctx: &AppContext, session_id: u64, mut rx_samples: mpsc::Re
         while let Ok(chunk) = rx_samples.try_recv() {
             {
                 let active = session_ref.read();
-                if *active != Some(session_id) {
+                if !owns_session(&active) {
                     break;
                 }
                 pcm_ref.lock().extend_from_slice(&chunk);
                 pending_for_asr.extend_from_slice(&chunk);
             }
         }
-        if !pending_for_asr.is_empty() && *session_ref.read() == Some(session_id) {
+        let flush_pending = !pending_for_asr.is_empty() && owns_session(&session_ref.read());
+        if flush_pending {
             let samples = std::mem::take(&mut pending_for_asr);
             let current_seq = sequence_id;
             if let Err(err) = asr_handle
                 .push_audio(session_id, current_seq, samples)
                 .await
             {
-                log::error!("Final audio push failed; tail may be missing: {err}");
-                latency_ref.write().failed_audio_pushes += 1;
+                let active = session_ref.read();
+                if owns_session(&active) {
+                    log::error!("Final audio push failed; tail may be missing: {err}");
+                    latency_ref.write().failed_audio_pushes += 1;
+                }
             }
         }
 
@@ -2139,6 +2191,9 @@ mod tests {
         partial_text: Option<String>,
         final_text: String,
         cancel_error: bool,
+        push_entered: Option<Arc<tokio::sync::Notify>>,
+        push_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+        push_error: bool,
         stop_entered: Option<Arc<tokio::sync::Notify>>,
         stop_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
@@ -2151,6 +2206,9 @@ mod tests {
                 partial_text: None,
                 final_text: "probe transcript".into(),
                 cancel_error: false,
+                push_entered: None,
+                push_cancel: None,
+                push_error: false,
                 stop_entered: None,
                 stop_cancel: None,
             }
@@ -2184,9 +2242,20 @@ mod tests {
         }
 
         fn push_audio(&mut self, samples_16k_mono: &[f32]) -> Result<Option<String>, String> {
+            if let (Some(entered), Some(cancelled)) = (&self.push_entered, &self.push_cancel) {
+                entered.notify_one();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !cancelled.load(Ordering::Acquire) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
             self.pushed_samples
                 .fetch_add(samples_16k_mono.len(), Ordering::SeqCst);
-            Ok(self.partial_text.clone())
+            if self.push_error {
+                Err("delayed audio transfer failed".into())
+            } else {
+                Ok(self.partial_text.clone())
+            }
         }
 
         fn get_partial_transcript(&mut self) -> Result<String, String> {
@@ -2215,11 +2284,14 @@ mod tests {
         }
 
         fn cancellation_signal(&self) -> Option<crate::asr::engine::InferenceCancellation> {
-            self.stop_cancel.as_ref().map(|signal| {
-                let signal = Arc::clone(signal);
-                Arc::new(move || signal.store(true, Ordering::Release))
-                    as crate::asr::engine::InferenceCancellation
-            })
+            self.push_cancel
+                .as_ref()
+                .or(self.stop_cancel.as_ref())
+                .map(|signal| {
+                    let signal = Arc::clone(signal);
+                    Arc::new(move || signal.store(true, Ordering::Release))
+                        as crate::asr::engine::InferenceCancellation
+                })
         }
 
         fn get_detected_language(&self) -> String {
@@ -2228,6 +2300,149 @@ mod tests {
 
         fn get_backend_name(&self) -> String {
             "push-probe".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_audio_drain_never_publishes_or_saves_an_incomplete_recording() {
+        let dir = std::env::temp_dir().join(format!("reflow_drain_failure_{}", Uuid::new_v4()));
+        let ctx = AppContext::bootstrap_test(dir.clone());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let samples_at_stop = Arc::new(AtomicUsize::new(0));
+        let mut probe = PushProbe::new(Arc::new(AtomicUsize::new(0)), Arc::clone(&samples_at_stop));
+        probe.push_entered = Some(Arc::clone(&entered));
+        probe.push_cancel = Some(Arc::clone(&cancelled));
+        ctx.asr_handle.swap_engine(Box::new(probe)).await.unwrap();
+        let mut events = ctx.bus.subscribe();
+        let id = start_external_owned(&ctx, None).await.unwrap();
+        push_f32_owned(&ctx, id, &vec![0.1; 8000]).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("the actor must be processing the first audio chunk");
+        push_f32_owned(&ctx, id, &[0.2; 100]).unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(8), stop_owned(&ctx, false, id))
+            .await
+            .expect("failed draining must return control to the user");
+        let no_history = ctx.history_store.get_entries(10, 0).unwrap().is_empty();
+        let mut published = false;
+        while let Ok(event) = events.try_recv() {
+            published |= matches!(
+                event,
+                DoryEvent::Final(_) | DoryEvent::SessionFinished { .. }
+            );
+        }
+        let ready = *ctx.state_enum.read() == AppStateEnum::Ready
+            && ctx.current_session_id.read().is_none();
+        let next = start_external_owned(&ctx, None).await.unwrap();
+        cancel_owned_wait(&ctx, Some(next)).await.unwrap();
+        drop(ctx);
+        let _ = std::fs::remove_dir_all(dir);
+
+        assert!(
+            result.is_err(),
+            "an unconfirmed audio drain must fail the recording"
+        );
+        assert!(
+            cancelled.load(Ordering::Acquire),
+            "the stalled engine must be canceled"
+        );
+        assert_eq!(samples_at_stop.load(Ordering::SeqCst), 0);
+        assert!(no_history, "the incomplete recording must not be saved");
+        assert!(
+            !published,
+            "the incomplete transcript must not reach output"
+        );
+        assert!(
+            ready,
+            "a drain failure must leave recording admission available"
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_audio_drain_signal_never_saves_a_recording() {
+        let dir = std::env::temp_dir().join(format!("reflow_drain_closed_{}", Uuid::new_v4()));
+        let ctx = AppContext::bootstrap_test(dir.clone());
+        let id = start_external_owned(&ctx, None).await.unwrap();
+        push_f32_owned(&ctx, id, &[0.1; 100]).unwrap();
+        let (drain_tx, drain_rx) = tokio::sync::oneshot::channel();
+        *ctx.audio_drain_done.lock() = Some(drain_rx);
+        drop(drain_tx);
+
+        let result = stop_owned(&ctx, false, id).await;
+        let no_history = ctx.history_store.get_entries(10, 0).unwrap().is_empty();
+        let ready = *ctx.state_enum.read() == AppStateEnum::Ready;
+        drop(ctx);
+        let _ = std::fs::remove_dir_all(dir);
+        assert!(result.is_err(), "a lost drain task must fail the recording");
+        assert!(no_history);
+        assert!(ready);
+    }
+
+    #[tokio::test]
+    async fn delayed_old_audio_reply_cannot_change_a_restarted_session() {
+        for (push_error, flush_tail) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let dir = std::env::temp_dir().join(format!("reflow_stale_audio_{}", Uuid::new_v4()));
+            let ctx = AppContext::bootstrap_test(dir.clone());
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut probe =
+                PushProbe::new(Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+            probe.push_entered = Some(Arc::clone(&entered));
+            probe.push_cancel = Some(Arc::clone(&cancelled));
+            probe.push_error = push_error;
+            probe.partial_text = Some("old transcript".into());
+            ctx.asr_handle.swap_engine(Box::new(probe)).await.unwrap();
+            let old = start_external_owned(&ctx, None).await.unwrap();
+            let samples = if flush_tail { 100 } else { 8000 };
+            push_f32_owned(&ctx, old, &vec![0.1; samples]).unwrap();
+            if flush_tail {
+                *ctx.recording_sample_sender.write() = None;
+            }
+            tokio::time::timeout(Duration::from_secs(2), entered.notified())
+                .await
+                .expect("the old push must be pending in the actor");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // Keep this current-thread runtime from polling the old reply between
+            // cancellation and restart. Both operations still use the real actor.
+            cancel_owned(&ctx, Some(old)).unwrap();
+            let current = ctx.asr_handle.next_session_id();
+            ctx.asr_handle
+                .start_stream_blocking(current, "en", &[])
+                .unwrap();
+            *ctx.current_session_id.write() = Some(current);
+            begin_session(&ctx, CaptureKind::External, None).unwrap();
+            let mut events = ctx.bus.subscribe();
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            let failures = ctx.latency_timer.read().failed_audio_pushes;
+            let level = *ctx.last_audio_level.read();
+            let pcm_empty = ctx.recording_pcm.lock().is_empty();
+            let mut stale_event = false;
+            while let Ok(event) = events.try_recv() {
+                stale_event |= matches!(event, DoryEvent::Partial(_) | DoryEvent::AudioLevel(_));
+            }
+            cancel_owned_wait(&ctx, Some(current)).await.unwrap();
+            drop(ctx);
+            let _ = std::fs::remove_dir_all(dir);
+
+            assert_eq!(
+                failures, 0,
+                "old transfer errors must not taint the new metrics"
+            );
+            assert_eq!(
+                level, 0.0,
+                "old levels must not taint the restarted session"
+            );
+            assert!(pcm_empty, "old samples must not survive cancellation");
+            assert!(
+                !stale_event,
+                "old replies must not emit new-session UI events"
+            );
         }
     }
 

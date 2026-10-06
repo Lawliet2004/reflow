@@ -2,6 +2,29 @@ use reflow_lib::network_policy::{self, NetworkEntry};
 use reflow_lib::settings::{AppSettings, OutputAction};
 use reflow_lib::transfer::{bundle_patch, import_model_into, make_bundle};
 
+#[test]
+fn official_hf_cdn_redirects_are_allowed_without_accepting_lookalikes() {
+    for host in ["us.aws.cdn.hf.co", "us.gcp.cdn.hf.co"] {
+        let url = reqwest::Url::parse(&format!("https://{host}/weights")).unwrap();
+        assert!(network_policy::validate_download_url(&url).is_ok());
+        for invalid in [
+            format!("https://{host}.attacker.test/weights"),
+            format!("http://{host}/weights"),
+            format!("https://{host}:444/weights"),
+            format!("https://user@{host}/weights"),
+        ] {
+            assert!(
+                network_policy::validate_download_url(&reqwest::Url::parse(&invalid).unwrap())
+                    .is_err()
+            );
+        }
+    }
+    assert!(network_policy::validate_download_url(
+        &reqwest::Url::parse("https://attacker.hf.co/weights").unwrap()
+    )
+    .is_err());
+}
+
 fn temporary() -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("reflow-transfer-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&path).unwrap();

@@ -3,6 +3,65 @@ import { expect, it, vi } from "vitest";
 import { api } from "../services/tauriApi";
 import { Onboarding } from "./Onboarding";
 
+it("shows background download failures and permits retrying the selected speech model", async () => {
+  const settings = await api.getSettings();
+  const status = await api.getModelStatus();
+  const install = vi.spyOn(api, "installModel").mockResolvedValue();
+  const props = {
+    settings: { ...settings, asr: { ...settings.asr, model: "1.7b" as const } },
+    onUpdateSettings: vi.fn(),
+    onComplete: vi.fn(),
+  };
+  const missing = {
+    ...status,
+    installed: false,
+    loaded: false,
+    is_downloading: false,
+    error: null,
+  };
+  const view = render(<Onboarding {...props} modelStatus={missing} />);
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download model" }));
+  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith("1.7b"));
+  view.rerender(
+    <Onboarding
+      {...props}
+      modelStatus={{ ...missing, is_downloading: true, download_progress_pct: 1 }}
+    />,
+  );
+  expect(screen.getByText("Downloading 1%")).toBeInTheDocument();
+  view.rerender(
+    <Onboarding
+      {...props}
+      modelStatus={{ ...missing, error: "Downloads are restricted to pinned artifact hosts" }}
+    />,
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Downloads are restricted to pinned artifact hosts",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Download model" }));
+  await waitFor(() => expect(install).toHaveBeenCalledTimes(2));
+});
+
+it("preserves the reason when starting a model download is rejected", async () => {
+  const settings = await api.getSettings();
+  const status = await api.getModelStatus();
+  vi.spyOn(api, "installModel").mockRejectedValue("Offline mode is on");
+  render(
+    <Onboarding
+      settings={settings}
+      modelStatus={{ ...status, installed: false, loaded: false }}
+      onUpdateSettings={vi.fn()}
+      onComplete={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download model" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Offline mode is on");
+});
+
 it("allows speech-only setup and preserves a recognition check when choosing an optional LLM", async () => {
   const settings = await api.getSettings();
   const status = await api.getModelStatus();

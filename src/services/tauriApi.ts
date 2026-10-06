@@ -34,6 +34,7 @@ import {
   SystemMetrics,
   ModelStatus,
   FlowStatus,
+  DownloadedModel,
   PlatformInfo,
   ApiStatus,
   CalibrationStatus,
@@ -208,10 +209,10 @@ const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   reduce_motion: false,
   ui_font_scale: "normal",
   developer_mode: false,
-  cleanup_level: "light",
+  cleanup_level: "medium",
   intelligence_tier: "smart_flow",
-  style: "neutral",
-  auto_style_from_app: true,
+  style: "faithful",
+  auto_style_from_app: false,
   flow_model: "qwen3.5-0.8b",
   active_profile: "Default",
   launch_at_startup: false,
@@ -408,6 +409,8 @@ export const api = {
 
   removeModel: (modelSize: string = "0.6b") => safeInvoke<void>("remove_model", { modelSize }),
 
+  getDownloadedModels: () => safeInvoke<DownloadedModel[]>("get_downloaded_models", undefined, []),
+
   reloadModel: () => safeInvoke<void>("reload_model"),
 
   // Metrics & Developer Diagnostics
@@ -547,6 +550,8 @@ export const api = {
       latency_ms: number;
       tier_used: AppSettings["intelligence_tier"];
       model_used: string;
+      rewriter_used?: boolean;
+      rewriter_error?: string;
     }>(
       "preview_tier_cleanup",
       { text, tier, style, mode },
@@ -554,8 +559,10 @@ export const api = {
         text,
         latency_ms: 0,
         tier_used: tier,
-        model_used:
-          tier === "deep_context" ? "qwen3.5-2b" : tier === "smart_flow" ? "qwen3.5-0.8b" : "none",
+        model_used: "none",
+        rewriter_used: false,
+        rewriter_error:
+          "Run this test in the desktop app. The browser preview leaves your sample unchanged.",
       },
     ),
   getIntelligenceStatus: () =>

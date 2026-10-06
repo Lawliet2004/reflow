@@ -172,6 +172,14 @@ impl AppSettings {
         {
             return Err("Invalid injection method or HUD contrast".into());
         }
+        let custom = self.accent_custom.strip_prefix('#').unwrap_or("");
+        if custom.len() != 6
+            || !custom.chars().all(|c| c.is_ascii_hexdigit())
+            || !self.hud_opacity.is_finite()
+            || !(0.6..=1.0).contains(&self.hud_opacity)
+        {
+            return Err("Invalid custom accent colour or HUD opacity".into());
+        }
         if self
             .power_policy
             .battery_preset

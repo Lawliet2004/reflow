@@ -291,18 +291,6 @@ export const ExpansionAdvanced: React.FC<{
         </Row>
         {toggle("append_space", "Append a trailing space")}
         {toggle("capitalize_first", "Capitalize the first sentence", true)}
-        <Row label="HUD contrast">
-          <select
-            className="field"
-            value={settings.hud_contrast ?? "standard"}
-            onChange={(e) =>
-              onUpdateSettings({ hud_contrast: e.target.value as "standard" | "high" })
-            }
-          >
-            <option value="standard">Standard</option>
-            <option value="high">High contrast</option>
-          </select>
-        </Row>
         <button
           className="btn btn-secondary"
           disabled={busy}

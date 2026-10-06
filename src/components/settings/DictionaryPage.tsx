@@ -77,6 +77,18 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
           {error}
         </p>
       )}
+      <Section
+        title="Learn from corrections"
+        description="Automatically remember spelling corrections to your dictation. On Windows, Reflow also learns from edits in supported text fields while they remain focused. Everything stays on this device."
+      >
+        <Toggle
+          on={settings.auto_learn_dictionary ?? true}
+          onChange={() =>
+            save({ auto_learn_dictionary: !(settings.auto_learn_dictionary ?? true) })
+          }
+          ariaLabel="Learn from corrections"
+        />
+      </Section>
       {!!settings.dictionary_suggestions?.length && (
         <Section
           title="Suggestions from corrections"
@@ -134,7 +146,7 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
       <Section
         icon={<BookOpen className="w-4 h-4" />}
         title="Vocabulary"
-        description="Names and jargon passed as hotwords to the speech model."
+        description="Names, terms, and preferred spellings used in your dictations."
       >
         <div className="flex flex-wrap gap-2">
           <input
@@ -162,6 +174,8 @@ export const DictionaryPage: React.FC<Props> = ({ settings, onUpdateSettings }) 
                 className="chip !py-1.5 !bg-accent-soft !border-accent-border !text-accent"
               >
                 {t.term}
+                {t.preferred_spelling !== t.term && ` → ${t.preferred_spelling}`}
+                {t.category === "Learned" && <span className="text-muted ml-1">Learned</span>}
                 <button
                   onClick={() => removeTerm(t.id)}
                   className="text-accent hover:text-danger transition-colors cursor-pointer ml-1"

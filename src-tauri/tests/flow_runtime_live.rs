@@ -69,6 +69,64 @@ fn request(text: &str) -> RewriteRequest {
     }
 }
 
+#[test]
+fn installed_runtime_cleans_writing_tasks_without_losing_details() {
+    let _serial = serialized();
+    if !runtime_installed() {
+        eprintln!("skipping: no llama-server runtime installed");
+        return;
+    }
+    let runtime = FlowRuntime::default();
+    runtime
+        .ensure(FLOW_MODEL, "vulkan", None, 0, 4096)
+        .expect("cleanup runtime should start");
+    runtime.warm_prompt_cache(FLOW_MODEL);
+    let client = runtime.client.read().clone();
+    let natural = "I was thinking we could we could ship on Thursday.";
+    let mut req = request(natural);
+    req.cleanup_level = "medium".into();
+    req.style = "faithful".into();
+    let outcome = polish_or_fallback(&client, natural, &req);
+    eprintln!(
+        "Natural cleanup -> {:?} (used={}, error={:?})",
+        outcome.final_text, outcome.used, outcome.error
+    );
+    if !outcome.used {
+        eprintln!("Rejected natural candidate: {:?}", client.rewrite(&req));
+    }
+    assert!(
+        outcome.used,
+        "natural cleanup should apply: {:?}",
+        outcome.error
+    );
+    assert!(!outcome
+        .final_text
+        .to_lowercase()
+        .contains("we could we could"));
+    assert!(outcome.final_text.contains("Thursday"));
+
+    let developer = "fix the login um don't change getUserById in src/api.ts and keep --dry-run";
+    req.text = developer.into();
+    req.dictation_mode = "developer_prompt".into();
+    let outcome = polish_or_fallback(&client, developer, &req);
+    eprintln!(
+        "Developer cleanup -> {:?} (used={}, error={:?})",
+        outcome.final_text, outcome.used, outcome.error
+    );
+    // A rejected edit must return the complete original, never partial text.
+    assert!(outcome.used || outcome.final_text == developer);
+    for term in ["getUserById", "src/api.ts", "--dry-run"] {
+        assert!(
+            outcome.final_text.contains(term),
+            "missing {term}: {}",
+            outcome.final_text
+        );
+    }
+    let lower = outcome.final_text.to_lowercase();
+    assert!(lower.contains("don't change") || lower.contains("do not change"));
+    runtime.shutdown();
+}
+
 /// `ensure()` must produce a usable client for the runtime that is actually on
 /// disk. Before the fix this returned `RuntimeFlavorMismatch` on any install
 /// whose `llama-server.kind` marker was missing — which is the state an
@@ -142,52 +200,47 @@ fn polish_is_actually_applied_to_real_dictation() {
         .expect("runtime should start");
     let client = runtime.client.read().clone();
 
-    // Verbatim ASR output shapes taken from a real history database.
-    let transcripts = [
-        "i need the key, for opening the door",
-        "can you review the code for me and start, like doing the task of code review",
-        "i think we should ship this on friday",
-    ];
-
-    let mut applied = 0usize;
-    for smart in transcripts {
-        let outcome = polish_or_fallback(&client, smart, &request(smart));
-        assert!(
-            !outcome.final_text.trim().is_empty(),
-            "the pipeline must never yield empty text for {smart:?}"
+    // Word-choice preservation deliberately rejects some grammatical paraphrases.
+    // A rejection must preserve every original byte and must come from the
+    // safety gate, never a timeout, unavailable runtime or truncated response.
+    let original = "i need the key, for opening the door";
+    let outcome = polish_or_fallback(&client, original, &request(original));
+    if outcome.used {
+        assert!(outcome.error.is_none());
+        assert_eq!(outcome.final_text, "I need the key for opening the door.");
+    } else {
+        assert_eq!(outcome.final_text, original);
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("LLM rewrite rejected by safety gate")
         );
-        if let Some(err) = &outcome.error {
-            assert!(
-                !err.contains("not available"),
-                "the rewriter must be reachable, but reported: {err}"
-            );
-            assert!(
-                !err.contains("circuit breaker"),
-                "the breaker must not be open on a fresh runtime: {err}"
-            );
-            // Show what the gate actually turned down. A rejection with no
-            // visible candidate is undiagnosable, and the difference between
-            // "the model produced garbage" and "the gate is too strict" decides
-            // whether the fix belongs in the prompt or in the safety rules.
-            let candidate = client.rewrite(&request(smart));
-            eprintln!("NOT APPLIED {smart:?}\n      err: {err}\n      candidate: {candidate:?}");
-        } else {
-            assert!(
-                outcome.used,
-                "no error means the rewrite was accepted and must be marked used"
-            );
-            applied += 1;
-            eprintln!("applied  {smart:?}\n      -> {:?}", outcome.final_text);
-        }
     }
 
-    assert_eq!(
-        applied,
-        transcripts.len(),
-        "the LLM must polish ordinary dictation; {}/{} were rejected or failed",
-        transcripts.len() - applied,
-        transcripts.len()
-    );
+    // Each safe ordinary dictation must actually use the reachable local model.
+    // This still fails if startup, the prompt or the safety gate rejects all work.
+    for (smart, expected) in [
+        (
+            "can you review the code for me and start, like doing the task of code review",
+            "Can you review the code for me and start, like doing the task of code review?",
+        ),
+        (
+            "i think we should ship this on friday",
+            "I think we should ship this on Friday.",
+        ),
+    ] {
+        let outcome = polish_or_fallback(&client, smart, &request(smart));
+        eprintln!(
+            "{smart:?} -> {:?} (used={}, error={:?})",
+            outcome.final_text, outcome.used, outcome.error
+        );
+        assert!(
+            outcome.used,
+            "ordinary safe dictation must apply: {:?}",
+            outcome.error
+        );
+        assert!(outcome.error.is_none());
+        assert_eq!(outcome.final_text, expected);
+    }
 
     runtime.shutdown();
 }

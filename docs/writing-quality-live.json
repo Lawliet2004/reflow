@@ -1,0 +1,152 @@
+[
+  {
+    "category": "explicit_paragraphs",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "The north wing is ready.\n\nThe south wing still needs paint.",
+    "prepared": "The north wing is ready.\n\nThe south wing still needs paint.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "the north wing is ready period new paragraph the south wing still needs paint period"
+  },
+  {
+    "category": "automatic_paragraphs",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "The draft is complete. The charts need labels. The meeting is on Thursday. The room is confirmed.",
+    "prepared": "The draft is complete. The charts need labels. The meeting is on Thursday. The room is confirmed.",
+    "quality_met": false,
+    "safety_accepted": true,
+    "source": "The draft is complete. The charts need labels. The meeting is on Thursday. The room is confirmed."
+  },
+  {
+    "category": "review",
+    "fallback_error": "LLM rewrite rejected by safety gate",
+    "model_used": false,
+    "output": "I bought this lamp last week the light is warm but the base feels flimsy i would keep it for reading.",
+    "prepared": "I bought this lamp last week the light is warm but the base feels flimsy i would keep it for reading.",
+    "quality_met": false,
+    "safety_accepted": true,
+    "source": "i bought this lamp last week the light is warm but the base feels flimsy i would keep it for reading"
+  },
+  {
+    "category": "bullet_points",
+    "fallback_error": "LLM rewrite rejected by safety gate",
+    "model_used": false,
+    "output": "Use bullet points for these three items:\n\n• Two notebooks\n• Three pens\n• A printed map",
+    "prepared": "Use bullet points for these three items:\n\n• Two notebooks\n• Three pens\n• A printed map",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "Use bullet points for these three items: first two notebooks, second three pens, third a printed map."
+  },
+  {
+    "category": "numbered_points",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "Use numbered points:\n\n1. Save the draft\n2. Review the charts\n3. Send the invoice",
+    "prepared": "Use numbered points:\n\n1. Save the draft\n2. Review the charts\n3. Send the invoice",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "Use numbered points: first save the draft, second review the charts, third send the invoice."
+  },
+  {
+    "category": "email",
+    "fallback_error": "LLM rewrite rejected by safety gate",
+    "model_used": false,
+    "output": "Hi Noura,\n\nThe invoice is attached.\n\nThanks,\nMaya.",
+    "prepared": "Hi Noura,\n\nThe invoice is attached.\n\nThanks,\nMaya.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "Hi Noura, the invoice is attached. Thanks, Maya."
+  },
+  {
+    "category": "grammar_agreement",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "My packages are ready.",
+    "prepared": "My packages is ready.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "my packages is ready"
+  },
+  {
+    "category": "grammar_regular_verb",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "She goes to school every morning.",
+    "prepared": "She go to school every morning.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "she go to school every morning"
+  },
+  {
+    "category": "grammar_irregular_verb",
+    "fallback_error": "LLM rewrite rejected by safety gate",
+    "model_used": false,
+    "output": "I seen the result.",
+    "prepared": "I seen the result.",
+    "quality_met": false,
+    "safety_accepted": true,
+    "source": "i seen the result"
+  },
+  {
+    "category": "vocabulary",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "Please send the GitHub report using VS Code.",
+    "prepared": "Please send the GitHub report using VS Code.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "please send the git hub report using vs code"
+  },
+  {
+    "category": "comma",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "After the meeting, we can call Noura, but please do not send the invoice.",
+    "prepared": "After the meeting we can call Noura but please do not send the invoice.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "after the meeting we can call Noura but please do not send the invoice"
+  },
+  {
+    "category": "semicolon",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "The train is late; we can wait.",
+    "prepared": "The train is late; we can wait.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "the train is late semi colon we can wait period"
+  },
+  {
+    "category": "uncertainty_and_negation",
+    "fallback_error": "LLM rewrite rejected by safety gate",
+    "model_used": false,
+    "output": "I think maybe we should delay the launch but do not cancel the meeting on Friday.",
+    "prepared": "I think maybe we should delay the launch but do not cancel the meeting on Friday.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "i think maybe we should delay the launch but do not cancel the meeting on Friday"
+  },
+  {
+    "category": "decisive_intent",
+    "fallback_error": "LLM rewrite rejected by safety gate",
+    "model_used": false,
+    "output": "I want to visit the museum, but maybe we should wait until Friday.",
+    "prepared": "I want to visit the museum, but maybe we should wait until Friday.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "I want to visit the museum, but maybe we should wait until Friday."
+  },
+  {
+    "category": "mixed_language",
+    "fallback_error": null,
+    "model_used": true,
+    "output": "Amina ने 2 boxes भेजे लेकिन मुझे 3 नहीं चाहिए.",
+    "prepared": "Amina ने 2 boxes भेजे लेकिन मुझे 3 नहीं चाहिए.",
+    "quality_met": true,
+    "safety_accepted": true,
+    "source": "Amina ने 2 boxes भेजे लेकिन मुझे 3 नहीं चाहिए"
+  }
+]

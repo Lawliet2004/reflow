@@ -1,8 +1,8 @@
-# Reflow
+<p align="center"><img src="docs/assets/reflow-lockup.png" alt="Reflow" width="420"></p>
 
 Local-first desktop dictation with a focused workspace for your words.
 
-**Version 0.2.0** redesigns the desktop interface and strengthens recording ownership, settings persistence, phone pairing, and clipboard safety. Read the [release notes](docs/release-0.2.0.md) and [verification record](docs/release-verification-0.2.0.md).
+**Version 0.4.0** adds Zipformer speech recognition, automatic dictionary learning, and task-based writing cleanup. This release also hardens startup privacy recovery, model-runtime activation, and audio session ownership. Read the [release notes](docs/release-0.4.0.md) and [backend audit](docs/backend-audit-0.4.0.md).
 
 ## ✨ Features & Architecture
 
@@ -21,6 +21,7 @@ Local-first desktop dictation with a focused workspace for your words.
   - Audio is buffered continuously and transcribed on release. Live partials are disabled (`LIVE_PARTIALS = False`). Long dictations use silence-aligned segments of at most 30 seconds, with a one-hour recording limit and visible truncation warnings.
   - Custom dictionary terms are passed to the model as recognition hotwords.
 - **🔒 Single instance**: launching Reflow twice focuses the running app instead of fighting over the global hotkey.
+- **⚡ Phonon-2 for English**: an optional 164 MB model download with optimized CPU kernels and NVIDIA CUDA execution. Select it under Settings → Performance. English-only; memory use exceeds the compressed download size. See [setup and verified CPU/GPU results](docs/phonon-2.md).
 - **Session foundations**: additive settings-v5 and history-v6 migrations preserve existing data, with independent session intents, mode and output contracts, and multiple shortcut bindings. Escape or the recording Cancel button discards the active session.
 - **🌊 Voice Activity Detection (VAD)**:
   - RMS energy detection drives the audio-level display and configurable silence auto-stop. Capture forwards all audio rather than discarding non-speech frames.
@@ -139,6 +140,8 @@ Python is the default and remains the fallback option. Install its pinned requir
 ```bash
 python -m pip install -r model-runtime/requirements.txt
 ```
+
+The requirements include the pinned Phonon runtime. Existing installations can add it with `python -m pip install -r model-runtime/requirements-phonon.txt`. Phonon-2 is an optional English model in the catalog; see its [integration guide](docs/phonon-2.md).
 
 For NVIDIA acceleration, install the matching torch wheel first. The tested Windows setup used torch 2.13.0+cu130 from the [official CUDA 13.0 wheel index](https://download.pytorch.org/whl/cu130/torch/):
 

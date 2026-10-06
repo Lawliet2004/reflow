@@ -41,6 +41,8 @@ _DOWNLOAD_HOSTS = frozenset((
     "huggingface.co", "github.com", "release-assets.githubusercontent.com",
     "objects.githubusercontent.com", "cdn-lfs.huggingface.co",
     "cdn-lfs-us-1.hf.co", "cdn-lfs-eu-1.hf.co", "cas-bridge.xethub.hf.co",
+    # Hugging Face weight redirects use these official CDN edges.
+    "us.aws.cdn.hf.co", "us.gcp.cdn.hf.co",
 ))
 
 
@@ -496,7 +498,23 @@ STATE = RuntimeState()
 
 
 def append_stream_audio(audio):
-    """Bound memory at ingress, retaining honest captured-duration metadata."""
+    """Bound memory at ingress, retaining honest captured-duration metadata.
+
+    The streaming Zipformer consumes each frame immediately instead of
+    retaining the whole recording: sherpa-onnx keeps the only state the
+    recognizer needs, and endpoint resets bound it over long sessions.
+    """
+    model = _MODEL
+    if getattr(model, "model_id", None) == "zipformer-20m":
+        with STATE.stream_lock:
+            if not STATE.stream_active:
+                return
+            STATE.stream_captured_bytes += len(audio)
+        try:
+            STATE.partial_text = model.accept_pcm16(audio)
+        except Exception as e:
+            log_err(f"Zipformer streaming decode failed: {e}")
+        return
     with STATE.stream_lock:
         if not STATE.stream_active:
             return
@@ -508,6 +526,12 @@ def append_stream_audio(audio):
 
 
 def clear_stream_audio():
+    model = _MODEL
+    if getattr(model, "model_id", None) == "zipformer-20m":
+        try:
+            model.cancel_stream()
+        except Exception:
+            pass
     with STATE.stream_lock:
         STATE.stream_active = False
         STATE.stream_audio = bytearray()
@@ -1274,6 +1298,10 @@ def load_model_blocking(
     precision: str = "auto",
     model_id=None,
 ):
+    if model_id == "phonon-2" or os.path.isfile(os.path.join(model_dir, "phonon-2.bps.tar.zst")):
+        return load_phonon_blocking(model_dir, requested_device, precision)
+    if model_id == "zipformer-20m" or os.path.isfile(os.path.join(model_dir, "tokens.txt")):
+        return load_zipformer_blocking(model_dir, requested_device, precision)
     global _MODEL
     t0 = time.time()
     STATE.loaded = False
@@ -1428,6 +1456,76 @@ def load_model_blocking(
         }
 
 
+def load_phonon_blocking(model_dir, requested_device, precision):
+    global _MODEL
+    started = time.time()
+    STATE.loaded = False
+    try:
+        from phonon_runtime import PhononModel
+        device = pick_device(requested_device)
+        wanted = (precision or "auto").lower()
+        if wanted not in ("auto", "int8", "fp32") or (device == "cuda" and wanted == "int8"):
+            raise ValueError("Phonon-2 uses optimized int8 on CPU and fp32 on CUDA. Choose Auto precision.")
+        _unload_model_blocking()
+        _MODEL = PhononModel(model_dir, device, _CANCEL_EVENT)
+        STATE.device = device
+        STATE.precision = _MODEL.precision
+        STATE.backend = f"Phonon-2 · {device.upper()} {_MODEL.precision} · {_MODEL.runtime}"
+        STATE.model_dir = model_dir
+        STATE.vram_mb = _torch().cuda.memory_reserved() / (1024 * 1024) if device == "cuda" else 0.0
+        STATE.loaded = True
+        STATE.load_error = None
+        STATE.load_failure_kind = None
+        STATE.spill = {"spilled": False, "reasons": [], "checked": False}
+        STATE.warmup_rtf = None
+        STATE.load_seconds = time.time() - started
+        log_err(f"Phonon-2 ready on {device} in {STATE.load_seconds:.1f}s")
+        return {"status": "ok", "loaded": True, "device": device, "backend": STATE.backend}
+    except (Exception, SystemExit) as error:
+        _unload_model_blocking()
+        STATE.load_error = str(error)
+        STATE.load_failure_kind = classify_load_failure(error)
+        STATE.backend = "load failed"
+        STATE.device = "none"
+        return {"status": "error", "error": str(error), "failure_kind": STATE.load_failure_kind}
+
+
+def load_zipformer_blocking(model_dir, requested_device, precision):
+    global _MODEL
+    started = time.time()
+    STATE.loaded = False
+    try:
+        from zipformer_runtime import ZipformerModel
+        wanted = (requested_device or "auto").strip().lower()
+        if wanted not in ("auto", "cpu"):
+            raise ValueError("Zipformer 20M is CPU-optimized; it does not use the GPU.")
+        wanted_precision = (precision or "auto").lower()
+        if wanted_precision not in ("auto", "int8"):
+            raise ValueError("Zipformer 20M ships int8 weights only. Choose Auto precision.")
+        _unload_model_blocking()
+        _MODEL = ZipformerModel(model_dir, "cpu", _CANCEL_EVENT)
+        STATE.device = "cpu"
+        STATE.precision = _MODEL.precision
+        STATE.backend = f"Zipformer 20M · CPU {_MODEL.precision} · {_MODEL.runtime}"
+        STATE.model_dir = model_dir
+        STATE.vram_mb = 0.0
+        STATE.loaded = True
+        STATE.load_error = None
+        STATE.load_failure_kind = None
+        STATE.spill = {"spilled": False, "reasons": [], "checked": False}
+        STATE.warmup_rtf = None
+        STATE.load_seconds = time.time() - started
+        log_err(f"Zipformer 20M ready on cpu in {STATE.load_seconds:.1f}s")
+        return {"status": "ok", "loaded": True, "device": "cpu", "backend": STATE.backend}
+    except (Exception, SystemExit) as error:
+        _unload_model_blocking()
+        STATE.load_error = str(error)
+        STATE.load_failure_kind = classify_load_failure(error)
+        STATE.backend = "load failed"
+        STATE.device = "none"
+        return {"status": "error", "error": str(error), "failure_kind": STATE.load_failure_kind}
+
+
 def looks_like_vocab_echo(text: str, prompt) -> bool:
     """True when the transcript is just the vocabulary prompt echoed back
     (Qwen3-ASR does this on silent/unclear audio)."""
@@ -1446,6 +1544,10 @@ def looks_like_vocab_echo(text: str, prompt) -> bool:
 
 
 def _model_label(model_dir: str, model_id=None) -> str:
+    if model_id == "phonon-2" or "phonon-2" in model_dir:
+        return "Phonon-2"
+    if model_id == "zipformer-20m" or "zipformer" in model_dir:
+        return "Zipformer 20M"
     if model_id is not None:
         return model_id.upper()
     return "1.7B" if "1.7" in model_dir else "0.6B"
@@ -1510,6 +1612,11 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
     if not stats["voiced"] or samples.size == 0:
         log_err("No voiced audio after preprocess; skipping inference")
         return "", ""
+
+    if getattr(model, "model_id", None) == "phonon-2":
+        if language_name not in (None, "", "English"):
+            raise ValueError("Phonon-2 supports English only. Choose Qwen3-ASR for other languages.")
+        return model.transcribe(samples), "en"
 
     # Pad to the utterance's own length ("longest"): encoder work stays
     # proportional to what was spoken. Shape buckets were tried and measured
@@ -1677,6 +1784,19 @@ def _warm_imports():
             AutoProcessor,
             TorchAoConfig,
         )
+        # The optional engine imports native libraries on this same main thread.
+        try:
+            from phonon_runtime import require_dependencies
+            require_dependencies()
+            from fermion._speech import engine_phonon2_cpu  # noqa: F401
+            from transformers import ParakeetForTDT, ParakeetTDTConfig  # noqa: F401
+        except (ImportError, RuntimeError):
+            pass
+        # sherpa-onnx loads onnxruntime's native libraries; same init hazard.
+        try:
+            import sherpa_onnx  # noqa: F401
+        except (ImportError, RuntimeError):
+            pass
         try:
             from torchao.quantization import (  # noqa: F401
                 Int4WeightOnlyConfig,
@@ -1748,7 +1868,14 @@ def verify_weight_files(model_dir: str, weight_files):
             raise ValueError(f"SHA-256 mismatch for {filename}: expected {weight['sha256']}, got {actual}; bad file deleted")
 
 
-def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None, revision=None, weight_files=None):
+def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None, revision=None, weight_files=None, device="auto"):
+    if model_id in ("phonon-2", "zipformer-20m"):
+        module = "phonon_runtime" if model_id == "phonon-2" else "zipformer_runtime"
+        try:
+            import importlib
+            importlib.import_module(module).require_dependencies()
+        except (ImportError, RuntimeError) as error:
+            return {"status": "error", "error": str(error)}
     try:
         require_network_online()
         install_network_guard()
@@ -1780,6 +1907,13 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
                     "*.jinja",
                     "*.safetensors",
                     "*.json",
+                    "phonon-2.bps.tar.zst",
+                    "NOTICE",
+                    "LICENSE-*",
+                    # Manifest-pinned names cover multi-file models whose weights
+                    # are not safetensors — e.g. Zipformer's int8 ONNX trio and
+                    # tokens.txt. Exact names, so the fp32 siblings stay remote.
+                    *(w["filename"] for w in weight_files),
                 ],
             )
             verify_weight_files(model_dir, weight_files)
@@ -1787,7 +1921,7 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
             log_err("Model download complete and verified")
             # auto-load right after install, honoring the precision the user
             # asked for when they kicked off the install.
-            start_load(model_dir, "auto", STATE.pending_precision, model_id, expected_bytes)
+            start_load(model_dir, device, STATE.pending_precision, model_id, expected_bytes)
         except Exception as e:
             STATE.is_downloading = False
             STATE.download_error = str(e)
@@ -1851,13 +1985,16 @@ def handle(msg: dict) -> dict:
         model_dir = msg.get("model_dir", "")
         device = msg.get("device", "auto")
         precision = msg.get("precision", "auto")
+        # Zipformer ships ONNX weights, not a HF config.json snapshot.
+        marker = "tokens.txt" if msg.get("model_id") == "zipformer-20m" else "config.json"
         if not os.path.isdir(model_dir) or not os.path.isfile(
-            os.path.join(model_dir, "config.json")
+            os.path.join(model_dir, marker)
         ):
             STATE.load_pending = False
             return {
                 "status": "error",
                 "error": "Model not installed. Open Settings → Model to download it.",
+                "failure_kind": "weights_missing",
             }
         return start_load(model_dir, device, precision, msg.get("model_id"), msg.get("expected_bytes"))
 
@@ -1869,7 +2006,7 @@ def handle(msg: dict) -> dict:
         # Stash the requested precision so the auto-load that follows a
         # successful install honors the user's choice.
         STATE.pending_precision = precision
-        return start_install(model_dir, repo, msg.get("model_id"), msg.get("expected_bytes"), msg.get("revision"), msg.get("weight_files"))
+        return start_install(model_dir, repo, msg.get("model_id"), msg.get("expected_bytes"), msg.get("revision"), msg.get("weight_files"), msg.get("device", "auto"))
 
     if cmd == "unload_model":
         _unload_model_blocking()
@@ -1878,8 +2015,15 @@ def handle(msg: dict) -> dict:
         STATE.backend = "not loaded"
         return {"status": "ok"}
 
+    if cmd == "get_partial":
+        # Fast lane for streaming engines. Buffered engines just report "".
+        return {"status": "ok", "text": STATE.partial_text}
+
     if cmd == "start_stream":
         lang = msg.get("language", "auto")
+        stream_model_id = getattr(_MODEL, "model_id", None)
+        if stream_model_id in ("phonon-2", "zipformer-20m") and lang not in ("auto", "en"):
+            return {"status": "error", "error": f"{_model_label('', stream_model_id)} supports English only. Choose Qwen3-ASR for other languages."}
         if lang != "auto" and lang not in LANG_NAMES:
             return {"status": "error", "error": "Unsupported dictation language. Choose a supported language or Auto-detect."}
         _CANCEL_EVENT.clear()
@@ -1895,6 +2039,11 @@ def handle(msg: dict) -> dict:
             STATE.vocabulary_prompt = None
         lang = msg.get("language", "auto")
         STATE.stream_language = LANG_NAMES.get(lang) if lang and lang != "auto" else None
+        if getattr(_MODEL, "model_id", None) == "zipformer-20m":
+            try:
+                _MODEL.start_stream()
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
         return {"status": "ok", "streaming": True}
 
     if cmd == "push_audio_b64":
@@ -1914,6 +2063,19 @@ def handle(msg: dict) -> dict:
             audio = bytes(STATE.stream_audio)
             captured_bytes = STATE.stream_captured_bytes
             STATE.stream_audio = bytearray()
+        if getattr(_MODEL, "model_id", None) == "zipformer-20m":
+            # Everything was already decoded incrementally; finish only drains
+            # the tail. No retained buffer, so the audio is never re-read here.
+            try:
+                text = _MODEL.finish_stream()
+                STATE.detected_language = "en"
+                log_err(f"final transcript ({len(text)} chars, lang=en)")
+                return {"status": "ok", "text": text, "language": "en"}
+            except Exception as e:
+                log_err(f"final transcription failed: {e}")
+                return {"status": "error", "error": str(e), "text": ""}
+            finally:
+                clear_stream_audio()
         if not audio:
             return {"status": "ok", "text": "", "language": ""}
         if not _wait_model_ready():
@@ -2425,7 +2587,19 @@ def _command_worker():
             resp = handle(msg)
         except Exception as e:
             resp = {"status": "error", "error": str(e)}
-        if not msg.pop("_ack_early", False):
+            if msg.get("cmd") == "load_model":
+                resp["failure_kind"] = classify_load_failure(e)
+        acked_early = msg.pop("_ack_early", False)
+        if acked_early and msg.get("cmd") == "load_model" and resp.get("status") == "error":
+            # The loading ack is already on stdout. Publish dispatch failures
+            # through status rather than losing them with the suppressed reply.
+            STATE.loaded = False
+            STATE.load_pending = False
+            STATE.device = "none"
+            STATE.backend = "load failed"
+            STATE.load_error = str(resp.get("error") or "Model load failed")
+            STATE.load_failure_kind = resp.get("failure_kind") or "unknown"
+        if not acked_early:
             # load_model was already acked by the main thread before the
             # import warmup; sending this reply too would duplicate it.
             _respond(msg, resp)
@@ -2488,7 +2662,7 @@ def main():
                 _CANCEL_EVENT.set()
                 clear_stream_audio()
                 _respond(msg, {"status": "ok"})
-            elif cmd in ("ping", "status"):
+            elif cmd in ("ping", "status", "get_partial"):
                 # Fast lane. These are read-only probes that touch no torch and
                 # no model state, so answering them here keeps them responsive
                 # even while `cmd-worker` is blocked in a transcription that

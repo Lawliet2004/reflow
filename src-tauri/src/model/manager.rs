@@ -40,9 +40,28 @@ pub const MODELS: &[ModelSpec] = &[
         label: "1.7B (native)",
         approx_bytes: 2_520_744_288,
     },
+    ModelSpec {
+        id: "phonon-2",
+        dir_name: "phonon-2",
+        repo: "FermionResearch/Phonon-2",
+        label: "Phonon-2 · Fast English",
+        approx_bytes: 163_515_201,
+    },
+    ModelSpec {
+        id: "zipformer-20m",
+        dir_name: "zipformer-20m",
+        repo: "csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+        label: "Zipformer 20M INT8",
+        approx_bytes: 43_649_301,
+    },
 ];
 
 pub fn runtime_model_id(model: &str, runtime: &str) -> String {
+    // Already a concrete dir id (native variant or bundled-runtime model):
+    // re-mapping would produce a nonexistent "native-native-*" id.
+    if matches!(model, "phonon-2" | "zipformer-20m") || model.starts_with("native-") {
+        return model.to_string();
+    }
     if runtime == "native" {
         format!("native-{model}")
     } else {
@@ -84,6 +103,21 @@ impl ModelManager {
     /// Weights are considered installed when a real HF model directory is there.
     pub fn is_installed(&self, id: &str) -> bool {
         let dir = self.get_model_dir(id);
+        if matches!(id, "phonon-2" | "zipformer-20m") {
+            // Manifest-pinned files only: every listed file must be present.
+            // Zipformer ships three ONNX files plus tokens.txt — checking only
+            // the encoder would pass on an interrupted multi-file download.
+            if let Some(manifest) =
+                crate::profile::manifest::asr_manifest(id).filter(|m| m.id == id)
+            {
+                return dir.join(manifest.filename).is_file()
+                    && manifest
+                        .auxiliary_files
+                        .iter()
+                        .all(|f| dir.join(f.filename).is_file());
+            }
+            return false;
+        }
         if let Some(manifest) =
             crate::profile::manifest::native_asr_manifest(id).filter(|m| m.id == id)
         {
@@ -148,6 +182,11 @@ impl ModelManager {
             asr_gpu_hint,
             asr_selection_notice: None,
         }
+    }
+
+    /// Bytes on disk for a model dir, complete or partial. 0 when absent.
+    pub fn size_on_disk(&self, id: &str) -> u64 {
+        Self::get_dir_size(&self.get_model_dir(id)).unwrap_or(0)
     }
 
     pub fn remove_model(&self, id: &str) -> Result<(), String> {
@@ -215,6 +254,17 @@ mod tests {
         assert!(status.is_loading);
         assert_eq!(status.name, "Qwen/Qwen3-ASR-1.7B-hf");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn runtime_qualified_ids_pass_through_unchanged() {
+        // Callers that pass a concrete dir id (e.g. delete-by-id from the
+        // downloaded-models list) must not get a double "native-" prefix.
+        assert_eq!(runtime_model_id("native-1.7b", "native"), "native-1.7b");
+        assert_eq!(runtime_model_id("native-1.7b", "python"), "native-1.7b");
+        assert_eq!(runtime_model_id("0.6b", "native"), "native-0.6b");
+        assert_eq!(runtime_model_id("0.6b", "python"), "0.6b");
+        assert_eq!(runtime_model_id("phonon-2", "native"), "phonon-2");
     }
 
     #[test]

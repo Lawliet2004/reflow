@@ -2,6 +2,7 @@ import { act, render, screen, fireEvent, waitFor, within } from "@testing-librar
 import { expect, it, vi } from "vitest";
 import { HistoryView } from "./HistoryView";
 import { api } from "../services/tauriApi";
+import * as bridge from "../services/tauriApi";
 import type { HistoryEntry } from "../types";
 
 function entry(): HistoryEntry {
@@ -25,6 +26,33 @@ function entry(): HistoryEntry {
     processing_mode: "raw",
   };
 }
+
+it("refreshes corrected history from another app without losing an open draft", async () => {
+  const listeners = new Map<string, (payload: HistoryEntry) => void>();
+  const unsubscribe = vi.fn();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    listeners.set(event, handler);
+    return unsubscribe;
+  });
+  const query = vi.spyOn(api, "queryHistory").mockResolvedValue({
+    entries: [entry()],
+    total: 1,
+    next_offset: null,
+    recovery_notice: null,
+  });
+  const { unmount } = render(<HistoryView />);
+  await screen.findByText("Keep this thought");
+  fireEvent.click(screen.getByRole("button", { name: "More options" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Edit transcript" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Edit transcript" }), {
+    target: { value: "My unsaved draft" },
+  });
+  await act(async () => listeners.get("history:updated")?.(entry()));
+  await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole("textbox", { name: "Edit transcript" })).toHaveValue("My unsaved draft");
+  unmount();
+  expect(unsubscribe).toHaveBeenCalled();
+});
 
 it("refreshes the current search when an earlier deletion finishes", async () => {
   const second = { ...entry(), id: "two", final_transcript: "Another thought" };
