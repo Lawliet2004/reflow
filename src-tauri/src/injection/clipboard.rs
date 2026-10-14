@@ -347,6 +347,7 @@ mod portable {
     /// treated as preservable-or-unsafe, never as empty.
     #[cfg(target_os = "macos")]
     fn pasteboard_is_empty() -> bool {
+        use objc::sel;
         unsafe {
             let pb: *mut objc::runtime::Object =
                 objc::msg_send![objc::class!(NSPasteboard), generalPasteboard];

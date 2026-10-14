@@ -171,8 +171,7 @@ impl AudioCaptureEngine {
         let system_node = pipewire_system_node(monitor_id.as_deref());
         #[cfg(not(target_os = "linux"))]
         let system_node: Option<String> = None;
-        let mut mic_cpal = None;
-        let mic_name = match &mic_pw {
+        let (mic_name, mic_cpal) = match &mic_pw {
             #[cfg(target_os = "linux")]
             Some((node, name)) => {
                 if node.ends_with(".monitor") {
@@ -181,7 +180,7 @@ impl AudioCaptureEngine {
                             .into(),
                     );
                 }
-                name.clone()
+                (name.clone(), None)
             }
             _ => {
                 let (mic, mic_name) =
@@ -193,8 +192,7 @@ impl AudioCaptureEngine {
                     );
                 }
                 let mic_config = mic.default_input_config().map_err(|e| e.to_string())?;
-                mic_cpal = Some((mic, mic_config));
-                mic_name
+                (mic_name, Some((mic, mic_config)))
             }
         };
         let mut system_cpal = None;

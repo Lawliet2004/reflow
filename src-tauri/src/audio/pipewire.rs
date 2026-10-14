@@ -305,7 +305,7 @@ fn default_source_unusable(json: &str, default: &str) -> bool {
     if default.ends_with(".monitor") {
         return true;
     }
-    pick_automatic(json, default).is_none() && pick_system_microphone(json, &default).is_none()
+    pick_automatic(json, default).is_none() && pick_system_microphone(json, default).is_none()
 }
 
 fn run_pactl(args: &[&str]) -> Option<String> {

@@ -230,6 +230,9 @@ pub struct Qwen3AsrSidecar {
     fallback_mock: MockASREngine,
     use_fallback: bool,
     resource_dir: Option<PathBuf>,
+    /// Test fixture: skips the real interpreter's module probe, which depends
+    /// on whichever Python the host happens to have installed.
+    skip_dep_check: bool,
     status_cache: EngineStatus,
     crash_timestamps: Vec<std::time::Instant>,
     circuit_breaker_tripped_until: Option<std::time::Instant>,
@@ -297,6 +300,7 @@ impl Qwen3AsrSidecar {
             fallback_mock: MockASREngine::new(),
             use_fallback: false,
             resource_dir: None,
+            skip_dep_check: false,
             status_cache: EngineStatus::default(),
             crash_timestamps: Vec::new(),
             circuit_breaker_tripped_until: None,
@@ -1094,10 +1098,12 @@ impl ASREngine for Qwen3AsrSidecar {
             self.status_cache.failure_kind = Some("python_missing".into());
             return Err(error);
         };
-        if let Err(error) = Self::check_startup_dependencies(&python, &script) {
-            self.fallback(&error);
-            self.status_cache.failure_kind = Some("missing_dependency".into());
-            return Err(error);
+        if !self.skip_dep_check {
+            if let Err(error) = Self::check_startup_dependencies(&python, &script) {
+                self.fallback(&error);
+                self.status_cache.failure_kind = Some("missing_dependency".into());
+                return Err(error);
+            }
         }
 
         log::info!("Spawning ASR sidecar: {} {}", python, script.display());
@@ -1513,6 +1519,13 @@ impl ASREngine for Qwen3AsrSidecar {
 }
 
 impl Qwen3AsrSidecar {
+    /// Test fixture hook: skips the real interpreter's module probe, whose
+    /// result depends on whichever Python the host happens to have installed.
+    #[cfg(test)]
+    pub(crate) fn set_skip_dep_check(&mut self, skip: bool) {
+        self.skip_dep_check = skip;
+    }
+
     /// Pull the live status line from the sidecar without blocking long:
     /// the status command is answered instantly by the Python process.
     fn refresh_status(&mut self) -> Result<(), String> {
@@ -1688,6 +1701,7 @@ for line in sys.stdin:
         .unwrap();
         let mut engine = Qwen3AsrSidecar::new();
         engine.set_resource_dir(root.clone());
+        engine.set_skip_dep_check(true);
         engine.initialize().unwrap();
         let first = engine.child.as_ref().unwrap().id();
         engine.load_model("fixture", "cpu").unwrap();

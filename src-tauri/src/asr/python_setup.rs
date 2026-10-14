@@ -528,10 +528,9 @@ fn resolved_torch_variant() -> TorchVariant {
 /// The actual install. `emit` receives (phase, progress_pct, detail, error)
 /// event fields; keeping it a closure means the worker is testable without a
 /// running Tauri app.
-pub(crate) fn run_setup_worker(
-    emit: &dyn Fn(&str, Option<u32>, Option<String>, Option<String>),
-    resource_dir: Option<&Path>,
-) -> Result<(), String> {
+type SetupEmit<'a> = &'a dyn Fn(&str, Option<u32>, Option<String>, Option<String>);
+
+pub(crate) fn run_setup_worker(emit: SetupEmit, resource_dir: Option<&Path>) -> Result<(), String> {
     crate::network_policy::check_download()?;
     cancelled()?;
 
@@ -789,7 +788,7 @@ enum DownloadMsg {
 }
 
 fn download_archive(
-    emit: &dyn Fn(&str, Option<u32>, Option<String>, Option<String>),
+    emit: SetupEmit,
     pin: &PythonBuildPin,
     partial: &Path,
     archive: &Path,
@@ -977,7 +976,7 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
 /// The child is parked in SETUP_CHILD so Cancel can kill it; stderr is
 /// drained on a thread so both pipes merge without deadlock.
 fn run_setup_command(
-    emit: &dyn Fn(&str, Option<u32>, Option<String>, Option<String>),
+    emit: SetupEmit,
     phase: &str,
     program: &Path,
     args: &[String],

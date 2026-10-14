@@ -112,6 +112,8 @@ struct DispatchCallbacks {
     press: HotkeyCallback,
     release: HotkeyCallback,
     toggle: HotkeyCallback,
+    // Read only by the Wayland portal path.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     cancel: HotkeyCallback,
 }
 

@@ -16,6 +16,9 @@ use crate::rewrite::FlowRuntime;
 use crate::settings::SettingsStore;
 use crate::state::{AppStateEnum, LatencyHistory, LatencyMetrics, LatencyTimer};
 
+/// `(selected_id, resolved_model_id, device, precision)`.
+pub type LastAsrLoad = (String, String, String, String);
+
 /// Apply startup privacy preferences only after establishing whether they came
 /// from a readable saved configuration. A fallback default is not consent to
 /// delete recordings, purge old dictations, or decrypt an existing database.
@@ -178,7 +181,7 @@ pub struct AppContext {
     /// `(selected_id, resolved_model_id, device, precision)` — the resolved
     /// target is only meaningful while the selection it was computed for is
     /// still current; callers must compare `selected_id` first.
-    pub last_asr_load: Arc<RwLock<Option<(String, String, String, String)>>>,
+    pub last_asr_load: Arc<RwLock<Option<LastAsrLoad>>>,
     /// The tray's status line, installed by lib.rs at startup so the model
     /// status watcher can retitle it without threading a MenuItem through
     /// every watcher call site.

@@ -42,6 +42,7 @@ for line in sys.stdin:
         .unwrap();
         let mut engine = Qwen3AsrSidecar::new();
         engine.set_resource_dir(root.clone());
+        engine.set_skip_dep_check(true);
         engine.initialize().unwrap();
         Some(Self { root, engine })
     }
