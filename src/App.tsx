@@ -558,9 +558,7 @@ export const App: React.FC = () => {
               role="alert"
               className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 text-sm text-warning bg-warning-soft"
             >
-              <p>
-                Dictation shortcut: {hotkeyError}
-              </p>
+              <p>Dictation shortcut: {hotkeyError}</p>
               <div className="flex items-center gap-2">
                 <button className="btn btn-ghost" onClick={() => openSettings("general")}>
                   Shortcut settings

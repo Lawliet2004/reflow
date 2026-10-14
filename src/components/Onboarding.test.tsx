@@ -153,9 +153,7 @@ it("shows the consent card instead of a raw error when a download is rejected as
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: "Download model" }));
-  expect(
-    await screen.findByRole("button", { name: "Allow downloads" }),
-  ).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Allow downloads" })).toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 

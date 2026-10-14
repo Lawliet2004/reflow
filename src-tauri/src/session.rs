@@ -549,10 +549,8 @@ async fn start_microphone_with_source_at(
     // pending switch must not transcribe on the old weights.
     if let Some(engine_id) = engine.model_id.as_deref() {
         let current = ctx.settings_store.get();
-        let active = crate::model::manager::runtime_model_id(
-            &current.asr.model,
-            &current.asr.runtime,
-        );
+        let active =
+            crate::model::manager::runtime_model_id(&current.asr.model, &current.asr.runtime);
         let resolved_for_current = ctx
             .last_asr_load
             .read()
@@ -1328,8 +1326,9 @@ async fn finish_stop(
             Duration::from_secs(30)
         };
         let ensure_result = match tokio::time::timeout(ensure_budget, ensure_task).await {
-            Ok(joined) => joined
-                .unwrap_or_else(|err| Err(format!("refinement runtime task failed: {err}"))),
+            Ok(joined) => {
+                joined.unwrap_or_else(|err| Err(format!("refinement runtime task failed: {err}")))
+            }
             Err(_) => {
                 log::info!("Refinement runtime still warming; using deterministic output");
                 Err("refinement runtime is still starting".into())

@@ -496,7 +496,9 @@ fn run_install_worker(
         sanitize_for_filename(&spec.asset_name)
     ));
 
-    let resume_bytes = std::fs::metadata(&temp_archive).map(|m| m.len()).unwrap_or(0);
+    let resume_bytes = std::fs::metadata(&temp_archive)
+        .map(|m| m.len())
+        .unwrap_or(0);
     crate::network_policy::check_disk_space(
         &download_dir,
         spec.approx_bytes.saturating_sub(resume_bytes),

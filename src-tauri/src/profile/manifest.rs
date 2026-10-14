@@ -503,9 +503,12 @@ pub fn recommended_asr_model(available_ram_mb: f32, free_vram_mb: f32) -> &'stat
         .find(|m| m.id == "1.7b")
         .expect("1.7b manifest is pinned");
     let fits_cpu = available_ram_mb > manifest.estimated_cpu_ram_mb() + 1024.0;
-    let fits_gpu =
-        free_vram_mb > manifest.estimated_vram_mb(Precision::Int8) + 384.0;
-    if fits_cpu || fits_gpu { "1.7b" } else { "0.6b" }
+    let fits_gpu = free_vram_mb > manifest.estimated_vram_mb(Precision::Int8) + 384.0;
+    if fits_cpu || fits_gpu {
+        "1.7b"
+    } else {
+        "0.6b"
+    }
 }
 
 pub fn asr_manifest(id: &str) -> Option<&'static ModelManifest> {
@@ -545,10 +548,7 @@ mod tests {
             "1.7b"
         );
         assert_eq!(
-            recommended_asr_model(
-                2048.0,
-                manifest.estimated_vram_mb(Precision::Int8) + 512.0,
-            ),
+            recommended_asr_model(2048.0, manifest.estimated_vram_mb(Precision::Int8) + 512.0,),
             "1.7b"
         );
         // A mid-range machine gets the small model.

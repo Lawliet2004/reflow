@@ -49,8 +49,7 @@ impl PlatformSys {
         // Same escape hatch as --portable, for tests and tooling that need
         // app data redirected to a scratch directory without a relocatable
         // executable.
-        if let Some(directory) =
-            std::env::var_os("REFLOW_APP_DIR").filter(|path| !path.is_empty())
+        if let Some(directory) = std::env::var_os("REFLOW_APP_DIR").filter(|path| !path.is_empty())
         {
             return PathBuf::from(directory);
         }

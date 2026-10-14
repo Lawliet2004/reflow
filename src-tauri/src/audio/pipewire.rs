@@ -233,9 +233,9 @@ fn with_automatic(mut devices: Vec<AudioDeviceInfo>) -> Vec<AudioDeviceInfo> {
 /// cannot connect — so discovery and resolution must fall back to cpal.
 /// Text form — the label is localized, so callers run pactl under LC_ALL=C.
 pub(crate) fn is_pipewire_server(pactl_info: &str) -> bool {
-    pactl_info.lines().any(|line| {
-        line.starts_with("Server Name:") && line.contains("PipeWire")
-    })
+    pactl_info
+        .lines()
+        .any(|line| line.starts_with("Server Name:") && line.contains("PipeWire"))
 }
 
 /// JSON form of the same check — `pactl -f json info` is locale-independent.
@@ -305,8 +305,7 @@ fn default_source_unusable(json: &str, default: &str) -> bool {
     if default.ends_with(".monitor") {
         return true;
     }
-    pick_automatic(json, default).is_none()
-        && pick_system_microphone(json, &default).is_none()
+    pick_automatic(json, default).is_none() && pick_system_microphone(json, &default).is_none()
 }
 
 fn run_pactl(args: &[&str]) -> Option<String> {
@@ -689,8 +688,7 @@ mod tests {
     #[test]
     fn monitor_only_default_reports_no_microphone_endpoint() {
         let json = r#"[{"name":"alsa_output.analog-stereo.monitor"}]"#;
-        let message =
-            no_microphone_message(json, "alsa_output.analog-stereo.monitor");
+        let message = no_microphone_message(json, "alsa_output.analog-stereo.monitor");
         assert!(message.contains("speaker monitor"), "got: {message}");
     }
 
@@ -710,9 +708,7 @@ Server Name: PulseAudio
         // The JSON `server_name` field is locale-independent — the preferred
         // probe path.
         assert_eq!(
-            server_name_json_is_pipewire(
-                r#"{"server_name":"PulseAudio (on PipeWire 1.6.2)"}"#
-            ),
+            server_name_json_is_pipewire(r#"{"server_name":"PulseAudio (on PipeWire 1.6.2)"}"#),
             Some(true)
         );
         assert_eq!(

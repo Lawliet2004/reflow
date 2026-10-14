@@ -185,9 +185,10 @@ impl ModelManager {
         // engine got labelled ready. Unknown id (older sidecar) is treated as
         // matching rather than assumed stale.
         let stale_engine = engine.loaded
-            && engine.model_id.as_deref().is_some_and(|loaded_id| {
-                loaded_id != active_id && resolved_id != Some(loaded_id)
-            });
+            && engine
+                .model_id
+                .as_deref()
+                .is_some_and(|loaded_id| loaded_id != active_id && resolved_id != Some(loaded_id));
         let (gpu_name, _) = crate::platform::PlatformSys::detect_gpu();
         let gpu_available = !gpu_name.is_empty() && gpu_name != "CPU";
         // Only surface the `pip install` hint when there's actually a GPU to
@@ -345,15 +346,17 @@ mod tests {
 
         // A sparse file at the manifest's expected bytes completes the install.
         let expected = crate::profile::asr_manifest("0.6b").unwrap().download_bytes;
-        fs::File::create(&weights).unwrap().set_len(expected).unwrap();
+        fs::File::create(&weights)
+            .unwrap()
+            .set_len(expected)
+            .unwrap();
         assert!(manager.is_installed("0.6b"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn a_loaded_engine_under_another_label_is_not_ready() {
-        let dir =
-            std::env::temp_dir().join(format!("reflow_model_stale_{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("reflow_model_stale_{}", uuid::Uuid::new_v4()));
         let manager = ModelManager::new(dir.clone());
         let engine = EngineStatus {
             loaded: true,
@@ -362,7 +365,10 @@ mod tests {
             ..Default::default()
         };
         let status = manager.get_status(&engine, "1.7b", None);
-        assert!(!status.loaded, "the resident 0.6B must not read as a ready 1.7B");
+        assert!(
+            !status.loaded,
+            "the resident 0.6B must not read as a ready 1.7B"
+        );
         assert!(!status.is_loading, "no reload is in flight");
         assert_eq!(status.version, "1.7B");
 
@@ -379,8 +385,7 @@ mod tests {
 
     #[test]
     fn a_resolver_downgrade_counts_as_loaded() {
-        let dir =
-            std::env::temp_dir().join(format!("reflow_model_down_{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("reflow_model_down_{}", uuid::Uuid::new_v4()));
         let manager = ModelManager::new(dir.clone());
         // Selected 1.7B, resolver downgraded to 0.6B, engine loaded 0.6B —
         // that is the resolved target, not staleness.

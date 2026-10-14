@@ -158,9 +158,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
         })
         .catch(() => {
           if (alive)
-            setError(
-              "Could not list microphones. Check your audio permissions and reopen setup.",
-            );
+            setError("Could not list microphones. Check your audio permissions and reopen setup.");
         });
     void refreshDevices();
     window.addEventListener("focus", refreshDevices);
@@ -384,11 +382,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 ))}
             </select>
             <div className="space-y-2">
-              <button
-                className="btn btn-secondary"
-                disabled={micTesting}
-                onClick={testMicrophone}
-              >
+              <button className="btn btn-secondary" disabled={micTesting} onClick={testMicrophone}>
                 {micTesting ? "Listening for 3 seconds…" : "Test microphone"}
               </button>
               {micTesting && (
@@ -494,8 +488,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               ) : (
                 <p className="text-xs text-muted">
                   Press your shortcut anywhere (try it in another app) — Reflow will confirm it
-                  heard you here. On Wayland the desktop may still be completing the shortcut
-                  setup.
+                  heard you here. On Wayland the desktop may still be completing the shortcut setup.
                 </p>
               )}
             </div>

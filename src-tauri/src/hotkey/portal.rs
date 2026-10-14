@@ -287,7 +287,8 @@ async fn serve_session(
         .receive_signal("Response")
         .await
         .map_err(|error| error.to_string())?;
-    let mut pending_create = crate::platform::portal_request::PendingRequest::new(connection, &response_path);
+    let mut pending_create =
+        crate::platform::portal_request::PendingRequest::new(connection, &response_path);
     let session_token = format!("reflow_session_{}", uuid::Uuid::new_v4().simple());
     let options = HashMap::from([
         ("handle_token", Value::from(token.as_str())),
@@ -357,7 +358,8 @@ async fn serve_session(
         .collect();
     let options = HashMap::from([("handle_token", Value::from(token.as_str()))]);
     let bind_request = (&session, shortcuts, "", options);
-    let mut pending_bind = crate::platform::portal_request::PendingRequest::new(connection, &response_path);
+    let mut pending_bind =
+        crate::platform::portal_request::PendingRequest::new(connection, &response_path);
     let _: OwnedObjectPath = tokio::select! {
         biased;
         _ = closed.next() => return Err(closed_session_error()),
@@ -446,7 +448,9 @@ async fn serve_session(
         if let Some(binding) = bindings.iter().find(|binding| binding.action == action) {
             let at = Instant::now();
             let push_to_talk = app.state::<AppContext>().settings_store.get().push_to_talk;
-            log::debug!("Wayland shortcut action={action} pressed={pressed} generation={generation}");
+            log::debug!(
+                "Wayland shortcut action={action} pressed={pressed} generation={generation}"
+            );
             dispatch_event(binding, pressed, push_to_talk, &mut held, at);
         }
     }

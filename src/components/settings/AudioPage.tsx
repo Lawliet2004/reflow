@@ -82,7 +82,11 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
             .map((d) => (
               <option key={d.id} value={d.id} disabled={d.is_available === false}>
                 {d.name}
-                {d.is_available === false ? " (unplugged)" : d.is_default ? " · System default" : ""}
+                {d.is_available === false
+                  ? " (unplugged)"
+                  : d.is_default
+                    ? " · System default"
+                    : ""}
               </option>
             ))}
         </select>
@@ -101,9 +105,7 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
           return <p className="text-sm text-muted">Currently using: {activeMic}</p>;
         const selected = devices.find((d) => d.id === settings.microphone_device_id);
         const fallback = !selected || selected.name !== activeMic;
-        return fallback ? (
-          <p className="text-sm text-muted">Currently using: {activeMic}</p>
-        ) : null;
+        return fallback ? <p className="text-sm text-muted">Currently using: {activeMic}</p> : null;
       })()}
       <button className="btn btn-ghost" disabled={loadingDevices} onClick={refreshDevices}>
         {loadingDevices ? "Refreshing microphones…" : "Refresh microphones"}

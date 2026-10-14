@@ -157,11 +157,9 @@ pub fn run() {
                 // initialize the sidecar first. The reply is awaited
                 // off-thread only for logging, keeping setup non-blocking.
                 let (init_tx, init_rx) = std::sync::mpsc::channel();
-                if let Err(err) = asr_handle.try_send_command(
-                    crate::asr::AsrCommand::Initialize {
-                        reply: crate::asr::actor::Reply::Sync(init_tx),
-                    },
-                ) {
+                if let Err(err) = asr_handle.try_send_command(crate::asr::AsrCommand::Initialize {
+                    reply: crate::asr::actor::Reply::Sync(init_tx),
+                }) {
                     log::warn!("Could not queue ASR initialization: {err}");
                 } else {
                     tauri::async_runtime::spawn_blocking(move || match init_rx.recv() {

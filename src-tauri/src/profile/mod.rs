@@ -9,8 +9,8 @@ pub mod measurements;
 pub mod resolver;
 
 pub use manifest::{
-    all_manifests, asr_manifest, recommended_asr_model, refinement_manifest, Device,
-    MeasuredPeaks, ModelManifest, Precision, RuntimeKind, ASR_MODELS, REFINEMENT_MODELS,
+    all_manifests, asr_manifest, recommended_asr_model, refinement_manifest, Device, MeasuredPeaks,
+    ModelManifest, Precision, RuntimeKind, ASR_MODELS, REFINEMENT_MODELS,
 };
 pub use resolver::{
     build_attempts, no_measurements, resolve_profile, select_asr_load, select_asr_load_for_runtime,

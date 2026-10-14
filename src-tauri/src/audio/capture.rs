@@ -372,9 +372,9 @@ impl AudioCaptureEngine {
                     // PipeWire node must report the real cause instead of
                     // recording the wrong device.
                     Err(error) if error == pipewire::MISSING_TOOL => {
-                        let explicit = device_id
-                            .as_deref()
-                            .is_some_and(|id| id.starts_with(pipewire::ID_PREFIX) && id != pipewire::AUTO_ID);
+                        let explicit = device_id.as_deref().is_some_and(|id| {
+                            id.starts_with(pipewire::ID_PREFIX) && id != pipewire::AUTO_ID
+                        });
                         if explicit {
                             return Err(error);
                         }
@@ -711,9 +711,6 @@ mod tests {
         assert!(is_virtual_alsa_pcm("dsnoop:0,0"));
         assert!(score_input_device_name("hw:0,0") < 0);
         assert!(score_input_device_name("plughw:CARD=PCH,DEV=0") < 0);
-        assert!(
-            score_input_device_name("USB Microphone")
-                > score_input_device_name("hw:0,0")
-        );
+        assert!(score_input_device_name("USB Microphone") > score_input_device_name("hw:0,0"));
     }
 }

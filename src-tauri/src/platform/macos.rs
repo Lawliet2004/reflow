@@ -24,11 +24,8 @@ impl PlatformAdapter for MacOsAdapter {
             Direction::{Click, Press, Release},
             Enigo, Key, Keyboard,
         };
-        let mut enigo =
-            Enigo::new(&enigo::Settings::default()).map_err(|e| e.to_string())?;
-        enigo
-            .key(Key::Meta, Press)
-            .map_err(|e| e.to_string())?;
+        let mut enigo = Enigo::new(&enigo::Settings::default()).map_err(|e| e.to_string())?;
+        enigo.key(Key::Meta, Press).map_err(|e| e.to_string())?;
         let paste = enigo
             .key(Key::Unicode('v'), Click)
             .map_err(|e| e.to_string());

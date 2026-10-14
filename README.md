@@ -236,14 +236,14 @@ audio-input.
 
 Repository secrets required for signed builds:
 
-| Secret                        | Contents |
-| ----------------------------- | -------- |
-| `APPLE_CERTIFICATE`           | Base64 of the exported Developer ID `.p12`: `openssl base64 -A -in DeveloperID.p12` |
-| `APPLE_CERTIFICATE_PASSWORD`  | Password chosen when exporting the `.p12` |
-| `APPLE_SIGNING_IDENTITY`      | Full identity string, e.g. `Developer ID Application: Name (TEAMID)` — required whenever `APPLE_CERTIFICATE` is set; the job fails fast if missing |
-| `APPLE_ID`                    | Apple ID email used for notarization |
-| `APPLE_PASSWORD`              | App-specific password for that Apple ID (appleid.apple.com → Sign-In and Security → App-Specific Passwords) |
-| `APPLE_TEAM_ID`               | 10-character team ID from the Apple Developer membership page |
+| Secret                       | Contents                                                                                                                                           |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APPLE_CERTIFICATE`          | Base64 of the exported Developer ID `.p12`: `openssl base64 -A -in DeveloperID.p12`                                                                |
+| `APPLE_CERTIFICATE_PASSWORD` | Password chosen when exporting the `.p12`                                                                                                          |
+| `APPLE_SIGNING_IDENTITY`     | Full identity string, e.g. `Developer ID Application: Name (TEAMID)` — required whenever `APPLE_CERTIFICATE` is set; the job fails fast if missing |
+| `APPLE_ID`                   | Apple ID email used for notarization                                                                                                               |
+| `APPLE_PASSWORD`             | App-specific password for that Apple ID (appleid.apple.com → Sign-In and Security → App-Specific Passwords)                                        |
+| `APPLE_TEAM_ID`              | 10-character team ID from the Apple Developer membership page                                                                                      |
 
 `tauri-action` imports the certificate into a per-run keychain
 (`KEYCHAIN_PASSWORD` is generated in the workflow), the bundler signs with

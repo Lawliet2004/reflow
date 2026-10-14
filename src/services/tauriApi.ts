@@ -489,8 +489,7 @@ export const api = {
 
   getCapabilities: () =>
     safeInvoke<Capabilities>("get_capabilities", undefined, emptyCapabilities()),
-  recommendedAsrModel: () =>
-    safeInvoke<string>("recommended_asr_model", undefined, "0.6b"),
+  recommendedAsrModel: () => safeInvoke<string>("recommended_asr_model", undefined, "0.6b"),
 
   /**
    * Force a fresh hardware probe. Call this before showing a load decision;

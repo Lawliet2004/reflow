@@ -32,10 +32,7 @@ it("offers one-click setup when no usable interpreter exists", async () => {
   const { settings, save } = await props({ python_available: false });
   const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
   render(
-    <PythonRuntimeSetup
-      settings={{ ...settings, offline_mode: false }}
-      onUpdateSettings={save}
-    />,
+    <PythonRuntimeSetup settings={{ ...settings, offline_mode: false }} onUpdateSettings={save} />,
   );
   const button = await screen.findByRole("button", { name: /Set up speech runtime/ });
   fireEvent.click(button);
@@ -46,10 +43,7 @@ it("asks for download consent when airplane mode is on", async () => {
   const { settings, save } = await props({ python_available: false });
   const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
   render(
-    <PythonRuntimeSetup
-      settings={{ ...settings, offline_mode: true }}
-      onUpdateSettings={save}
-    />,
+    <PythonRuntimeSetup settings={{ ...settings, offline_mode: true }} onUpdateSettings={save} />,
   );
   const allow = await screen.findByRole("button", { name: "Allow downloads" });
   fireEvent.click(allow);
@@ -102,9 +96,7 @@ it("reports the configured interpreter instead of offering setup", async () => {
     />,
   );
   expect(await screen.findByText(/Using your own Python/)).toBeInTheDocument();
-  expect(
-    screen.queryByRole("button", { name: /Set up speech runtime/ }),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Set up speech runtime/ })).not.toBeInTheDocument();
 });
 
 it("shows the installed receipt and offers removal", async () => {
@@ -117,7 +109,7 @@ it("shows the installed receipt and offers removal", async () => {
       created_at: "2026-10-14T00:00:00Z",
     },
     python_available: true,
-  torch_variant: "cpu",
+    torch_variant: "cpu",
     size_bytes: 2_600_000_000,
   });
   render(

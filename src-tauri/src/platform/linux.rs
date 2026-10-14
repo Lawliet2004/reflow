@@ -252,7 +252,9 @@ fn xdotool_paste(shift: bool) -> Result<(), String> {
 
 fn wtype_paste(shift: bool) -> Result<(), String> {
     let args: &[&str] = if shift {
-        &["-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"]
+        &[
+            "-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl",
+        ]
     } else {
         &["-M", "ctrl", "v", "-m", "ctrl"]
     };

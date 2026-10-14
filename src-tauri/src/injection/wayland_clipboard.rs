@@ -103,9 +103,7 @@ pub(super) fn supported() -> bool {
         match offered() {
             // The compositor answered: empty/unknown selections still prove
             // the data-control protocol is present.
-            Ok(_)
-            | Err(paste::Error::ClipboardEmpty)
-            | Err(paste::Error::NoMimeType) => true,
+            Ok(_) | Err(paste::Error::ClipboardEmpty) | Err(paste::Error::NoMimeType) => true,
             // MissingProtocol/NoSeats/Io: native Wayland clipboard is not
             // usable — arboard's backend (possibly X11) takes over.
             Err(_) => false,

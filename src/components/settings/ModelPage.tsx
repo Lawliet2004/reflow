@@ -344,10 +344,7 @@ export const ModelPage: React.FC<Props> = ({
     try {
       await api.installModel(settings.asr.model);
     } catch (error) {
-      intelligence.notifyToast(
-        "error",
-        `Could not download the speech model: ${String(error)}`,
-      );
+      intelligence.notifyToast("error", `Could not download the speech model: ${String(error)}`);
       console.error("Speech model install failed:", error);
     } finally {
       setInstallingModel(null);

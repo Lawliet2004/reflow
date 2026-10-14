@@ -117,8 +117,7 @@ struct DispatchCallbacks {
 
 fn hotkey_dispatcher(app: AppHandle, action: String) -> DispatchCallbacks {
     // One queue per binding preserves press/release order across slow ASR admission.
-    let (tx, mut rx) =
-        tokio::sync::mpsc::unbounded_channel::<(HotkeyEvent, Instant, u64)>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(HotkeyEvent, Instant, u64)>();
     let guard = Arc::new(crate::hotkey::dispatch_guard::DispatchGuard::default());
     let worker_guard = Arc::clone(&guard);
     let cancel_ctx = app.state::<AppContext>().inner().clone();
@@ -252,11 +251,14 @@ pub(crate) fn arm_session_cancel(app: &AppHandle) {
         return;
     };
     let cancel = global_cancel_callback(app);
-    if let Err(error) = app.global_shortcut().on_shortcut(shortcut, move |_, _, event| {
-        if event.state() == ShortcutState::Pressed {
-            cancel(Instant::now());
-        }
-    }) {
+    if let Err(error) = app
+        .global_shortcut()
+        .on_shortcut(shortcut, move |_, _, event| {
+            if event.state() == ShortcutState::Pressed {
+                cancel(Instant::now());
+            }
+        })
+    {
         log::warn!("Could not arm the session cancel shortcut: {error}");
     }
 }
@@ -301,9 +303,7 @@ fn apply_hotkeys(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
     shortcuts.unregister_all().map_err(|e| e.to_string())?;
     crate::hotkey::hook::clear_combo();
     crate::hotkey::hook::set_cancel(None);
-    *app.state::<AppContext>()
-        .session_cancel_shortcut
-        .write() = None;
+    *app.state::<AppContext>().session_cancel_shortcut.write() = None;
     #[cfg(target_os = "linux")]
     {
         crate::hotkey::portal::clear();
@@ -353,9 +353,8 @@ fn apply_hotkeys(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
                 // Escape armed only for the duration of a recording — see
                 // arm_session_cancel. A session already in progress arms it
                 // immediately.
-                *app.state::<AppContext>()
-                    .session_cancel_shortcut
-                    .write() = Some(binding.shortcut.clone());
+                *app.state::<AppContext>().session_cancel_shortcut.write() =
+                    Some(binding.shortcut.clone());
                 #[cfg(not(windows))]
                 if *app.state::<AppContext>().state_enum.read()
                     == crate::state::AppStateEnum::Recording
@@ -555,10 +554,8 @@ pub fn update_settings(
     // Rebinding unregister-and-registers every global shortcut — doing it
     // for a change that did not touch any binding (mode instructions, labels,
     // trigger wording) strands an active recording for no reason.
-    let bindings_changed = crate::hotkey::registry::HotkeyRegistry::from_settings(&previous)
-        .ok()
-        != crate::hotkey::registry::HotkeyRegistry::from_settings(&updated)
-            .ok();
+    let bindings_changed = crate::hotkey::registry::HotkeyRegistry::from_settings(&previous).ok()
+        != crate::hotkey::registry::HotkeyRegistry::from_settings(&updated).ok();
     if bindings_changed {
         // A session owns the current grab set — rebinding under it drops the
         // cancel/swallow bindings mid-recording. Defer to session end.
@@ -569,65 +566,69 @@ pub fn update_settings(
             ctx.pending_hotkey_rebind
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         } else {
-        match register_dictation_hotkey(&app, &updated.hotkey) {
-            Ok(()) => {}
-            Err(err) => {
-                // A broken shortcut must not persist, and neither can the
-                // rest of the patch: fields merged earlier have their
-                // side-effects applied below this point, so a partial revert
-                // would leave the store ahead of the running state. Restore
-                // the full previous snapshot and re-run the cheap
-                // side-effectors so they match it again.
-                match ctx.settings_store.update(previous.clone()) {
-                    Ok(reverted) => {
-                        if reverted.history_encryption != updated.history_encryption {
-                            if let Err(error) =
-                                ctx.history_store.set_encryption(reverted.history_encryption)
-                            {
-                                log::error!("Could not restore history encryption: {error}");
+            match register_dictation_hotkey(&app, &updated.hotkey) {
+                Ok(()) => {}
+                Err(err) => {
+                    // A broken shortcut must not persist, and neither can the
+                    // rest of the patch: fields merged earlier have their
+                    // side-effects applied below this point, so a partial revert
+                    // would leave the store ahead of the running state. Restore
+                    // the full previous snapshot and re-run the cheap
+                    // side-effectors so they match it again.
+                    match ctx.settings_store.update(previous.clone()) {
+                        Ok(reverted) => {
+                            if reverted.history_encryption != updated.history_encryption {
+                                if let Err(error) = ctx
+                                    .history_store
+                                    .set_encryption(reverted.history_encryption)
+                                {
+                                    log::error!("Could not restore history encryption: {error}");
+                                }
                             }
-                        }
-                        ctx.history_store
-                            .require_encryption(reverted.history_encryption);
-                        if let Err(error) = crate::network_policy::configure(
-                            reverted.offline_mode,
-                            &PlatformSys::get_app_dir(),
-                        ) {
-                            log::error!("Could not restore the network policy: {error}");
-                        }
-                        if reverted.audio_retention != updated.audio_retention {
-                            if let Err(error) =
-                                ctx.history_store.set_audio_retention(&reverted.audio_retention)
-                            {
-                                log::error!("Could not restore audio retention: {error}");
+                            ctx.history_store
+                                .require_encryption(reverted.history_encryption);
+                            if let Err(error) = crate::network_policy::configure(
+                                reverted.offline_mode,
+                                &PlatformSys::get_app_dir(),
+                            ) {
+                                log::error!("Could not restore the network policy: {error}");
                             }
-                        }
-                        if reverted.asr.runtime != updated.asr.runtime {
-                            if let Err(error) = prepare_asr_runtime(ctx.inner(), &app) {
-                                log::error!("Could not restore the speech runtime: {error}");
+                            if reverted.audio_retention != updated.audio_retention {
+                                if let Err(error) = ctx
+                                    .history_store
+                                    .set_audio_retention(&reverted.audio_retention)
+                                {
+                                    log::error!("Could not restore audio retention: {error}");
+                                }
                             }
-                        } else if reverted.asr.python_path != updated.asr.python_path {
-                            if let Err(error) = ctx.asr_handle.unload_model_blocking() {
-                                log::error!("Could not restore the speech model state: {error}");
+                            if reverted.asr.runtime != updated.asr.runtime {
+                                if let Err(error) = prepare_asr_runtime(ctx.inner(), &app) {
+                                    log::error!("Could not restore the speech runtime: {error}");
+                                }
+                            } else if reverted.asr.python_path != updated.asr.python_path {
+                                if let Err(error) = ctx.asr_handle.unload_model_blocking() {
+                                    log::error!(
+                                        "Could not restore the speech model state: {error}"
+                                    );
+                                }
                             }
+                            // The inner rollback only restores the dictation
+                            // binding; re-register from the reverted settings so
+                            // every action's previous binding is live again.
+                            if let Err(rollback) = apply_hotkeys(&app, &previous.hotkey) {
+                                log::error!("Could not restore the previous hotkeys: {rollback}");
+                            }
+                            let _ = app.emit("settings:changed", &reverted);
                         }
-                        // The inner rollback only restores the dictation
-                        // binding; re-register from the reverted settings so
-                        // every action's previous binding is live again.
-                        if let Err(rollback) = apply_hotkeys(&app, &previous.hotkey) {
-                            log::error!("Could not restore the previous hotkeys: {rollback}");
+                        Err(rollback) => {
+                            log::error!("Could not roll back settings: {rollback}");
                         }
-                        let _ = app.emit("settings:changed", &reverted);
                     }
-                    Err(rollback) => {
-                        log::error!("Could not roll back settings: {rollback}");
-                    }
-                }
-                return Err(format!(
+                    return Err(format!(
                     "Could not register the shortcut: {err}. The previous settings were restored."
                 ));
+                }
             }
-        }
         }
     }
 
@@ -1085,10 +1086,7 @@ pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), St
     // The runtime-qualified selection this resolution answers for — recorded
     // beside the result so a stale resolution can never bless the engine's
     // model as current under a new selection.
-    let selected_key = crate::model::manager::runtime_model_id(
-        &requested,
-        &settings.asr.runtime,
-    );
+    let selected_key = crate::model::manager::runtime_model_id(&requested, &settings.asr.runtime);
     let manager = ctx.model_manager.clone();
     let installed = move |id: &str| manager.is_installed(id);
     let caps = crate::capability::capabilities_uncached();
@@ -1439,10 +1437,8 @@ pub(crate) fn rebind_hotkeys_if_pending(app: &AppHandle) {
 /// the latest selection always wins.
 fn schedule_asr_reload(app: &AppHandle, ctx: &AppContext) {
     let settings = ctx.settings_store.get();
-    let active = crate::model::manager::runtime_model_id(
-        &settings.asr.model,
-        &settings.asr.runtime,
-    );
+    let active =
+        crate::model::manager::runtime_model_id(&settings.asr.model, &settings.asr.runtime);
     if !ctx.model_manager.is_installed(&active) {
         return;
     }
@@ -1467,10 +1463,8 @@ fn pending_reload_is_actionable(ctx: &AppContext) -> bool {
         return false;
     }
     let settings = ctx.settings_store.get();
-    let active = crate::model::manager::runtime_model_id(
-        &settings.asr.model,
-        &settings.asr.runtime,
-    );
+    let active =
+        crate::model::manager::runtime_model_id(&settings.asr.model, &settings.asr.runtime);
     if !ctx.model_manager.is_installed(&active) {
         ctx.pending_asr_reload
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1756,11 +1750,10 @@ pub(crate) fn tray_status_label(status: &ModelStatus) -> String {
 pub async fn recommended_asr_model() -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let caps = crate::capability::capabilities();
-        Ok(crate::profile::recommended_asr_model(
-            caps.ram.available_mb,
-            caps.free_vram_mb(),
+        Ok(
+            crate::profile::recommended_asr_model(caps.ram.available_mb, caps.free_vram_mb())
+                .to_string(),
         )
-        .to_string())
     })
     .await
     .map_err(|error| format!("Could not probe hardware capabilities: {error}"))?
@@ -2468,23 +2461,20 @@ pub fn install_intelligence_model(
 
         let started = Instant::now();
         let mut last_emit = Instant::now();
-        let mut response = match crate::rewrite::runtime_install::send_with_retry(
-            &client,
-            &url,
-            resume_from,
-        ) {
-            Ok(r) => r,
-            Err(err) => {
-                emit_error(
-                    &app_handle,
-                    &tier_label,
-                    pct_from(resume_from, spec.approx_bytes),
-                    err.to_string(),
-                );
-                clear_active(&ctx_for_thread, &tier_label);
-                return;
-            }
-        };
+        let mut response =
+            match crate::rewrite::runtime_install::send_with_retry(&client, &url, resume_from) {
+                Ok(r) => r,
+                Err(err) => {
+                    emit_error(
+                        &app_handle,
+                        &tier_label,
+                        pct_from(resume_from, spec.approx_bytes),
+                        err.to_string(),
+                    );
+                    clear_active(&ctx_for_thread, &tier_label);
+                    return;
+                }
+            };
         let status = response.status();
         // If the server doesn't honor Range, it replies 200 and we restart from zero.
         let already_have: u64 = if status == reqwest::StatusCode::PARTIAL_CONTENT {

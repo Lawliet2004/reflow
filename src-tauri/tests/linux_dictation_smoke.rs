@@ -19,9 +19,10 @@ fn child_count() -> usize {
         .flatten()
         .filter(|entry| {
             std::fs::read_to_string(entry.path().join("status")).is_ok_and(|status| {
-                status
-                    .lines()
-                    .any(|line| line.strip_prefix("PPid:").is_some_and(|pid| pid.trim() == parent))
+                status.lines().any(|line| {
+                    line.strip_prefix("PPid:")
+                        .is_some_and(|pid| pid.trim() == parent)
+                })
             })
         })
         .count()

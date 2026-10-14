@@ -25,9 +25,7 @@
         "shadow": true,
         "transparent": true,
         "windowEffects": {
-          "effects": [
-            "mica"
-          ]
+          "effects": ["mica"]
         }
       },
       {
@@ -99,11 +97,7 @@
           "libgtk-layer-shell0",
           "xdg-utils"
         ],
-        "recommends": [
-          "xdg-desktop-portal",
-          "pipewire-bin",
-          "pulseaudio-utils"
-        ],
+        "recommends": ["xdg-desktop-portal", "pipewire-bin", "pulseaudio-utils"],
         "desktopTemplate": "../linux/reflow.desktop",
         "files": {
           "/usr/share/metainfo/com.reflow.app.metainfo.xml": "../linux/com.reflow.app.metainfo.xml"
@@ -113,9 +107,7 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": [
-          "English"
-        ]
+        "languages": ["English"]
       },
       "wix": {
         "language": "en-US"

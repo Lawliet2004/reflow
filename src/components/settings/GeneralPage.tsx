@@ -161,9 +161,7 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
                   <Toggle
                     on={settings.hotkeys?.cancel !== null}
                     ariaLabel="Enable global cancel"
-                    onChange={(enabled) =>
-                      updateHotkeys({ cancel: enabled ? "Escape" : null })
-                    }
+                    onChange={(enabled) => updateHotkeys({ cancel: enabled ? "Escape" : null })}
                   />
                 </div>
               </Row>

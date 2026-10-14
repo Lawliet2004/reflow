@@ -154,9 +154,7 @@ pub(crate) fn torch_variant(target: &str, nvidia_present: bool) -> TorchVariant 
     match target {
         "x86_64-apple-darwin" => TorchVariant::None_,
         _ if target.contains("apple-darwin") => TorchVariant::Pypi,
-        _ if nvidia_present
-            && (target.contains("linux") || target.contains("windows")) =>
-        {
+        _ if nvidia_present && (target.contains("linux") || target.contains("windows")) => {
             TorchVariant::Cuda
         }
         _ => TorchVariant::Cpu,
@@ -371,10 +369,7 @@ pub fn get_python_runtime_status(ctx: State<'_, AppContext>) -> PythonRuntimeSta
 }
 
 #[tauri::command]
-pub fn setup_python_runtime(
-    app: AppHandle,
-    ctx: State<'_, AppContext>,
-) -> Result<(), String> {
+pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
     if SETUP_ACTIVE.swap(true, Ordering::SeqCst) {
         return Err("Speech runtime setup is already in progress.".to_string());
     }
@@ -505,8 +500,7 @@ pub fn remove_python_runtime(ctx: State<'_, AppContext>) -> Result<u64, String> 
         return Err("Finish the current dictation before removing the speech runtime.".into());
     }
     let app_dir = PlatformSys::get_app_dir();
-    let freed =
-        dir_size(&app_dir.join(RUNTIME_DIR_NAME)) + dir_size(&app_dir.join(BASE_DIR_NAME));
+    let freed = dir_size(&app_dir.join(RUNTIME_DIR_NAME)) + dir_size(&app_dir.join(BASE_DIR_NAME));
     // Stop the sidecar first: unload kills the child process and waits for
     // it to exit — on Windows the interpreter's exes/DLLs are locked while
     // the process lives, so deleting first would fail or half-delete.
@@ -522,9 +516,7 @@ pub fn remove_python_runtime(ctx: State<'_, AppContext>) -> Result<u64, String> 
 /// shared with `runtime_status` so the UI can describe the right package set.
 /// `REFLOW_TORCH_VARIANT` forces the wheel flavor (testing, debugging).
 fn resolved_torch_variant() -> TorchVariant {
-    let nvidia = crate::capability::capabilities()
-        .cuda
-        .nvidia_gpu_present;
+    let nvidia = crate::capability::capabilities().cuda.nvidia_gpu_present;
     match std::env::var("REFLOW_TORCH_VARIANT").as_deref() {
         Ok("cu130") => TorchVariant::Cuda,
         Ok("cpu") => TorchVariant::Cpu,
@@ -595,9 +587,11 @@ pub(crate) fn run_setup_worker(
     // python-runtime alone.
     remove_managed_dir(&runtime_dir)?;
     SETUP_CLAIMED_RUNTIME.store(true, Ordering::SeqCst);
-    let base_python = base_dir
-        .join("python")
-        .join(if cfg!(windows) { "python.exe" } else { "bin/python3" });
+    let base_python = base_dir.join("python").join(if cfg!(windows) {
+        "python.exe"
+    } else {
+        "bin/python3"
+    });
     run_setup_command(
         emit,
         "creating_env",
@@ -618,13 +612,11 @@ pub(crate) fn run_setup_worker(
 
     // Stage 4: torch from the platform index so NVIDIA machines get CUDA
     // wheels and everyone else gets the far smaller CPU build.
-    let requirements = crate::asr::sidecar::Qwen3AsrSidecar::find_runtime_script(
-        resource_dir,
-    )
-    .map(|script| script.with_file_name("requirements.txt"))
-    .filter(|path| path.exists());
-    let requirements = requirements
-        .ok_or("Could not locate the bundled model-runtime/requirements.txt")?;
+    let requirements = crate::asr::sidecar::Qwen3AsrSidecar::find_runtime_script(resource_dir)
+        .map(|script| script.with_file_name("requirements.txt"))
+        .filter(|path| path.exists());
+    let requirements =
+        requirements.ok_or("Could not locate the bundled model-runtime/requirements.txt")?;
     let requirements_text = std::fs::read_to_string(&requirements)
         .map_err(|e| format!("Could not read requirements.txt: {e}"))?;
     if variant != TorchVariant::None_ {
@@ -658,8 +650,9 @@ pub(crate) fn run_setup_worker(
     if variant == TorchVariant::None_ {
         let zipformer_reqs = requirements.with_file_name("requirements-zipformer.txt");
         if !zipformer_reqs.exists() {
-            return Err("Could not locate the bundled model-runtime/requirements-zipformer.txt"
-                .into());
+            return Err(
+                "Could not locate the bundled model-runtime/requirements-zipformer.txt".into(),
+            );
         }
         // Downloads import httpx + huggingface_hub even on the torch-free
         // path — install them pinned when requirements.txt names a version.
@@ -831,25 +824,26 @@ fn download_archive(
         let client = match reqwest::blocking::ClientBuilder::from(async_client).build() {
             Ok(client) => client,
             Err(error) => {
-                let _ = msg_tx.send(DownloadMsg::Failed(format!("HTTP client init failed: {error}")));
+                let _ = msg_tx.send(DownloadMsg::Failed(format!(
+                    "HTTP client init failed: {error}"
+                )));
                 return;
             }
         };
-        let mut response = match crate::rewrite::runtime_install::send_with_retry(
-            &client,
-            &url,
-            resume_from,
-        ) {
-            Ok(response) => response,
-            Err(error) => {
-                let _ = msg_tx.send(DownloadMsg::Failed(error));
-                return;
-            }
-        };
+        let mut response =
+            match crate::rewrite::runtime_install::send_with_retry(&client, &url, resume_from) {
+                Ok(response) => response,
+                Err(error) => {
+                    let _ = msg_tx.send(DownloadMsg::Failed(error));
+                    return;
+                }
+            };
         let status = response.status();
         let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT;
         if !resumed && !status.is_success() {
-            let _ = msg_tx.send(DownloadMsg::Failed(format!("Download failed: HTTP {status}")));
+            let _ = msg_tx.send(DownloadMsg::Failed(format!(
+                "Download failed: HTTP {status}"
+            )));
             return;
         }
         let already_have = if resumed { resume_from } else { 0 };
@@ -874,7 +868,10 @@ fn download_archive(
                     return;
                 }
                 Ok(n) => {
-                    if msg_tx.send(DownloadMsg::Chunk(buffer[..n].to_vec())).is_err() {
+                    if msg_tx
+                        .send(DownloadMsg::Chunk(buffer[..n].to_vec()))
+                        .is_err()
+                    {
                         return; // receiver dropped: cancelled
                     }
                 }
@@ -953,8 +950,7 @@ fn download_archive(
     if archive.exists() {
         let _ = std::fs::remove_file(archive);
     }
-    std::fs::rename(partial, archive)
-        .map_err(|e| format!("Could not finalize download: {e}"))?;
+    std::fs::rename(partial, archive).map_err(|e| format!("Could not finalize download: {e}"))?;
     Ok(())
 }
 
@@ -966,9 +962,11 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     let mut tar = tar::Archive::new(gz);
     tar.unpack(dest)
         .map_err(|e| format!("Extract Python archive: {e}"))?;
-    let interpreter = dest
-        .join("python")
-        .join(if cfg!(windows) { "python.exe" } else { "bin/python3" });
+    let interpreter = dest.join("python").join(if cfg!(windows) {
+        "python.exe"
+    } else {
+        "bin/python3"
+    });
     if !interpreter.exists() {
         return Err("Python archive did not contain an interpreter".into());
     }
@@ -1065,8 +1063,7 @@ fn run_setup_command(
                 kill_setup_tree(child);
             }
             return Err(
-                "Downloads were turned off mid-setup (airplane mode). Setup cancelled."
-                    .into(),
+                "Downloads were turned off mid-setup (airplane mode). Setup cancelled.".into(),
             );
         }
     }
@@ -1084,11 +1081,7 @@ fn run_setup_command(
         .map_err(|e| format!("Could not wait for {}: {e}", program.display()))?;
     cancelled()?;
     if !status.success() {
-        return Err(format!(
-            "{} exited with {}",
-            program.display(),
-            status
-        ));
+        return Err(format!("{} exited with {}", program.display(), status));
     }
     Ok(())
 }
@@ -1161,7 +1154,8 @@ mod tests {
 
     #[test]
     fn torch_version_reads_the_pin_and_ignores_torchao() {
-        let requirements = "# speech\ntorch==2.13.0\ntransformers==5.15.1\ntorchao==0.18.0\nnumpy==2.4.4\n";
+        let requirements =
+            "# speech\ntorch==2.13.0\ntransformers==5.15.1\ntorchao==0.18.0\nnumpy==2.4.4\n";
         assert_eq!(torch_version(requirements).as_deref(), Some("2.13.0"));
         assert_eq!(torch_version("numpy==2.4.4\ntorchao==0.18.0\n"), None);
         assert_eq!(torch_version("torch == 2.13.0\n"), None);
@@ -1177,7 +1171,11 @@ mod tests {
 
         assert!(managed_child_dir(&app_dir, &app_dir.join("python-runtime")).is_ok());
         assert!(managed_child_dir(&app_dir, &outside).is_err());
-        assert!(managed_child_dir(&app_dir, &app_dir.join("..").join("outside").canonicalize().unwrap()).is_err());
+        assert!(managed_child_dir(
+            &app_dir,
+            &app_dir.join("..").join("outside").canonicalize().unwrap()
+        )
+        .is_err());
 
         // A symlink inside app_dir pointing outside must not be deletable.
         #[cfg(unix)]
@@ -1222,15 +1220,10 @@ mod tests {
         fn download_extract_venv_and_pip_smoke() {
             let app_dir = scratch_app_dir();
             let emits = std::sync::Mutex::new(Vec::<(String, Option<u32>)>::new());
-            let emit = |phase: &str,
-                        pct: Option<u32>,
-                        _detail: Option<String>,
-                        _err: Option<String>| {
-                emits
-                    .lock()
-                    .unwrap()
-                    .push((phase.to_string(), pct));
-            };
+            let emit =
+                |phase: &str, pct: Option<u32>, _detail: Option<String>, _err: Option<String>| {
+                    emits.lock().unwrap().push((phase.to_string(), pct));
+                };
             let pin = pin_for(target_triple()).expect("linux pin");
             let cache = PlatformSys::get_cache_dir();
             std::fs::create_dir_all(&cache).unwrap();
@@ -1260,8 +1253,7 @@ mod tests {
             )
             .expect("venv creation");
             let venv_python = venv.join("bin/python");
-            let version =
-                pip_probe(&venv_python, &["--version"]).expect("python --version");
+            let version = pip_probe(&venv_python, &["--version"]).expect("python --version");
             assert!(version.contains("3.12"), "unexpected version: {version}");
             let pip = pip_probe(&venv_python, &["-m", "pip", "--version"]);
             assert!(pip.is_some(), "venv pip missing");
@@ -1277,12 +1269,10 @@ mod tests {
             // Keep the run CPU-sized regardless of the test machine's GPU.
             std::env::set_var("REFLOW_TORCH_VARIANT", "cpu");
             let emits = std::sync::Mutex::new(Vec::<String>::new());
-            let emit = |phase: &str,
-                        _pct: Option<u32>,
-                        _detail: Option<String>,
-                        _err: Option<String>| {
-                emits.lock().unwrap().push(phase.to_string());
-            };
+            let emit =
+                |phase: &str, _pct: Option<u32>, _detail: Option<String>, _err: Option<String>| {
+                    emits.lock().unwrap().push(phase.to_string());
+                };
             run_setup_worker(&emit, None).expect("full setup");
             let runtime = app_dir.join(RUNTIME_DIR_NAME);
             assert!(runtime.join("bin/python").exists());

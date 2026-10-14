@@ -1,11 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Download, Loader2, Trash2 } from "lucide-react";
-import {
-  AppSettings,
-  ModelStatus,
-  PythonRuntimeStatus,
-  PythonSetupProgress,
-} from "../types";
+import { AppSettings, ModelStatus, PythonRuntimeStatus, PythonSetupProgress } from "../types";
 import { api, safeListen } from "../services/tauriApi";
 
 const IN_FLIGHT = new Set([
@@ -74,7 +69,11 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
     safeListen<PythonSetupProgress>("python-runtime:setup-progress", (payload) => {
       if (!alive) return;
       setProgress(payload);
-      if (payload.phase === "complete" || payload.phase === "error" || payload.phase === "cancelled") {
+      if (
+        payload.phase === "complete" ||
+        payload.phase === "error" ||
+        payload.phase === "cancelled"
+      ) {
         refresh();
       }
     })
@@ -125,7 +124,10 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
     }
   };
 
-  if (status.overridden && (failureKind === "python_missing" || failureKind === "missing_dependency")) {
+  if (
+    status.overridden &&
+    (failureKind === "python_missing" || failureKind === "missing_dependency")
+  ) {
     return (
       <div className="rounded-xl border border-line bg-base-2 px-3 py-2.5">
         <p className="text-xs text-muted leading-snug">
@@ -133,8 +135,8 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
           {settings.asr.python_path
             ? ` at ${settings.asr.python_path}`
             : " (REFLOW_PYTHON or a saved interpreter path)"}
-          . Managed setup is skipped while an interpreter is configured — clear it in Model
-          settings to use the managed runtime.
+          . Managed setup is skipped while an interpreter is configured — clear it in Model settings
+          to use the managed runtime.
         </p>
       </div>
     );
