@@ -239,16 +239,7 @@ impl FlowClient {
         std::thread::spawn(move || {
             let _ = tx.send(run_chat_completion(url, body, timeout, &generation));
         });
-        let result = rx
-            .recv_timeout(timeout)
-            .map_err(|_| "Local task timed out".to_string())
-            .and_then(|result| result);
-        if result.is_ok() {
-            self.breaker.record_success();
-        } else {
-            self.breaker.record_failure();
-        }
-        result
+        self.wait_for_completion(rx, timeout, "Local task timed out")
     }
 
     /// Blocking HTTP POST `{url}/v1/chat/completions` using the OpenAI schema.
@@ -346,9 +337,19 @@ impl FlowClient {
             let _ = tx.send(result);
         });
 
+        self.wait_for_completion(rx, timeout, "flow rewrite timed out")
+    }
+
+    fn wait_for_completion(
+        &self,
+        rx: std::sync::mpsc::Receiver<Result<String, String>>,
+        timeout: Duration,
+        timeout_error: &str,
+    ) -> Result<String, String> {
         let outcome = rx
             .recv_timeout(timeout)
-            .map_err(|_| "flow rewrite timed out".to_string())?;
+            .map_err(|_| timeout_error.to_string())
+            .and_then(|outcome| outcome);
 
         match outcome {
             Ok(res) => {
@@ -1562,6 +1563,32 @@ mod tests {
         breaker.reset();
         assert!(!breaker.is_open());
         assert_eq!(breaker.failure_count(), 0);
+    }
+
+    #[test]
+    fn stalled_generation_trips_the_shared_breaker_and_a_late_reply_cannot_reset_it() {
+        let client = FlowClient::new_url("http://127.0.0.1:9".into(), Duration::from_secs(1));
+        let mut workers = Vec::new();
+        for _ in 0..3 {
+            let (tx, rx) = std::sync::mpsc::channel();
+            workers.push(tx);
+            assert_eq!(
+                client.wait_for_completion(rx, Duration::from_millis(5), "timed out"),
+                Err("timed out".into())
+            );
+        }
+        assert_eq!(client.breaker.failure_count(), 3);
+        assert!(client.breaker.is_open());
+        for worker in workers {
+            assert!(worker.send(Ok("late rewrite".into())).is_err());
+        }
+        assert!(client.breaker.is_open());
+        let started = Instant::now();
+        assert!(client
+            .rewrite(&sample_req("medium", "normal", "hello today"))
+            .unwrap_err()
+            .contains("circuit breaker"));
+        assert!(started.elapsed() < Duration::from_millis(100));
     }
 
     #[test]

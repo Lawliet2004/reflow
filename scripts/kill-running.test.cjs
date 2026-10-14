@@ -74,6 +74,63 @@ test("a changed process identity cannot receive a shutdown signal", () => {
   assert.deepEqual(signals, []);
 });
 
+test("Linux recognizes a replaced owned binary without matching similarly named files", () => {
+  const root = path.resolve(__dirname, "..");
+  const executable = path.join(root, "src-tauri", "target", "debug", "reflow");
+  const selected = selectOwnedProcesses(
+    [
+      { pid: 21, executable: `${executable} (deleted)` },
+      { pid: 22, executable: `${executable}.backup (deleted)` },
+      { pid: 23, executable: path.join(root, "other-checkout", "reflow (deleted)") },
+    ],
+    root,
+    "linux",
+    99,
+  );
+  assert.deepEqual(
+    selected.map(({ pid }) => pid),
+    [21],
+  );
+  assert.deepEqual(
+    selectOwnedProcesses([{ pid: 21, executable: `${executable} (deleted)` }], root, "darwin", 99),
+    [],
+  );
+});
+
+test("a replaced Linux binary can stop only after its PID still belongs to this checkout", () => {
+  const root = path.resolve(__dirname, "..");
+  const executable = path.join(root, "src-tauri", "target", "debug", "reflow");
+  const signals = [];
+  assert.equal(
+    stopOwnedInstances({
+      root,
+      platform: "linux",
+      inventory: () => [{ pid: 77, executable: `${executable} (deleted)` }],
+      terminate: (pid) => signals.push(pid),
+    }),
+    1,
+  );
+  assert.deepEqual(signals, [77]);
+
+  signals.length = 0;
+  let samples = 0;
+  assert.equal(
+    stopOwnedInstances({
+      root,
+      platform: "linux",
+      inventory: () => [
+        {
+          pid: 77,
+          executable: samples++ === 0 ? `${executable} (deleted)` : "/usr/bin/unrelated (deleted)",
+        },
+      ],
+      terminate: (pid) => signals.push(pid),
+    }),
+    0,
+  );
+  assert.deepEqual(signals, []);
+});
+
 test("shutdown signals only a still-owned PID and tolerates already-exited processes", () => {
   const root = path.resolve(__dirname, "..");
   const inventory = () => [

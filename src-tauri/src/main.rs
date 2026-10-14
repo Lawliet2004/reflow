@@ -29,10 +29,13 @@ fn main() {
                 let settings =
                     reflow_lib::settings::SettingsStore::new(PlatformSys::get_config_path()).get();
                 let target = reflow_lib::platform::foreground_hwnd();
-                match reflow_lib::injection::TextInjector::inject(
+                match reflow_lib::injection::TextInjector::inject_with_shortcut(
                     text,
                     settings.clipboard_restore_enabled,
                     target,
+                    settings.paste_delay_ms,
+                    &settings.inject_method,
+                    &settings.paste_shortcut,
                 ) {
                     Ok(outcome) => {
                         // The injector restores asynchronously after the paste chord.

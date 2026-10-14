@@ -17,6 +17,29 @@ const UNRELATED_SHOP_REWRITE: &str =
     "Once you need three things:\n\n• The mobile\n• The power bank\n• The earbuds";
 
 #[test]
+fn quoted_hesitations_and_commands_survive_ai_cleanup() {
+    for (source, safe, unsafe_rewrite) in [
+        (
+            "say \"um, hello\" exactly",
+            "Say \"um, hello\" exactly.",
+            "Say \"hello\" exactly.",
+        ),
+        ("print `um` here", "Print `um` here.", "Print `` here."),
+        (
+            "say ‘no wait’ exactly",
+            "Say 'no wait' exactly.",
+            "Say 'wait' exactly.",
+        ),
+    ] {
+        assert_eq!(
+            accept_rewrite(source, safe, "medium").as_deref(),
+            Some(safe)
+        );
+        assert!(accept_rewrite(source, unsafe_rewrite, "medium").is_none());
+    }
+}
+
+#[test]
 fn rejects_user_reported_quantity_hallucination() {
     assert!(
         accept_rewrite(SPOKEN_LIST, BAD_LIST_REWRITE, "medium").is_none(),

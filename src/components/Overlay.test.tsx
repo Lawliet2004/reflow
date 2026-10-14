@@ -101,6 +101,7 @@ describe("Overlay", () => {
     expect(screen.getByRole("status")).toHaveAttribute("data-style", "waveform");
     expect(screen.getByText("Listening")).toHaveClass("sr-only");
     const quietHeight = container.querySelector<HTMLElement>(".capsule-wave-bar")!.style.height;
+    const wave = container.querySelector(".capsule-wave");
     rerender(
       <Overlay
         appState="RECORDING"
@@ -130,7 +131,8 @@ describe("Overlay", () => {
     );
     expect(screen.getByText("Done")).toHaveClass("sr-only");
     expect(container.querySelector(".capsule-check")).not.toBeNull();
-    expect(container.querySelector(".capsule-wave")).toBeNull();
+    // Keep the same bars mounted so completion can crossfade without a blank frame.
+    expect(container.querySelector(".capsule-wave")).toBe(wave);
     expect(screen.queryByText("Private transcript")).not.toBeInTheDocument();
   });
 

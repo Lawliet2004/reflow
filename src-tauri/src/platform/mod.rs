@@ -1,11 +1,28 @@
 mod adapter;
+pub mod desktop;
+#[cfg(target_os = "linux")]
+pub(crate) mod kde_shortcuts;
 mod keys;
+#[cfg(target_os = "linux")]
+pub(crate) mod portal_request;
+#[cfg(target_os = "linux")]
+pub(crate) mod process;
+#[cfg(target_os = "linux")]
+pub(crate) mod suspend;
 pub use crate::injection::injector::capture_selection;
 pub use keys::{send_key, simulate_copy, type_text};
 pub mod sys;
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux_desktop;
+#[cfg(target_os = "linux")]
+pub mod linux_input_portal;
+#[cfg(target_os = "linux")]
+pub use linux_input_portal::{
+    configure as configure_input_portal, request_access as start_input_portal,
+};
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
@@ -53,6 +70,13 @@ pub fn active_window() -> (String, String) {
 
 pub fn simulate_paste(process: &str) -> Result<(), String> {
     CurrentAdapter::simulate_paste(process)
+}
+
+pub fn simulate_paste_configured(process: &str, shortcut: &str) -> Result<(), String> {
+    if shortcut == "auto" {
+        return simulate_paste(process);
+    }
+    keys::paste_chord(shortcut)
 }
 
 pub fn foreground_hwnd() -> isize {

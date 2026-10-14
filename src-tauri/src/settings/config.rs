@@ -10,6 +10,9 @@ fn default_hud_contrast() -> String {
 fn default_paste_delay_ms() -> u64 {
     30
 }
+fn default_paste_shortcut() -> String {
+    "auto".into()
+}
 fn default_inject_method() -> String {
     "paste".into()
 }
@@ -53,6 +56,9 @@ pub struct ApplicationProfile {
 pub struct AsrSettings {
     #[serde(default = "default_asr_runtime")]
     pub runtime: String,
+    /// Optional persistent interpreter for launches outside an activated shell.
+    #[serde(default)]
+    pub python_path: Option<String>,
     /// Manifest id, e.g. `"0.6b"`.
     #[serde(default = "default_asr_model")]
     pub model: String,
@@ -71,6 +77,7 @@ impl Default for AsrSettings {
     fn default() -> Self {
         Self {
             runtime: default_asr_runtime(),
+            python_path: None,
             model: default_asr_model(),
             device: default_device_auto(),
             precision: default_asr_precision(),
@@ -516,6 +523,8 @@ pub struct AppSettings {
     pub paste_delay_ms: u64,
     #[serde(default = "default_inject_method")]
     pub inject_method: String,
+    #[serde(default = "default_paste_shortcut")]
+    pub paste_shortcut: String,
     #[serde(default)]
     pub append_space: bool,
     #[serde(default = "default_true")]
@@ -620,6 +629,10 @@ pub struct AppSettings {
     pub reduce_motion: bool,
     #[serde(default = "default_ui_font_scale")]
     pub ui_font_scale: String,
+    /// Whole-window zoom, percent (`100` = the text-size preset unscaled).
+    /// Stepped by Ctrl+= / Ctrl+- / Ctrl+scroll; clamped `80..=160`.
+    #[serde(default = "default_ui_zoom")]
+    pub ui_zoom: u16,
     /// `#rrggbb`, used when `accent_color` is `"custom"`.
     #[serde(default = "default_accent_custom")]
     pub accent_custom: String,
@@ -687,6 +700,10 @@ fn default_reduce_motion() -> bool {
 
 fn default_ui_font_scale() -> String {
     "normal".into()
+}
+
+fn default_ui_zoom() -> u16 {
+    100
 }
 
 fn default_accent_custom() -> String {
@@ -802,6 +819,7 @@ impl Default for AppSettings {
             hud_contrast: "standard".into(),
             paste_delay_ms: 30,
             inject_method: "paste".into(),
+            paste_shortcut: "auto".into(),
             append_space: false,
             capitalize_first: true,
             meeting_mode: false,
@@ -824,8 +842,14 @@ impl Default for AppSettings {
             // Fresh installs start with natural cleanup. Field-level serde
             // defaults retain the legacy light behavior for saved documents.
             cleanup_level: "medium".into(),
-            intelligence_tier: default_intelligence_tier(),
-            last_polish_tier: default_intelligence_tier(),
+            // A fresh install is deterministic-only until the user picks an
+            // LLM tier: `raw_verbatim` keeps `run_llm` false while the clamped
+            // "light" cleanup still applies basic deterministic cleanup.
+            // `default_intelligence_tier` (the serde fill for saved documents
+            // missing the field) stays "smart_flow" so existing installs are
+            // not silently demoted.
+            intelligence_tier: "raw_verbatim".into(),
+            last_polish_tier: "raw_verbatim".into(),
             flow_model: default_flow_model(),
             style: "faithful".into(),
             auto_style_from_app: false,
@@ -845,6 +869,7 @@ impl Default for AppSettings {
             waveform_style: default_waveform_style(),
             reduce_motion: default_reduce_motion(),
             ui_font_scale: default_ui_font_scale(),
+            ui_zoom: default_ui_zoom(),
             accent_custom: default_accent_custom(),
             surface_tone: default_surface_tone(),
             reading_font: default_serif(),
@@ -1093,6 +1118,12 @@ impl AppSettings {
     /// [`Self::resolve_intent`] would compute, and stamp the current schema
     /// version. Idempotent.
     pub fn normalized(mut self) -> Self {
+        self.asr.python_path = self
+            .asr
+            .python_path
+            .take()
+            .map(|path| path.trim().to_owned())
+            .filter(|path| !path.is_empty());
         if crate::history::db::audio_retention_ms(&self.audio_retention).is_err() {
             self.audio_retention = default_audio_retention();
         }
@@ -1133,6 +1164,10 @@ impl AppSettings {
             self.refinement.gpu_layers = 0;
         }
 
+        // A hand-edited document could otherwise zoom the window illegibly
+        // small or large. The frontend writes only stepped values in range.
+        self.ui_zoom = self.ui_zoom.clamp(80, 160);
+
         self.settings_version = CURRENT_SETTINGS_VERSION;
         self
     }
@@ -1149,6 +1184,54 @@ pub struct SettingsStore {
     loaded_from_disk: bool,
     recovery_notice: RwLock<Option<String>>,
     write_block_reason: Option<String>,
+}
+
+/// Modifier-only shortcuts rely on a Windows keyboard hook. A settings file
+/// copied to another OS must not disable every dictation shortcut at startup.
+/// Repair only persisted bindings; normal settings updates still validate what
+/// the user requests rather than silently substituting another shortcut.
+fn repair_platform_hotkeys(settings: &mut AppSettings) -> Option<String> {
+    if cfg!(windows) {
+        return None;
+    }
+    let unsupported = |shortcut: &str| {
+        crate::hotkey::HotkeyManager::modifier_only_flags(
+            &crate::hotkey::HotkeyManager::normalize_shortcut(shortcut),
+        )
+        .is_some()
+    };
+    let mut changes = Vec::new();
+    if unsupported(&settings.hotkeys.dictation) || unsupported(&settings.hotkey) {
+        let previous = settings.hotkeys.dictation.clone();
+        settings.hotkey = crate::platform::default_hotkey().into();
+        settings.hotkeys.dictation = settings.hotkey.clone();
+        changes.push(format!("dictation {previous} → {}", settings.hotkey));
+    }
+    for (shortcut, action) in [
+        (&mut settings.hotkeys.command, "command"),
+        (&mut settings.hotkeys.assistant, "assistant"),
+        (&mut settings.hotkeys.note, "note"),
+    ] {
+        if shortcut.as_deref().is_some_and(unsupported) {
+            *shortcut = None;
+            changes.push(format!("{action} shortcut disabled"));
+        }
+    }
+    for mode in &mut settings.modes {
+        if mode.hotkey.as_deref().is_some_and(unsupported) {
+            mode.hotkey = None;
+            changes.push(format!("{} mode shortcut disabled", mode.name));
+        }
+    }
+    if changes.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Windows modifier-only shortcuts were adjusted for {}: {}. Review shortcuts in Settings → General.",
+            std::env::consts::OS,
+            changes.join("; ")
+        ))
+    }
 }
 
 impl SettingsStore {
@@ -1202,7 +1285,14 @@ impl SettingsStore {
             AppSettings::default()
         };
 
-        let normalized = loaded.normalized();
+        let mut normalized = loaded.normalized();
+        let repaired_hotkeys = loaded_from_disk
+            && repair_platform_hotkeys(&mut normalized)
+                .map(|notice| {
+                    log::warn!("{notice}");
+                    recovery_notice = Some(notice);
+                })
+                .is_some();
         if migrating {
             log::info!(
                 "Migrated settings to schema v{CURRENT_SETTINGS_VERSION}: tier={} cleanup={} run_llm={}",
@@ -1219,7 +1309,7 @@ impl SettingsStore {
             recovery_notice: RwLock::new(recovery_notice),
             write_block_reason,
         };
-        if migrating {
+        if migrating || repaired_hotkeys {
             // Persist the migration so the next launch is a no-op.
             if let Err(err) = store.write_to_disk(&normalized) {
                 log::warn!("Could not persist migrated settings: {err}");
@@ -1473,7 +1563,9 @@ mod tests {
         let settings = AppSettings::default();
         assert!(!settings.developer_mode);
         assert_eq!(settings.cleanup_level, "medium");
-        assert_eq!(settings.intelligence_tier, "smart_flow");
+        // Fresh installs are deterministic-only; the LLM tiers are opt-in.
+        assert_eq!(settings.intelligence_tier, "raw_verbatim");
+        assert!(!settings.resolve_intent().run_llm);
         assert_eq!(settings.flow_model, "qwen3.5-0.8b");
         assert_eq!(settings.style, "faithful");
         assert!(!settings.auto_style_from_app);
@@ -1487,6 +1579,7 @@ mod tests {
     fn raw_cleanup_suppresses_the_llm_but_light_does_not() {
         let raw = AppSettings {
             cleanup_level: "raw".into(),
+            intelligence_tier: "smart_flow".into(),
             ..AppSettings::default()
         };
         let intent = raw.resolve_intent();
@@ -1501,6 +1594,7 @@ mod tests {
         // block refinement. This was the original bug.
         let light = AppSettings {
             cleanup_level: "light".into(),
+            intelligence_tier: "smart_flow".into(),
             ..AppSettings::default()
         };
         assert!(light.resolve_intent().run_llm);

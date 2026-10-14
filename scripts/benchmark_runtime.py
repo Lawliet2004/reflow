@@ -5,8 +5,10 @@ The corpus uses the same language/audio/reference schema as --benchmark.
 ASR timings include final decoding, not model loading or microphone duration.
 LLM measurements are isolated, with ASR unloaded, and are diagnostic only.
 """
+import argparse
 import base64
 import json
+import math
 import os
 import pathlib
 import queue
@@ -15,12 +17,12 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import unicodedata
 import urllib.request
 import wave
-import math
-import unicodedata
 
 def error_rates(reference, hypothesis):
     def normalized(text):
@@ -56,23 +58,48 @@ def select_candidate(rows):
     return min((row for row in admitted if error(row) <= best + .005), key=lambda row: row['median_ms'])
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-APP = pathlib.Path(os.environ.get("APPDATA", pathlib.Path.home())) / "reflow"
+def app_directory(platform=sys.platform, environment=None, home=None):
+    environment = os.environ if environment is None else environment
+    home = pathlib.Path.home() if home is None else pathlib.Path(home)
+    if environment.get("REFLOW_DATA_DIR"):
+        return pathlib.Path(environment["REFLOW_DATA_DIR"])
+    if platform == "win32":
+        return pathlib.Path(environment.get("APPDATA", home / "AppData" / "Roaming")) / "reflow"
+    if platform == "darwin":
+        return home / "Library" / "Application Support" / "reflow"
+    return pathlib.Path(environment.get("XDG_DATA_HOME", home / ".local" / "share")) / "reflow"
+
+APP = app_directory()
 
 
-def wer(reference, hypothesis):
-    a, b = [re.findall(r"\w+", s.casefold()) for s in (reference, hypothesis)]
-    row = list(range(len(b) + 1))
-    for i, word in enumerate(a, 1):
-        next_row = [i]
-        for j, other in enumerate(b, 1):
-            next_row.append(min(next_row[-1] + 1, row[j] + 1, row[j - 1] + (word != other)))
-        row = next_row
-    return row[-1] / max(1, len(a))
+def llama_binary(app=APP, platform=sys.platform):
+    if os.environ.get("REFLOW_LLAMA_BIN"):
+        return pathlib.Path(os.environ["REFLOW_LLAMA_BIN"])
+    executable = "llama-server.exe" if platform == "win32" else "llama-server"
+    directory = app / "bin"
+    pointer = directory / "runtime-active.json"
+    if pointer.is_file():
+        current = json.loads(pointer.read_text(encoding="utf-8"))["current"]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", current) or current in (".", ".."):
+            raise ValueError("Invalid runtime inventory identifier")
+        manifest_path = directory / "runtimes" / current / "runtime-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        binary = pathlib.Path(manifest["binary"])
+        if binary.is_absolute() or ".." in binary.parts:
+            raise ValueError("Invalid runtime inventory binary")
+        return (directory if current == "legacy" else manifest_path.parent) / binary
+    return directory / executable
+
+
+def benchmark_log(prefix):
+    log_dir = APP / "logs" / "benchmarks"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return tempfile.NamedTemporaryFile(mode="w", prefix=prefix, suffix=".log", dir=log_dir, encoding="utf-8", delete=False)
 
 
 class Sidecar:
     def __init__(self):
-        self.log = open(ROOT / "docs" / "audit-calibration-sidecar.log", "w", encoding="utf-8")
+        self.log = benchmark_log("sidecar-")
         self.proc = subprocess.Popen([sys.executable, str(ROOT / "model-runtime" / "qwen3_asr_runtime.py")],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
             text=True, encoding="utf-8", bufsize=1)
@@ -105,21 +132,25 @@ class Sidecar:
         self.log.close()
 
 
-def asr_rows(corpus, root):
+def asr_rows(corpus, root, *, model="0.6b", device="cuda", precisions=("bf16", "int8", "int4"), repeats=20):
     sidecar = Sidecar()
+    # Qwen3 weights install under qwen3-asr-<size>; sidecar engines use the model id directly.
+    model_dir = str(APP / "models" / (f"qwen3-asr-{model}" if model in ("0.6b", "1.7b") else model))
     rows = []
     try:
         sidecar.send(cmd="ping")
-        for precision in ("bf16", "int8"):
-            item = {"runtime": "python", "model": "0.6b", "requested_precision": precision}
+        for precision in precisions:
+            item = {"runtime": "python", "model": model, "requested_device": device, "requested_precision": precision}
             print(f"Calibrating ASR {precision}", flush=True)
             try:
                 started = time.monotonic()
-                sidecar.send(cmd="load_model", model_dir=str(APP / "models" / "qwen3-asr-0.6b"),
-                    device="cuda", precision=precision)
+                sidecar.send(cmd="load_model", model_dir=model_dir,
+                    device=device, precision=precision, model_id=model)
                 deadline = time.monotonic() + 240
                 while time.monotonic() < deadline:
                     status = sidecar.send(cmd="status")
+                    if status.get("error"):
+                        raise RuntimeError(status["error"])
                     if status.get("loaded"):
                         break
                     time.sleep(0.3)
@@ -135,19 +166,42 @@ def asr_rows(corpus, root):
                             raise ValueError("Corpus requires 16kHz mono PCM16")
                         frames = wav.readframes(wav.getnframes())
                     duration = len(frames) / 32000
-                    for repetition in range(3):
+                    if duration <= 0: raise ValueError("Benchmark audio is empty")
+                    for repetition in range(-1, repeats):
+                        recognition_started = time.monotonic()
                         sidecar.send(cmd="start_stream", language=sample["language"], vocabulary=["Reflow"])
                         for i in range(0, len(frames), 32000):
                             sidecar.send(cmd="push_audio_b64", audio_b64=base64.b64encode(frames[i:i+32000]).decode())
                         started = time.monotonic()
                         result = sidecar.send(cmd="stop_stream")
                         elapsed = time.monotonic() - started
+                        if result.get("warning"):
+                            raise RuntimeError("Benchmark warning: " + result["warning"])
+                        if repetition < 0:
+                            continue  # One explicit untimed warmup per language/precision.
+                        measured_wer, measured_cer = error_rates(sample["reference"], result.get("text", ""))
                         runs.append({"language": sample["language"], "repetition": repetition,
                             "audio_seconds": duration, "decode_ms": elapsed * 1000, "rtf": elapsed / duration,
-                            "wer": wer(sample["reference"], result.get("text", "")),
+                            "recognition_ms": (time.monotonic() - recognition_started) * 1000,
+                            "wer": measured_wer, "cer": measured_cer,
                             "warning": result.get("warning")})
-                item.update(runs=runs, median_decode_ms=statistics.median(r["decode_ms"] for r in runs),
-                    median_rtf=statistics.median(r["rtf"] for r in runs))
+                per_language = {}
+                for language in sorted({run["language"] for run in runs}):
+                    selected = [run for run in runs if run["language"] == language]
+                    median, p95 = median_p95([run["decode_ms"] for run in selected])
+                    recognition_median, recognition_p95 = median_p95([run["recognition_ms"] for run in selected])
+                    per_language[language] = {
+                        "median_recognition_ms": recognition_median,
+                        "p95_recognition_ms": recognition_p95,
+                        "warm_runs": len(selected),
+                        "median_decode_ms": median,
+                        "p95_decode_ms": p95,
+                        "mean_wer": statistics.mean(run["wer"] for run in selected),
+                        "mean_cer": statistics.mean(run["cer"] for run in selected),
+                    }
+                median, p95 = median_p95([r["decode_ms"] for r in runs])
+                item.update(runs=runs, per_language=per_language, median_decode_ms=median, p95_decode_ms=p95,
+                    median_rtf=statistics.median(r["rtf"] for r in runs), repeats=repeats)
             except Exception as exc:
                 item["error"] = str(exc)
             rows.append(item)
@@ -159,7 +213,7 @@ def asr_rows(corpus, root):
 
 def llm_rows():
     rows = []
-    binary = APP / "bin" / "llama-server.exe"
+    binary = llama_binary()
     model = APP / "models" / "flow" / "Qwen3.5-0.8B-Q4_K_M.gguf"
     if not binary.is_file() or not model.is_file():
         return [{"error": "Refinement runtime or weights are missing"}]
@@ -168,7 +222,7 @@ def llm_rows():
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        log = open(ROOT / "docs" / f"audit-calibration-llm-{device}.log", "w", encoding="utf-8")
+        log = benchmark_log(f"llm-{device}-")
         proc = subprocess.Popen([str(binary), "-m", str(model), "--host", "127.0.0.1",
             "--port", str(port), "--n-gpu-layers", str(layers), "--ctx-size", "1024",
             "--parallel", "1", "--threads", "6", "--jinja", "--reasoning-budget", "0"],
@@ -226,9 +280,25 @@ def llm_rows():
 
 
 if __name__ == "__main__":
-    corpus_path, output_path = map(pathlib.Path, sys.argv[1:3])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("corpus", type=pathlib.Path)
+    parser.add_argument("output", type=pathlib.Path)
+    parser.add_argument("--model", default="0.6b", choices=("0.6b", "1.7b", "zipformer-20m", "phonon-2"))
+    parser.add_argument("--device", default="cuda", choices=("cuda", "cpu", "auto"))
+    parser.add_argument("--precisions", nargs="+", default=["bf16", "int8", "int4"])
+    parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument("--skip-llm", action="store_true")
+    args = parser.parse_args()
+    if args.repeats < 20: parser.error("At least 20 warm runs are required")
+    corpus_path, output_path = args.corpus, args.output
     corpus = json.loads(corpus_path.read_text(encoding="utf-8-sig"))
-    report = {"scope": "One installed English corpus; three warm repetitions per ASR precision and isolated LLM device. No native weights installed; no multilingual accuracy conclusion.",
-        "asr": asr_rows(corpus, corpus_path.parent), "llm": llm_rows()}
+    if not corpus: parser.error("The labelled audio corpus is empty")
+    # Reject unlabelled references before measuring anything.
+    for sample in corpus:
+        error_rates(sample["reference"], sample["reference"])
+    report = {"scope": "Installed models only; loading and untimed warmup are separate from warm final decoding. LLM timings are isolated; coexistence and insertion require native verification.",
+        "languages": sorted({sample["language"] for sample in corpus}), "data_dir": str(APP),
+        "asr": asr_rows(corpus, corpus_path.parent, model=args.model, device=args.device, precisions=args.precisions, repeats=args.repeats),
+        "llm": [] if args.skip_llm else llm_rows()}
     output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Saved calibration to {output_path}", flush=True)

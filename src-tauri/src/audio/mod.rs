@@ -1,5 +1,7 @@
 pub mod capture;
 pub mod health;
+#[cfg(target_os = "linux")]
+pub mod pipewire;
 pub mod preflight;
 pub mod resampler;
 pub mod ring_buffer;

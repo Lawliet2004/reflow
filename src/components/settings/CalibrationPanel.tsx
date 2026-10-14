@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../../services/tauriApi";
 import type { CalibrationStatus } from "../../types";
 import { LanguageOptions } from "../LanguageOptions";
+import { useViewVisibility } from "../../hooks/useViewVisibility";
 
 export function CalibrationPanel() {
+  const visible = useViewVisibility();
   const [status, setStatus] = useState<CalibrationStatus | null>(null);
   const [reference, setReference] = useState("");
   const [language, setLanguage] = useState("en");
@@ -33,7 +35,7 @@ export function CalibrationPanel() {
     };
   }, []);
   useEffect(() => {
-    if (!running) return;
+    if (!running || !visible) return;
     let alive = true,
       pending = false;
     const timer = setInterval(() => {
@@ -58,7 +60,7 @@ export function CalibrationPanel() {
       alive = false;
       clearInterval(timer);
     };
-  }, [running]);
+  }, [running, visible]);
   const run = async () => {
     requestPending.current = true;
     setRunning(true);

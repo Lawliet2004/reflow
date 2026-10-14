@@ -551,6 +551,21 @@ impl AsrHandle {
             .map_err(|e| format!("ASR actor dropped reply: {e}"))?
     }
 
+    /// Exit must not wait indefinitely behind a stalled inference/status probe.
+    pub fn shutdown_blocking(&self, timeout: std::time::Duration) -> Result<(), String> {
+        if let Some((_, signal)) = &*self.inference_cancel.read() {
+            signal();
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.sender
+            .try_send(AsrCommand::UnloadModel {
+                reply: Reply::Sync(tx),
+            })
+            .map_err(|error| format!("ASR shutdown queue: {error}"))?;
+        rx.recv_timeout(timeout)
+            .map_err(|error| format!("ASR shutdown deadline: {error}"))?
+    }
+
     /// Query the actor so asynchronous install readiness and the corresponding
     /// load request are observed together before runtime maintenance.
     pub fn loaded_model_request_blocking(&self) -> Result<Option<ModelLoadRequest>, String> {

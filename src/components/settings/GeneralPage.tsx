@@ -1,5 +1,6 @@
 import React from "react";
-import { AppSettings } from "../../types";
+import { AppSettings, Hotkeys } from "../../types";
+import { DesktopIntegrationPanel } from "../DesktopIntegrationPanel";
 import { Section, Row, Toggle } from "./ui";
 import { HotkeyPicker } from "../HotkeyPicker";
 import { Keyboard } from "lucide-react";
@@ -13,6 +14,20 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
   const change = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onUpdateSettings({ [key]: value } as Partial<AppSettings>);
 
+  /** Write one hotkeys field, filling any gaps in a legacy `hotkeys` object. */
+  const updateHotkeys = (patch: Partial<Hotkeys>) =>
+    onUpdateSettings({
+      hotkeys: {
+        dictation: settings.hotkey,
+        command: null,
+        assistant: null,
+        note: null,
+        cancel: "Escape",
+        ...settings.hotkeys,
+        ...patch,
+      },
+    });
+
   const hotkeyRisky =
     !!settings.hotkey &&
     (settings.hotkey === "Shift+Space" ||
@@ -22,98 +37,140 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
 
   return (
     <Section icon={<Keyboard className="w-4 h-4" />} title="Dictation & window">
-      <Row
-        label="Push-to-talk shortcut"
-        hint={
-          settings.push_to_talk
-            ? "Hold to dictate anywhere. Release to transcribe."
-            : "Press once to start, press again to stop"
-        }
-      >
-        <HotkeyPicker value={settings.hotkey} onChange={(v) => change("hotkey", v)} />
-      </Row>
+      <DesktopIntegrationPanel
+        renderShortcuts={({ status, busy, configure, setShortcut }) => {
+          const wayland = status?.session === "wayland";
+          const inApp = wayland && status.shortcut_editable;
+          const editingDisabled =
+            busy ||
+            (inApp && status.shortcut.state !== "ready" && status.shortcut.state !== "unassigned");
+          const field = (action: string, value: string, onChange: (key: string) => void) => {
+            if (!wayland)
+              return (
+                <HotkeyPicker
+                  value={value}
+                  onChange={onChange}
+                  allowModifierOnly={action === "cancel" ? false : undefined}
+                />
+              );
+            const trigger =
+              status.assigned_shortcuts[action === "dictation" ? "dictate" : action] ??
+              (action === "dictation" ? status.shortcut.assigned_trigger : null);
+            const label = trigger
+              ? `Change ${action} shortcut: ${trigger}`
+              : `Assign ${action} shortcut`;
+            if (inApp)
+              return (
+                <HotkeyPicker
+                  value={trigger ?? "Choose shortcut…"}
+                  onChange={(key) => setShortcut(action, key)}
+                  allowModifierOnly={false}
+                  disabled={editingDisabled}
+                  ariaLabel={label}
+                  allowEscape={action === "cancel"}
+                />
+              );
+            return (
+              <button
+                type="button"
+                className="field !w-[180px] !text-center font-semibold"
+                aria-label={label}
+                title="Change this binding in desktop shortcuts"
+                disabled={busy}
+                onClick={configure}
+              >
+                {trigger ?? "Choose shortcut…"}
+              </button>
+            );
+          };
+          let dictationHint: string;
+          if (wayland) {
+            dictationHint = inApp
+              ? "Click the key, then press your preferred combination."
+              : "Your desktop assigns the active key. Click to change it.";
+          } else {
+            dictationHint = settings.push_to_talk
+              ? "Hold to dictate anywhere. Release to transcribe."
+              : "Press once to start, press again to stop";
+          }
 
-      {hotkeyRisky && (
-        <div className="p-2.5 rounded-lg bg-warning/10 border border-warning/30 text-xs text-warning leading-relaxed">
-          Heads-up: <span className="font-semibold">{settings.hotkey}</span> is commonly used while
-          typing. Consider combos with Ctrl, Alt, or Win.
-        </div>
-      )}
-
-      <Row label="Push-to-talk mode" hint="Off = toggle start/stop with the same shortcut">
-        <Toggle
-          on={settings.push_to_talk}
-          onChange={(v) => change("push_to_talk", v)}
-          ariaLabel="Push to talk"
-        />
-      </Row>
-
-      {(["command", "assistant", "note"] as const).map((action) => (
-        <Row
-          key={action}
-          label={`${action[0].toUpperCase()}${action.slice(1)} shortcut`}
-          hint={
-            action === "command"
+          const actionHint = (action: string, value: string | null | undefined) => {
+            if (wayland) {
+              if (inApp) {
+                return "Click to record a shortcut. KDE may ask you to approve a newly enabled action.";
+              }
+              return value
+                ? "Click to change the active desktop binding."
+                : "Choose a requested key to enable this action, then configure it in desktop shortcuts.";
+            }
+            return action === "command"
               ? "Edit selected text. With no selection, your words are dictated normally."
-              : "Optional shortcut"
-          }
-        >
-          <div className="flex items-center gap-2">
-            <HotkeyPicker
-              value={settings.hotkeys?.[action] ?? ""}
-              onChange={(value) =>
-                onUpdateSettings({
-                  hotkeys: {
-                    dictation: settings.hotkey,
-                    command: null,
-                    assistant: null,
-                    note: null,
-                    cancel: "Escape",
-                    ...settings.hotkeys,
-                    [action]: value,
-                  },
-                })
-              }
-            />
-            <button
-              className="btn btn-ghost"
-              onClick={() =>
-                onUpdateSettings({
-                  hotkeys: {
-                    dictation: settings.hotkey,
-                    command: null,
-                    assistant: null,
-                    note: null,
-                    cancel: "Escape",
-                    ...settings.hotkeys,
-                    [action]: null,
-                  },
-                })
-              }
-            >
-              Clear
-            </button>
-          </div>
-        </Row>
-      ))}
-      <Row label="Escape to cancel">
-        <Toggle
-          on={settings.hotkeys?.cancel !== null}
-          ariaLabel="Escape to cancel"
-          onChange={(enabled) =>
-            onUpdateSettings({
-              hotkeys: {
-                dictation: settings.hotkey,
-                command: null,
-                assistant: null,
-                note: null,
-                ...settings.hotkeys,
-                cancel: enabled ? "Escape" : null,
-              },
-            })
-          }
-        />
-      </Row>
+              : "Optional shortcut";
+          };
+
+          return (
+            <>
+              <Row label="Push-to-talk shortcut" hint={dictationHint}>
+                {field("dictation", settings.hotkey, (value) => change("hotkey", value))}
+              </Row>
+              {hotkeyRisky && !wayland && (
+                <div className="p-2.5 rounded-lg bg-warning/10 border border-warning/30 text-xs text-warning leading-relaxed">
+                  Heads-up: <span className="font-semibold">{settings.hotkey}</span> is commonly
+                  used while typing. Consider combos with Ctrl, Alt, or Win.
+                </div>
+              )}
+              <Row label="Push-to-talk mode" hint="Off = toggle start/stop with the same shortcut">
+                <Toggle
+                  on={settings.push_to_talk}
+                  onChange={(value) => change("push_to_talk", value)}
+                  ariaLabel="Push to talk"
+                />
+              </Row>
+              {(["command", "assistant", "note"] as const).map((action) => {
+                const value = settings.hotkeys?.[action];
+                const update = (key: string | null) => updateHotkeys({ [action]: key });
+                return (
+                  <Row
+                    key={action}
+                    label={`${action[0].toUpperCase()}${action.slice(1)} shortcut`}
+                    hint={actionHint(action, value)}
+                  >
+                    <div className="flex items-center gap-2">
+                      {wayland && value ? (
+                        field(action, value, update)
+                      ) : (
+                        <HotkeyPicker value={value ?? ""} onChange={update} />
+                      )}
+                      <button
+                        className="btn btn-ghost"
+                        disabled={editingDisabled}
+                        onClick={() => (inApp && value ? setShortcut(action, null) : update(null))}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </Row>
+                );
+              })}
+              <Row label="Global cancel shortcut" hint="Disable to use Cancel in Reflow instead.">
+                <div className="flex items-center gap-2">
+                  {settings.hotkeys?.cancel !== null &&
+                    field("cancel", settings.hotkeys?.cancel ?? "Escape", (value) =>
+                      updateHotkeys({ cancel: value }),
+                    )}
+                  <Toggle
+                    on={settings.hotkeys?.cancel !== null}
+                    ariaLabel="Enable global cancel"
+                    onChange={(enabled) =>
+                      updateHotkeys({ cancel: enabled ? "Escape" : null })
+                    }
+                  />
+                </div>
+              </Row>
+            </>
+          );
+        }}
+      />
 
       <Row label="Launch at startup" hint="Starts with Windows or your desktop session">
         <Toggle

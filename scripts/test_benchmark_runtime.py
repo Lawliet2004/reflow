@@ -1,10 +1,36 @@
 import importlib.util
+import json
 import pathlib
+import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location("benchmark_runtime", pathlib.Path(__file__).with_name("benchmark_runtime.py"))
 benchmark = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(benchmark)
+
+
+class RuntimePathTests(unittest.TestCase):
+    def test_data_directory_matches_native_platform_conventions(self):
+        home = pathlib.Path("/users/example")
+        self.assertEqual(benchmark.app_directory("linux", {}, home), home / ".local/share/reflow")
+        self.assertEqual(benchmark.app_directory("linux", {"XDG_DATA_HOME": "/data"}, home), pathlib.Path("/data/reflow"))
+        self.assertEqual(benchmark.app_directory("win32", {"APPDATA": "C:/Roaming"}, home), pathlib.Path("C:/Roaming/reflow"))
+        self.assertEqual(benchmark.app_directory("darwin", {}, home), home / "Library/Application Support/reflow")
+        self.assertEqual(benchmark.app_directory("linux", {"REFLOW_DATA_DIR": "/portable"}, home), pathlib.Path("/portable"))
+
+    def test_linux_and_windows_launchers_and_inventory_are_discovered(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app = pathlib.Path(temporary)
+            self.assertEqual(benchmark.llama_binary(app, "linux"), app / "bin/llama-server")
+            self.assertEqual(benchmark.llama_binary(app, "win32"), app / "bin/llama-server.exe")
+            root = app / "bin/runtimes/test-runtime"
+            root.mkdir(parents=True)
+            (app / "bin/runtime-active.json").write_text(json.dumps({"current": "test-runtime"}))
+            (root / "runtime-manifest.json").write_text(json.dumps({"binary": "llama-server"}))
+            self.assertEqual(benchmark.llama_binary(app, "linux"), root / "llama-server")
+            (root / "runtime-manifest.json").write_text(json.dumps({"binary": "../../unsafe"}))
+            with self.assertRaises(ValueError):
+                benchmark.llama_binary(app, "linux")
 
 
 class CalibrationMetricTests(unittest.TestCase):

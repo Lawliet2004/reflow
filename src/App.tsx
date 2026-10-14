@@ -14,7 +14,9 @@ import {
 } from "./types";
 import { api, isTauri } from "./services/tauriApi";
 import { createEventScope } from "./services/eventScope";
+import { useViewVisibility } from "./hooks/useViewVisibility";
 import { useIntelligenceHub } from "./hooks/useIntelligenceHub";
+import { useUiZoom } from "./hooks/useUiZoom";
 import { Navigation, NavTab, PageTab } from "./components/Navigation";
 import { TitleBar } from "./components/TitleBar";
 import { DictateHome } from "./components/DictateHome";
@@ -48,6 +50,10 @@ export interface IntelligenceDownloadEvent {
 }
 
 export const App: React.FC = () => {
+  const visible = useViewVisibility();
+  const viewVisible = useRef(visible);
+  const audioLevelFrame = useRef<number | null>(null);
+  const latestTranscript = useRef<StreamingTranscriptPayload>(EMPTY_TRANSCRIPT);
   const [activeTab, setActiveTab] = useState<PageTab>("dictate");
   const [settingsInitialPage, setSettingsInitialPage] = useState<"general" | "model">("general");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -78,6 +84,22 @@ export const App: React.FC = () => {
   const [startupError, setStartupError] = useState(false);
   const [startupAttempt, setStartupAttempt] = useState(0);
   const [transcript, setTranscript] = useState<StreamingTranscriptPayload>(EMPTY_TRANSCRIPT);
+  useEffect(() => {
+    // Only the dictation page consumes live microphone levels and partials.
+    // Keep their latest value while another page or the settings dialog is
+    // open, without making the entire window reconcile for every audio chunk.
+    const showLiveTranscript =
+      visible && (!isTauri() || (activeTab === "dictate" && !settingsOpen));
+    viewVisible.current = showLiveTranscript;
+    let alive = true;
+    if (showLiveTranscript)
+      queueMicrotask(() => {
+        if (alive) setTranscript(latestTranscript.current);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [visible, activeTab, settingsOpen]);
   const [sourceTranscript, setSourceTranscript] = useState<{
     raw: string;
     final_text: string;
@@ -89,7 +111,7 @@ export const App: React.FC = () => {
   const [backendStage, setBackendStage] = useState<BackendStage | null>(null);
   const [asrProgress, setAsrProgress] = useState<{ completed: number; total: number } | null>(null);
   useEffect(() => {
-    if (appState !== "PROCESSING") return;
+    if (appState !== "PROCESSING" || !visible) return;
     let alive = true,
       pending = false;
     const refresh = async () => {
@@ -110,12 +132,29 @@ export const App: React.FC = () => {
       alive = false;
       clearInterval(timer);
     };
-  }, [appState]);
+  }, [appState, visible]);
   const [latencyMetrics, setLatencyMetrics] = useState<LatencyMetrics | null>(null);
   const [latencyPercentiles, setLatencyPercentiles] = useState<LatencyPercentiles | null>(null);
-  const [onboardingComplete, setOnboardingComplete] = useState(false);
+  // Persisted so "Set up later" means later — the wizard no longer ambushes
+  // every launch just because no model is installed yet. DictateHome gets a
+  // "Finish setup" action that reopens it deliberately.
+  const [onboardingComplete, setOnboardingComplete] = useState(() => {
+    try {
+      return localStorage.getItem("reflow.onboarding.completed") === "1";
+    } catch {
+      // Private-mode storage denials must not strand the wizard logic.
+      return false;
+    }
+  });
+  // The mount-time model fetch is deliberately one-shot; read the flag
+  // through a ref so completing the wizard does not re-run the startup load.
+  const onboardingCompleteRef = useRef(onboardingComplete);
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [toast, setToast] = useState<{ kind: "error" | "info"; text: string } | null>(null);
+  const [toast, setToast] = useState<{
+    kind: "error" | "info";
+    text: string;
+    source?: "shortcut";
+  } | null>(null);
   const fileTranscription = useFileTranscriptionController(
     appState === "RECORDING" || appState === "PROCESSING" || appState === "INJECTING",
   );
@@ -131,11 +170,20 @@ export const App: React.FC = () => {
     };
   }, [activeTab, fileFailure]);
   const [historyRecovery, setHistoryRecovery] = useState<string | null>(null);
+  // Persistent hotkey warning: also read on mount, because registration can
+  // fail before this window's listeners attach.
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   // Single intelligence hub: download progress arrives as events, status via
   // polling only when idle. Replaces the old inline listeners + per-page polls.
-  const intelligence = useIntelligenceHub();
+  const intelligence = useIntelligenceHub(activeTab === "dictate" || settingsOpen);
   useEffect(() => {
     let alive = true;
+    api
+      .getPlatformInfo()
+      .then((info) => {
+        if (alive && info.hotkey_error) setHotkeyError(info.hotkey_error);
+      })
+      .catch(() => {});
     api
       .queryHistory({ limit: 1 })
       .then((page) => {
@@ -201,7 +249,12 @@ export const App: React.FC = () => {
       .then((model) => {
         if (cancelled || modelEpoch !== modelStatusEpochRef.current) return;
         setModelStatus(model);
-        if (isTauri() && !model.installed && !isModelReady(model)) {
+        if (
+          isTauri() &&
+          !model.installed &&
+          !isModelReady(model) &&
+          !onboardingCompleteRef.current
+        ) {
           setWizardOpen(true);
         }
       })
@@ -231,6 +284,7 @@ export const App: React.FC = () => {
         appStateEpochRef.current += 1;
         setAppState(st);
         if (st === "RECORDING") {
+          latestTranscript.current = EMPTY_TRANSCRIPT;
           setTranscript({ ...EMPTY_TRANSCRIPT });
           setSourceTranscript(null);
           setAsrProgress(null);
@@ -243,17 +297,31 @@ export const App: React.FC = () => {
       scope.listen<string>("app:warning", (warning) => {
         setToast({ kind: "error", text: warning });
       }),
-      scope.listen<string>("hotkey:error", (text) => setToast({ kind: "error", text })),
+      scope.listen<string>("hotkey:error", (text) => {
+        setHotkeyError(text);
+        setToast({ kind: "error", text, source: "shortcut" });
+      }),
+      scope.listen<string>("hotkey:ready", () => {
+        setHotkeyError(null);
+        setToast((previous) => (previous?.source === "shortcut" ? null : previous));
+      }),
       scope.listen("app:auto-stop", () =>
         setToast({ kind: "info", text: "Recording stopped automatically." }),
       ),
-      scope.listen<number>("recording:audio-level", (lvl) =>
-        setTranscript((prev) => ({ ...prev, audio_level: lvl })),
-      ),
-      scope.listen<StreamingTranscriptPayload>("transcript:partial", (payload) =>
-        setTranscript(payload),
-      ),
+      scope.listen<number>("recording:audio-level", (lvl) => {
+        latestTranscript.current = { ...latestTranscript.current, audio_level: lvl };
+        if (!viewVisible.current || audioLevelFrame.current !== null) return;
+        audioLevelFrame.current = requestAnimationFrame(() => {
+          audioLevelFrame.current = null;
+          if (viewVisible.current) setTranscript(latestTranscript.current);
+        });
+      }),
+      scope.listen<StreamingTranscriptPayload>("transcript:partial", (payload) => {
+        latestTranscript.current = payload;
+        if (viewVisible.current) setTranscript(payload);
+      }),
       scope.listen<StreamingTranscriptPayload>("transcript:final", (payload) => {
+        latestTranscript.current = payload;
         setTranscript(payload);
         // One round trip gives both the last waterfall and the rolling
         // p50/p95, so the two can never disagree in the UI.
@@ -273,8 +341,26 @@ export const App: React.FC = () => {
         else settingsEventDuringSave.current = true;
       }),
     ]);
-    return () => scope.dispose();
+    return () => {
+      if (audioLevelFrame.current !== null) {
+        cancelAnimationFrame(audioLevelFrame.current);
+        audioLevelFrame.current = null;
+      }
+      scope.dispose();
+    };
   }, [openSettings]);
+
+  const completeOnboarding = useCallback(() => {
+    try {
+      localStorage.setItem("reflow.onboarding.completed", "1");
+    } catch (error) {
+      // The wizard still closes — persistence is best-effort (private mode).
+      console.error("Could not persist onboarding completion:", error);
+    }
+    onboardingCompleteRef.current = true;
+    setOnboardingComplete(true);
+    setWizardOpen(false);
+  }, []);
 
   const handleUpdateSettings = useCallback((partial: Partial<AppSettings>): Promise<boolean> => {
     const token = ++settingsTokenRef.current;
@@ -327,6 +413,9 @@ export const App: React.FC = () => {
     settingsQueueRef.current = write.then(() => {});
     return write;
   }, []);
+
+  // Ctrl+= / Ctrl+- / Ctrl+0 and Ctrl+scroll adjust the persisted zoom.
+  useUiZoom(settings?.ui_zoom, handleUpdateSettings);
 
   const handleStartRecording = async () => {
     appStateEpochRef.current += 1;
@@ -426,7 +515,7 @@ export const App: React.FC = () => {
     );
   }
 
-  const showOnboarding = wizardOpen && !onboardingComplete;
+  const showOnboarding = wizardOpen;
   const toastElement = toast && (
     <div
       className={`toast ${toast.kind === "error" ? "toast-error" : "toast-info"}`}
@@ -464,6 +553,28 @@ export const App: React.FC = () => {
         />
 
         <main className="app-canvas">
+          {hotkeyError && (
+            <div
+              role="alert"
+              className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 text-sm text-warning bg-warning-soft"
+            >
+              <p>
+                Dictation shortcut: {hotkeyError}
+              </p>
+              <div className="flex items-center gap-2">
+                <button className="btn btn-ghost" onClick={() => openSettings("general")}>
+                  Shortcut settings
+                </button>
+                <button
+                  className="btn btn-ghost"
+                  aria-label="Dismiss shortcut warning"
+                  onClick={() => setHotkeyError(null)}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
           {historyRecovery && (
             <div
               role="alert"
@@ -483,10 +594,7 @@ export const App: React.FC = () => {
                   intelligenceTiers={intelligence.intelligenceTiers}
                   modelStatus={modelStatus}
                   onUpdateSettings={handleUpdateSettings}
-                  onComplete={() => {
-                    setOnboardingComplete(true);
-                    setWizardOpen(false);
-                  }}
+                  onComplete={completeOnboarding}
                 />
               ) : (
                 <DictateHome
@@ -510,6 +618,7 @@ export const App: React.FC = () => {
                   fileTranscription={fileTranscription}
                   onOpenHistory={() => setActiveTab("history")}
                   onOpenSettings={() => openSettings("model")}
+                  onFinishSetup={() => setWizardOpen(true)}
                 />
               ))}
 

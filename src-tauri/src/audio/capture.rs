@@ -6,8 +6,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+#[cfg(target_os = "linux")]
+use super::pipewire::{self, PipeWireCapture};
 use super::resampler::AudioResampler;
 use super::vad::{VadConfig, VoiceActivityDetector};
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioDeviceInfo {
@@ -16,6 +22,10 @@ pub struct AudioDeviceInfo {
     pub is_default: bool,
     #[serde(default)]
     pub is_monitor: bool,
+    /// False for sources that exist but cannot record right now (an unplugged
+    /// headset jack). Defaults true so older/other backends stay selectable.
+    #[serde(default = "default_true")]
+    pub is_available: bool,
     pub sample_rate: u32,
     pub channels: u16,
 }
@@ -29,15 +39,55 @@ pub struct AudioCaptureEngine {
     pub(super) last_device_name: Arc<Mutex<String>>,
     pub(super) dropped_chunks: Arc<AtomicU64>,
     pub(super) stream_error: Arc<Mutex<Option<String>>>,
+    #[cfg(target_os = "linux")]
+    pub(super) pipewire_streams: Vec<PipeWireCapture>,
 }
 
 unsafe impl Send for AudioCaptureEngine {}
 unsafe impl Sync for AudioCaptureEngine {}
 
+/// ALSA exposes plug/dmix/virtual PCMs as input devices. They duplicate the
+/// real hardware entries and capture silence, so they are hidden from the
+/// picker and heavily penalized in automatic ranking.
+pub(crate) fn is_virtual_alsa_pcm(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    let stem = lower.split(':').next().unwrap_or(&lower);
+    // ALSA surround PCMs are surround21/40/41/50/51/71 — digits only, so a
+    // product actually named "Surround …" still shows up.
+    let surround_pcm = stem
+        .strip_prefix("surround")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
+    surround_pcm
+        || matches!(
+            stem,
+            "default"
+                | "sysdefault"
+                | "pipewire"
+                | "pulse"
+                | "front"
+                | "rear"
+                | "center_lfe"
+                | "side"
+                | "iec958"
+                | "spdif"
+                | "dmix"
+                | "dsnoop"
+        )
+}
+
 /// Rank Windows capture endpoints. Bluetooth Hands-Free / Stereo Mix / FxSound
 /// often become the OS default and yield all-zero WASAPI buffers.
 pub(crate) fn score_input_device_name(name: &str) -> i32 {
     let n = name.to_lowercase();
+    if is_virtual_alsa_pcm(&n) {
+        return -150;
+    }
+    // hw:/plughw: endpoints are real hardware — listable but never preferred
+    // over a named device.
+    let stem = n.split(':').next().unwrap_or(&n);
+    if matches!(stem, "hw" | "plughw") {
+        return -150;
+    }
     if n.contains("stereo mix")
         || n.contains("what u hear")
         || n.contains("wave out mix")
@@ -93,7 +143,11 @@ pub(super) fn resolve_input_device(
                 let name = dev.name().unwrap_or_else(|_| id.to_string());
                 return Ok((dev, name));
             }
-            return Err("The selected microphone is unavailable. Reconnect it or choose another input in Audio settings.".into());
+            // The saved device was unplugged or renamed. Record from the
+            // default input this session instead of refusing to start.
+            log::warn!(
+                "Selected microphone '{id}' is unavailable; using the default input for this session."
+            );
         }
     }
 
@@ -102,7 +156,14 @@ pub(super) fn resolve_input_device(
         .as_ref()
         .and_then(|d| d.name().ok())
         .unwrap_or_default();
-    if let Some(dev) = default {
+    // The ALSA "default" PCM can be a PipeWire/pulse passthrough that records
+    // the *speakers* (silence to Reflow). Reaching this point means no explicit
+    // device was found. It is only unsafe to trust when a Pulse/PipeWire
+    // server is actually present and its default source is a monitor or there
+    // is no usable source at all — on a plain-ALSA system the name "default"
+    // is a working device and must be kept.
+    let default_is_virtual = is_virtual_alsa_pcm(&default_name) && default_route_is_broken();
+    if let Some(dev) = default.filter(|_| !default_is_virtual) {
         return Ok((dev, default_name));
     }
 
@@ -123,6 +184,13 @@ pub(super) fn resolve_input_device(
         return Ok((dev, name));
     }
 
+    if default_is_virtual {
+        // Never fall back to the virtual default — it records silence.
+        return Err(
+            "No usable microphone found — the default input is a virtual audio device.              Choose an input in Audio settings."
+                .into(),
+        );
+    }
     host.default_input_device()
         .map(|d| {
             let name = d.name().unwrap_or_else(|_| "default".into());
@@ -131,17 +199,26 @@ pub(super) fn resolve_input_device(
         .ok_or_else(|| "No audio input device found on the system.".to_string())
 }
 
+/// Whether routing through the ALSA `default` PCM would reach a server whose
+/// default source cannot record (monitor default, or no usable source).
+#[cfg(target_os = "linux")]
+fn default_route_is_broken() -> bool {
+    pipewire::server_default_is_unusable()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_route_is_broken() -> bool {
+    false
+}
+
 /// Communications-class endpoints (16 kHz mono) are silent on some Windows 11
 /// WASAPI builds. Prefer 44.1/48 kHz when the device supports it.
 fn pick_input_config(device: &Device) -> Result<SupportedStreamConfig, String> {
-    let default = device
-        .default_input_config()
-        .map_err(|e| format!("Failed to read device default input configuration: {e}"))?;
-
     // Shared-mode WASAPI is silent if we request a format other than the
     // device mix. Stick to default_input_config (GetMixFormat).
-    let _ = device;
-    Ok(default)
+    device
+        .default_input_config()
+        .map_err(|e| format!("Failed to read device default input configuration: {e}"))
 }
 
 impl Drop for AudioCaptureEngine {
@@ -167,6 +244,8 @@ impl AudioCaptureEngine {
             last_device_name: Arc::new(Mutex::new(String::new())),
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             stream_error: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "linux")]
+            pipewire_streams: Vec::new(),
         }
     }
 
@@ -186,8 +265,30 @@ impl AudioCaptureEngine {
         self.stream_error.lock().clone()
     }
 
+    /// The microphone a new capture would open, resolved through the same
+    /// PipeWire/cpal dispatch as `start_capture`, without opening a stream.
+    pub fn resolve_device_name(device_id: Option<&str>) -> Result<String, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let selected = match device_id {
+                None => pipewire::resolve_system_microphone()?,
+                Some(id) => pipewire::resolve_selected(id)?,
+            };
+            if let Some((_node, description)) = selected {
+                return Ok(description);
+            }
+        }
+        let host = cpal::default_host();
+        let (_device, name) = resolve_input_device(&host, device_id)?;
+        Ok(name)
+    }
+
     /// List all available input audio devices
     pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, String> {
+        #[cfg(target_os = "linux")]
+        if let Some(devices) = pipewire::list_sources() {
+            return Ok(devices);
+        }
         let host = cpal::default_host();
         let default_device_name = host
             .default_input_device()
@@ -202,6 +303,9 @@ impl AudioCaptureEngine {
                 .map_err(|e| format!("Could not list microphones: {e}"))?;
             for dev in input_devices {
                 if let Ok(name) = dev.name() {
+                    if is_virtual_alsa_pcm(&name) {
+                        continue;
+                    }
                     let default_config = dev.default_input_config();
                     let (sample_rate, channels) = match default_config {
                         Ok(cfg) => (cfg.sample_rate().0, cfg.channels()),
@@ -213,6 +317,7 @@ impl AudioCaptureEngine {
                         name: name.clone(),
                         is_default: name == default_device_name,
                         is_monitor: name.to_lowercase().contains("monitor"),
+                        is_available: true,
                         sample_rate,
                         channels,
                     });
@@ -244,6 +349,40 @@ impl AudioCaptureEngine {
         self.dropped_chunks.store(0, Ordering::Relaxed);
         if !gain.is_finite() || !(0.5..=3.0).contains(&gain) {
             return Err("Input gain must be between 0.5 and 3.0.".into());
+        }
+
+        // PipeWire selections record through pw-record; other ids use cpal.
+        #[cfg(target_os = "linux")]
+        {
+            let selected = match device_id.as_deref() {
+                None => pipewire::resolve_system_microphone()?,
+                Some(id) => pipewire::resolve_selected(id)?,
+            };
+            if let Some((node, description)) = selected {
+                match self.start_pipewire_capture(
+                    (&node, description),
+                    gain,
+                    vad_sensitivity,
+                    silence_timeout_ms,
+                    sample_sender.clone(),
+                    auto_stop_notify.clone(),
+                ) {
+                    // pw-record missing only falls back to cpal when the
+                    // resolution itself was automatic — an explicitly chosen
+                    // PipeWire node must report the real cause instead of
+                    // recording the wrong device.
+                    Err(error) if error == pipewire::MISSING_TOOL => {
+                        let explicit = device_id
+                            .as_deref()
+                            .is_some_and(|id| id.starts_with(pipewire::ID_PREFIX) && id != pipewire::AUTO_ID);
+                        if explicit {
+                            return Err(error);
+                        }
+                        log::warn!("{error} Falling back to the default capture path.");
+                    }
+                    result => return result,
+                }
+            }
         }
 
         let host = cpal::default_host();
@@ -424,6 +563,76 @@ impl AudioCaptureEngine {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    fn start_pipewire_capture(
+        &mut self,
+        (node, device_name): (&str, String),
+        gain: f32,
+        vad_sensitivity: f32,
+        silence_timeout_ms: u64,
+        sample_sender: mpsc::Sender<Vec<f32>>,
+        auto_stop_notify: mpsc::Sender<()>,
+    ) -> Result<(), String> {
+        let mut vad = VoiceActivityDetector::new(
+            VadConfig {
+                silence_timeout_ms,
+                ..Default::default()
+            },
+            16000,
+        );
+        vad.set_sensitivity(vad_sensitivity);
+        let vad_mutex = Arc::new(Mutex::new(vad));
+        let resampler = Arc::new(Mutex::new(AudioResampler::new(16000, 1)));
+
+        let is_recording_flag = Arc::clone(&self.is_recording);
+        let audio_level_ref = Arc::clone(&self.audio_level);
+        let dropped_chunks = Arc::clone(&self.dropped_chunks);
+        let stream_error = Arc::clone(&self.stream_error);
+        let error_recording = Arc::clone(&self.is_recording);
+        let error_stop = auto_stop_notify.clone();
+
+        self.is_recording.store(true, Ordering::SeqCst);
+        let capture = match PipeWireCapture::spawn(
+            node,
+            move |samples: &[f32]| {
+                if !is_recording_flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                let gained: Vec<f32> = if (gain - 1.0).abs() > 0.01 {
+                    samples.iter().map(|&s| s * gain).collect()
+                } else {
+                    samples.to_vec()
+                };
+                dispatch_chunk(
+                    &gained,
+                    &resampler,
+                    &vad_mutex,
+                    &audio_level_ref,
+                    &sample_sender,
+                    &auto_stop_notify,
+                    &dropped_chunks,
+                );
+            },
+            move |message: String| {
+                log::error!("Audio stream error occurred: {message}");
+                *stream_error.lock() = Some(message);
+                error_recording.store(false, Ordering::SeqCst);
+                let _ = error_stop.try_send(());
+            },
+        ) {
+            Ok(capture) => capture,
+            Err(error) => {
+                self.is_recording.store(false, Ordering::SeqCst);
+                return Err(error);
+            }
+        };
+
+        log::info!("Mic capture: '{device_name}' via PipeWire 16000 Hz 1 ch gain={gain:.2}");
+        *self.last_device_name.lock() = device_name;
+        self.pipewire_streams.push(capture);
+        Ok(())
+    }
+
     pub fn stop_capture(&mut self) {
         self.is_recording.store(false, Ordering::SeqCst);
         if let Some(stream) = self.current_stream.take() {
@@ -432,6 +641,8 @@ impl AudioCaptureEngine {
         if let Some(stream) = self.system_stream.take() {
             let _ = stream.pause();
         }
+        #[cfg(target_os = "linux")]
+        self.pipewire_streams.clear();
         if let Some(worker) = self.meeting_thread.take() {
             let _ = worker.join();
         }
@@ -472,7 +683,7 @@ fn dispatch_chunk(
 
 #[cfg(test)]
 mod tests {
-    use super::score_input_device_name;
+    use super::{is_virtual_alsa_pcm, score_input_device_name};
 
     #[test]
     fn prefers_real_mic_over_handsfree_and_virtual() {
@@ -488,5 +699,21 @@ mod tests {
         assert!(hfp < 0);
         assert!(headset < 0);
         assert!(mix < 0);
+    }
+
+    #[test]
+    fn hardware_pcms_stay_listed_but_unpreferred() {
+        // hw:/plughw: endpoints are real devices on ALSA-only systems — they
+        // must show up in the picker while ranking below named devices.
+        assert!(!is_virtual_alsa_pcm("hw:0,0"));
+        assert!(!is_virtual_alsa_pcm("plughw:1,0"));
+        assert!(is_virtual_alsa_pcm("default"));
+        assert!(is_virtual_alsa_pcm("dsnoop:0,0"));
+        assert!(score_input_device_name("hw:0,0") < 0);
+        assert!(score_input_device_name("plughw:CARD=PCH,DEV=0") < 0);
+        assert!(
+            score_input_device_name("USB Microphone")
+                > score_input_device_name("hw:0,0")
+        );
     }
 }

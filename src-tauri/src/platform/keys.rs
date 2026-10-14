@@ -2,6 +2,50 @@
 use enigo::{Direction, Key};
 use enigo::{Enigo, Keyboard, Settings};
 
+fn keyboard_settings() -> Settings {
+    #[cfg(target_os = "linux")]
+    {
+        super::adapter::linux_keyboard_settings(super::session())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Settings::default()
+    }
+}
+
+pub fn paste_chord(shortcut: &str) -> Result<(), String> {
+    if !matches!(shortcut, "ctrl_v" | "ctrl_shift_v") {
+        return Err("Unknown paste shortcut".into());
+    }
+    let shift = shortcut == "ctrl_shift_v";
+    #[cfg(target_os = "linux")]
+    if super::session() == super::DisplaySession::Wayland {
+        return super::linux_input_portal::chord(true, shift, 'v' as i32);
+    }
+    // Always attempt modifier releases, including partial press failures.
+    let mut keyboard = Enigo::new(&keyboard_settings()).map_err(|error| error.to_string())?;
+    let press = keyboard
+        .key(enigo::Key::Control, enigo::Direction::Press)
+        .and_then(|_| {
+            if shift {
+                keyboard.key(enigo::Key::Shift, enigo::Direction::Press)
+            } else {
+                Ok(())
+            }
+        })
+        .and_then(|_| keyboard.key(enigo::Key::Unicode('v'), enigo::Direction::Click));
+    let shift_release = if shift {
+        keyboard.key(enigo::Key::Shift, enigo::Direction::Release)
+    } else {
+        Ok(())
+    };
+    let ctrl_release = keyboard.key(enigo::Key::Control, enigo::Direction::Release);
+    press
+        .and(shift_release)
+        .and(ctrl_release)
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(windows)]
 fn chord(
     modifier: Option<windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY>,
@@ -49,7 +93,10 @@ pub fn simulate_copy() -> Result<(), String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+        if super::session() == super::DisplaySession::Wayland {
+            return super::linux_input_portal::chord(true, false, 'c' as i32);
+        }
+        let mut enigo = Enigo::new(&keyboard_settings()).map_err(|e| e.to_string())?;
         enigo
             .key(Key::Control, Direction::Press)
             .map_err(|e| e.to_string())?;
@@ -85,7 +132,15 @@ pub fn send_key(send_key: &str) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        if super::session() == super::DisplaySession::Wayland {
+            return super::linux_input_portal::chord(
+                send_key == "ctrl_enter",
+                send_key == "shift_enter",
+                0xff0d,
+            );
+        }
+        let mut enigo = Enigo::new(&keyboard_settings()).map_err(|e| e.to_string())?;
         let modifier = match send_key {
             "shift_enter" => Some(Key::Shift),
             "ctrl_enter" => Some(Key::Control),
@@ -109,7 +164,11 @@ pub fn send_key(send_key: &str) -> Result<(), String> {
 }
 
 pub fn type_text(text: &str) -> Result<(), String> {
-    Enigo::new(&Settings::default())
+    #[cfg(target_os = "linux")]
+    if super::session() == super::DisplaySession::Wayland {
+        return super::linux_input_portal::type_text(text);
+    }
+    Enigo::new(&keyboard_settings())
         .map_err(|e| e.to_string())?
         .text(text)
         .map_err(|e| e.to_string())

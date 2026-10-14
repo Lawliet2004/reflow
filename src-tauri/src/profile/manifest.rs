@@ -493,6 +493,21 @@ pub fn native_asr_manifest(id: &str) -> Option<&'static ModelManifest> {
         .find(|m| m.id == id || m.id.strip_prefix("native-") == Some(id))
 }
 
+/// The speech model a machine can comfortably run: the 1.7B only when its
+/// estimates clear the machine's free RAM or VRAM, otherwise the 0.6B. The
+/// resolver still owns the real load-time decision — this is the onboarding
+/// preselection hint.
+pub fn recommended_asr_model(available_ram_mb: f32, free_vram_mb: f32) -> &'static str {
+    let manifest = ASR_MODELS
+        .iter()
+        .find(|m| m.id == "1.7b")
+        .expect("1.7b manifest is pinned");
+    let fits_cpu = available_ram_mb > manifest.estimated_cpu_ram_mb() + 1024.0;
+    let fits_gpu =
+        free_vram_mb > manifest.estimated_vram_mb(Precision::Int8) + 384.0;
+    if fits_cpu || fits_gpu { "1.7b" } else { "0.6b" }
+}
+
 pub fn asr_manifest(id: &str) -> Option<&'static ModelManifest> {
     if id == PHONON_MODEL.id {
         return Some(&PHONON_MODEL);
@@ -520,6 +535,25 @@ pub fn all_manifests() -> impl Iterator<Item = &'static ModelManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recommendation_prefers_06b_when_17b_does_not_fit() {
+        let manifest = asr_manifest("1.7b").unwrap();
+        // Plenty of RAM and VRAM: the larger model is recommended.
+        assert_eq!(
+            recommended_asr_model(manifest.estimated_cpu_ram_mb() + 2048.0, 0.0),
+            "1.7b"
+        );
+        assert_eq!(
+            recommended_asr_model(
+                2048.0,
+                manifest.estimated_vram_mb(Precision::Int8) + 512.0,
+            ),
+            "1.7b"
+        );
+        // A mid-range machine gets the small model.
+        assert_eq!(recommended_asr_model(4096.0, 512.0), "0.6b");
+    }
 
     #[test]
     fn every_manifest_is_internally_consistent() {

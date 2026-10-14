@@ -26,7 +26,7 @@ Local-first desktop dictation with a focused workspace for your words.
 - **🌊 Voice Activity Detection (VAD)**:
   - RMS energy detection drives the audio-level display and configurable silence auto-stop. Capture forwards all audio rather than discarding non-speech frames.
   - The ASR runtime trims surrounding silence before decoding.
-- **⌨️ Push-to-talk any way you like**: regular combos (Ctrl+Space) via the OS hotkey API, or **modifier-only combos like Shift+Win** via a low-level keyboard hook — hold to record (audio is buffered silently), release to transcribe and insert. The recorder in Settings captures any combination.
+- **⌨️ Push-to-talk**: hold a shortcut to record, then release to transcribe and insert. Regular combinations use the OS hotkey API on Windows and X11, or the desktop's GlobalShortcuts portal on Wayland. **Modifier-only combinations like Shift+Win are supported on Windows only**, through its low-level keyboard hook.
 - **📋 Native Atomic Text Injection**:
   - High-speed clipboard injection with automatic user clipboard save & safe restoration.
   - Active window and process detection for context-aware profiles.
@@ -129,13 +129,23 @@ reflow/
 
 - **Node.js**: v22+ (tested on Node v24)
 - **Rust**: 1.88+ (tested on Rust 1.97)
-- **Python runtime**: Python 3.11+ on PATH with the exact packages in [model-runtime/requirements.txt](model-runtime/requirements.txt); tested on Python 3.11.9. NVIDIA acceleration needs a compatible CUDA torch build. Python is not required for the experimental native runtime.
+- **Python runtime**: Python 3.11+ with the exact packages in [model-runtime/requirements.txt](model-runtime/requirements.txt); tested on Python 3.11.9 on Windows and Python 3.14 on Linux. Development builds discover the checkout's `.venv` automatically. NVIDIA acceleration needs a compatible CUDA torch build. Python is not required for the experimental native runtime.
 - **OS**: Windows 10/11 or Linux (X11 full support; Wayland best-effort)
 - An NVIDIA GPU is recommended for Python ASR; it otherwise uses the CPU. Model and precision selection depend on measured free memory.
 
 ### ASR runtime setup
 
-Python is the default and remains the fallback option. Install its pinned requirements into the Python interpreter Reflow finds on PATH:
+Python is the default and remains the fallback option. For development, create a virtual environment in the checkout and install the pinned requirements there. On Debian/Ubuntu, install `python3-venv` with apt first if the venv command is unavailable; system Python is managed by the operating system.
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r model-runtime/requirements.txt
+npm run tauri dev
+```
+
+Binaries inside the checkout, including local release builds, discover its `.venv` automatically; activation is optional. A configured user runtime can take precedence. An activated `VIRTUAL_ENV` takes precedence over automatic environments, and `REFLOW_PYTHON=/absolute/path/to/python` explicitly selects an interpreter for either development or installed builds. On Windows, the checkout environment's interpreter is `.venv\Scripts\python.exe`.
+
+For an existing Windows Python installation, install into the interpreter Reflow finds on PATH:
 
 ```bash
 python -m pip install -r model-runtime/requirements.txt
@@ -186,7 +196,7 @@ Build-time:
 
 ```bash
 sudo apt-get install -y \
-  libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+  libwebkit2gtk-4.1-dev libgtk-3-dev libgtk-layer-shell-dev libayatana-appindicator3-dev \
   librsvg2-dev libasound2-dev libxdo-dev libssl-dev patchelf pkg-config
 ```
 
@@ -196,9 +206,15 @@ Linux notes:
 
 - Default hotkey is **Ctrl+Shift+Space** (Ctrl+Space is often taken by IBus/fcitx).
 - **X11**: global hotkey, overlay, and clipboard paste work. Terminals use **Ctrl+Shift+V**.
-- **Wayland**: audio, tray, and history work. Global shortcuts and key injection are compositor-limited. If paste cannot be simulated, the transcript stays on the clipboard and the overlay says `Copied — press Ctrl+V`.
+- **Wayland shortcuts**: Reflow uses the desktop's GlobalShortcuts portal. Approve the desktop request, then use **Settings → General → Configure desktop shortcuts** to assign the dictation key if your desktop has not assigned it. Modifier-only shortcuts require a regular-key replacement on Linux. The Record button remains available while shortcut setup is pending.
+- **Wayland paste**: automatic paste requires separate keyboard permission through the desktop's keyboard-only RemoteDesktop portal; Reflow requests no screen or pointer access. Use **Settings → General → Enable automatic paste** to set up access, or **Retry keyboard access** after denial or portal restart. If approval is pending, cancelled, or unavailable, the transcript stays on the clipboard for manual paste. KDE Wayland cannot reliably report the foreground app; choose **Output → Paste shortcut → Ctrl + Shift + V** for terminals.
+- **PipeWire inputs**: Audio settings list PipeWire inputs by name. **Automatic** uses a connected headset or Bluetooth mic when one is present, otherwise the built-in mic, and is resolved at the start of each recording. Recording a selected input uses `pw-record` (package `pipewire-bin`); **System default** follows the desktop's default input.
 - Data directory: `~/.local/share/reflow`
 - Autostart: `~/.config/autostart/reflow.desktop`
+- AppImage autostart uses the original `.AppImage` file. Keep that file in a permanent location before enabling Launch at startup.
+- Wayland needs `xdg-desktop-portal` and your desktop's portal backend (for example `xdg-desktop-portal-kde` or `xdg-desktop-portal-gnome`). Available shortcut and keyboard-control features depend on that backend. `xdg-utils` provides folder opening.
+
+See [Linux runtime verification](docs/linux-runtime-verification.md) for tested speech paths and desktop-permission checks still awaiting user action.
 
 ### Running Reflow Desktop Application
 
@@ -207,7 +223,36 @@ Linux notes:
 npm run tauri dev
 ```
 
-Linux packages produced by `npm run tauri build`: `.deb` and AppImage. Runtime: system `python3` plus the pinned requirements for the default Qwen sidecar (not bundled inside the AppImage), or the separately downloaded experimental native runtime and its models. Pushing a version tag runs the GitHub Actions checks and creates a draft release with Windows and Linux installers. Publishing the draft is a separate release step.
+Build Linux packages with `node scripts/package.cjs`: `.deb` and AppImage. The helper finalizes AppImage launch hooks before hashing; direct Tauri bundles need this finalization step for native Wayland behavior. Runtime: a configured Python interpreter (`REFLOW_PYTHON`, Model settings → Python interpreter, a `reflow/python-runtime` environment, an activated environment, or Python on PATH) plus the pinned speech requirements, or the separately downloaded experimental native runtime and its models. Python and its packages are not bundled inside the AppImage. Pushing a version tag runs the GitHub Actions checks and creates a draft release with Windows and Linux installers. Publishing the draft is a separate release step.
+
+### macOS signing (CI)
+
+The release workflow signs and notarizes the macOS installers when an Apple
+Developer ID is configured, and falls back to the ad-hoc signature from
+`tauri.conf.json` (`signingIdentity: "-"` — also what local builds use) when
+the secrets are absent, so forks still produce DMGs. Hardened runtime is
+enabled in `bundle.macOS.hardenedRuntime`; the only entitlement is
+audio-input.
+
+Repository secrets required for signed builds:
+
+| Secret                        | Contents |
+| ----------------------------- | -------- |
+| `APPLE_CERTIFICATE`           | Base64 of the exported Developer ID `.p12`: `openssl base64 -A -in DeveloperID.p12` |
+| `APPLE_CERTIFICATE_PASSWORD`  | Password chosen when exporting the `.p12` |
+| `APPLE_SIGNING_IDENTITY`      | Full identity string, e.g. `Developer ID Application: Name (TEAMID)` — required whenever `APPLE_CERTIFICATE` is set; the job fails fast if missing |
+| `APPLE_ID`                    | Apple ID email used for notarization |
+| `APPLE_PASSWORD`              | App-specific password for that Apple ID (appleid.apple.com → Sign-In and Security → App-Specific Passwords) |
+| `APPLE_TEAM_ID`               | 10-character team ID from the Apple Developer membership page |
+
+`tauri-action` imports the certificate into a per-run keychain
+(`KEYCHAIN_PASSWORD` is generated in the workflow), the bundler signs with
+hardened runtime, and `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` trigger
+notarization. Tauri notarizes the `.app` bundle and staples the ticket onto
+it; after bundling, the job verifies the result with
+`codesign --verify --deep --strict` plus `xcrun stapler validate` on the
+`.app`, and `codesign --verify` on the `.dmg`, failing the release if either
+check fails.
 
 ### Android companion
 

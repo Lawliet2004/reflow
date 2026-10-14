@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DiagnosticsWaterfall } from "./DiagnosticsWaterfall";
 
 vi.mock("../../services/tauriApi", () => ({
+  isTauri: () => false,
   tauriApi: {
     getLatencyReport: vi.fn().mockResolvedValue({
       last: {

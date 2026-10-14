@@ -72,6 +72,44 @@ def fake_model(recognizer):
 
 
 class ZipformerTests(unittest.TestCase):
+    def test_stream_decode_failure_never_returns_a_confident_partial_transcript(self):
+        model = mock.Mock(model_id="zipformer-20m")
+        model.accept_pcm16.side_effect = ["first words", RuntimeError("decoder failed"), "complete retry"]
+        model.finish_stream.return_value = "complete retry"
+        with mock.patch.object(runtime, "_MODEL", model), mock.patch.object(runtime, "STATE", runtime.RuntimeState()):
+            runtime.handle({"cmd": "start_stream", "language": "en"})
+            runtime.append_stream_audio(b"\x00\x00" * 80)
+            self.assertEqual(runtime.STATE.partial_text, "first words")
+            runtime.append_stream_audio(b"\x00\x00" * 80)
+            self.assertEqual(runtime.handle({"cmd": "get_partial"})["status"], "error")
+            result = runtime.handle({"cmd": "stop_stream"})
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["text"], "")
+            self.assertIn("incomplete", result["error"])
+            model.finish_stream.assert_not_called()
+            self.assertFalse(runtime.STATE.stream_active)
+            self.assertIsNone(runtime.STATE.stream_error)
+            runtime.handle({"cmd": "start_stream", "language": "en"})
+            runtime.append_stream_audio(b"\x00\x00" * 80)
+            self.assertEqual(runtime.handle({"cmd": "stop_stream"})["text"], "complete retry")
+
+    def test_failed_stream_start_discards_state_and_a_retry_can_record(self):
+        model = mock.Mock(model_id="zipformer-20m")
+        model.start_stream.side_effect = [RuntimeError("device unavailable"), None]
+        with mock.patch.object(runtime, "_MODEL", model), mock.patch.object(runtime, "STATE", runtime.RuntimeState()):
+            result = runtime.handle({"cmd": "start_stream", "language": "en", "vocabulary": ["Reflow"]})
+            self.assertEqual(result["status"], "error")
+            self.assertFalse(runtime.STATE.stream_active)
+            self.assertIsNone(runtime.STATE.vocabulary_prompt)
+            self.assertIsNone(runtime.STATE.stream_language)
+            runtime.append_stream_audio(b"\x00\x00" * 80)
+            model.accept_pcm16.assert_not_called()
+            result = runtime.handle({"cmd": "start_stream", "language": "en"})
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(runtime.STATE.stream_active)
+            runtime.append_stream_audio(b"\x00\x00" * 80)
+            model.accept_pcm16.assert_called_once()
+
     def test_rejects_other_languages_before_altering_recording(self):
         with mock.patch.object(runtime, "_MODEL", mock.Mock(model_id="zipformer-20m")), mock.patch.object(runtime, "STATE", runtime.RuntimeState()):
             runtime.STATE.stream_audio.extend(b"preserve")

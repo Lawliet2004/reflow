@@ -15,6 +15,7 @@ struct Pending<S> {
     inserted: Option<String>,
     sequence: Option<u32>,
     generation: u64,
+    sequence_required: bool,
 }
 
 impl<S: Clone> RestoreChain<S> {
@@ -44,7 +45,14 @@ impl<S: Clone> RestoreChain<S> {
             inserted: Some(inserted),
             sequence,
             generation,
+            sequence_required: false,
         });
+    }
+
+    pub(super) fn require_sequence(&mut self) {
+        if let Some(pending) = self.pending.as_mut() {
+            pending.sequence_required = true;
+        }
     }
 
     pub(super) fn candidate_if_unchanged(
@@ -107,6 +115,7 @@ impl<S> Pending<S> {
     fn unchanged(&self, text: Option<&str>, sequence: Option<u32>) -> bool {
         match self.sequence {
             Some(expected) => sequence == Some(expected),
+            None if self.sequence_required => false,
             None => self
                 .inserted
                 .as_deref()
@@ -118,6 +127,17 @@ impl<S> Pending<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_wayland_ownership_probe_never_uses_identical_text_as_proof() {
+        let mut chain = RestoreChain::default();
+        chain.mark_injected("original", "same text".into(), None, 1);
+        chain.require_sequence();
+        assert_eq!(
+            chain.candidate_if_unchanged(1, Some("same text"), None),
+            None
+        );
+    }
 
     #[test]
     fn consecutive_injections_restore_the_original_image_and_html() {

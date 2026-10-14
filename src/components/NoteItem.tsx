@@ -44,18 +44,19 @@ export function NoteItem({ entry, onChanged }: { entry: HistoryEntry; onChanged:
     setEditing(false);
     requestAnimationFrame(() => editButtonRef.current?.focus());
   };
+  const createdAt = new Date(entry.created_at);
   return (
     <article className={`note-item ${entry.pinned ? "is-pinned" : ""}`}>
       <div className="note-meta">
         <time dateTime={entry.created_at}>
-          {new Date(entry.created_at).toLocaleDateString(undefined, {
+          {createdAt.toLocaleDateString(undefined, {
             month: "short",
             day: "numeric",
           })}
           <span>
             {" "}
             ·{" "}
-            {new Date(entry.created_at).toLocaleTimeString(undefined, {
+            {createdAt.toLocaleTimeString(undefined, {
               hour: "numeric",
               minute: "2-digit",
             })}
@@ -135,7 +136,7 @@ export function NoteItem({ entry, onChanged }: { entry: HistoryEntry; onChanged:
           disabled={!!pending}
           onClick={() => {
             void act("copy", async () => {
-              await navigator.clipboard.writeText(entry.final_transcript);
+              await api.copyText(entry.final_transcript);
               setCopied(true);
             });
           }}

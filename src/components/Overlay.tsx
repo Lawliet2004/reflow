@@ -16,6 +16,7 @@ interface OverlayProps {
   appState: AppState;
   transcript: StreamingTranscriptPayload;
   standalone?: boolean;
+  exiting?: boolean;
   extraMessage?: string | null;
   hudTheme?: HudTheme;
   waveformStyle?: WaveformStyle;
@@ -28,6 +29,11 @@ interface OverlayProps {
 }
 
 const WAVE_HEIGHT: Record<HudScale, number> = { compact: 14, standard: 16, large: 20 };
+const SCALE_CLASS: Record<HudScale, string> = {
+  compact: "hud-scale-compact",
+  standard: "",
+  large: "hud-scale-large",
+};
 const CAPSULE_BARS = [0.35, 0.65, 1, 0.8, 0.55, 0.35, 0.15];
 
 /** Audio-driven while listening; a gentle travelling wave during processing. */
@@ -57,6 +63,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   appState,
   transcript,
   standalone = false,
+  exiting = false,
   extraMessage = null,
   hudTheme = "dark",
   waveformStyle = "bars",
@@ -69,12 +76,15 @@ export const Overlay: React.FC<OverlayProps> = ({
   const phase = derivePhase(appState, transcript, extraMessage, backendStage);
   const previewText = transcript.full_text.trim();
   const message = phaseLabel(phase, extraMessage ?? "", previewText);
-  const label =
-    phase === "error"
-      ? "Couldn't finish · open Reflow"
-      : phase === "done" && (!extraMessage || /^(inserted|done)[.!]?$/i.test(extraMessage.trim()))
-        ? "Done"
-        : message;
+  let label = message;
+  if (phase === "error") {
+    label = "Couldn't finish · open Reflow";
+  } else if (
+    phase === "done" &&
+    (!extraMessage || /^(inserted|done)[.!]?$/i.test(extraMessage.trim()))
+  ) {
+    label = "Done";
+  }
 
   if (phase === "hidden") {
     return null;
@@ -90,8 +100,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   const minimal = waveformStyle === "minimal" && phase === "listen";
   const waveformPill = hudStyle === "waveform";
   const showMessage = waveformPill && (phase === "error" || (phase === "done" && label !== "Done"));
-  const scaleClass =
-    hudScale === "compact" ? "hud-scale-compact" : hudScale === "large" ? "hud-scale-large" : "";
+  const scaleClass = SCALE_CLASS[hudScale];
 
   return (
     <div
@@ -104,6 +113,7 @@ export const Overlay: React.FC<OverlayProps> = ({
         .filter(Boolean)
         .join(" ")}
       data-phase={phase}
+      data-exiting={exiting || undefined}
       data-shape={hudShape}
       data-style={hudStyle}
       data-message={showMessage || undefined}
@@ -112,21 +122,12 @@ export const Overlay: React.FC<OverlayProps> = ({
       role="status"
       aria-live="polite"
       aria-atomic="true"
-      title={
-        waveformPill
-          ? phase === "listen"
-            ? "Listening · Escape to cancel recording"
-            : label
-          : undefined
-      }
+      title={waveformPill ? (phase === "listen" ? "Listening" : label) : undefined}
     >
       {waveformPill && !showMessage ? (
         <div className="hud-capsule-row">
-          {phase === "done" ? (
-            <Check className="capsule-check" strokeWidth={2.5} aria-hidden="true" />
-          ) : (
-            <CapsuleWave level={transcript.audio_level} listening={phase === "listen"} />
-          )}
+          <CapsuleWave level={transcript.audio_level} listening={phase === "listen"} />
+          <Check className="capsule-check" strokeWidth={2.5} aria-hidden="true" />
           <span className="sr-only">{label}</span>
         </div>
       ) : (
@@ -144,8 +145,9 @@ export const Overlay: React.FC<OverlayProps> = ({
           </span>
 
           <span
+            key={label}
             className={minimal ? "sr-only" : "hud-label"}
-            title={phase === "listen" ? "Escape to cancel recording" : message}
+            title={phase === "listen" ? "Listening" : message}
           >
             {label}
           </span>

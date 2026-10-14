@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Check, FileAudio, FolderOpen, Loader2 } from "lucide-react";
 import { api, isTauri } from "../services/tauriApi";
+import { createEventScope } from "../services/eventScope";
+import { useViewVisibility } from "../hooks/useViewVisibility";
 import { FileProgress } from "../types";
 
 export function useFileTranscriptionController(disabled = false) {
+  const visible = useViewVisibility();
   const [path, setPath] = useState("");
   const [allowLarge, setAllowLarge] = useState(false);
   const [job, setJob] = useState<FileProgress | null>(null);
@@ -25,17 +28,27 @@ export function useFileTranscriptionController(disabled = false) {
     setCancelRequested(false);
   }, []);
   useEffect(() => {
-    if (!jobId || finished) return;
+    if (!jobId || finished || !visible) return;
     let alive = true;
     let pending = false;
+    let revision = 0;
+    let lastEvent: number | null = null;
+    const scope = createEventScope();
+    void scope.listen<FileProgress>("transcribe:progress", (next) => {
+      if (next.job_id !== jobId) return;
+      revision++;
+      lastEvent = Date.now();
+      setJob(next);
+    });
     const poll = async () => {
-      if (pending) return;
+      if (pending || (lastEvent !== null && Date.now() - lastEvent < 2500)) return;
+      const started = revision;
       pending = true;
       try {
         const result = await api.getFileJob(jobId);
-        if (alive) setJob(result);
+        if (alive && revision === started) setJob(result);
       } catch (e) {
-        if (alive) setError(String(e));
+        if (alive && revision === started) setError(String(e));
       } finally {
         pending = false;
       }
@@ -44,9 +57,10 @@ export function useFileTranscriptionController(disabled = false) {
     const timer = setInterval(poll, 700);
     return () => {
       alive = false;
+      scope.dispose();
       clearInterval(timer);
     };
-  }, [jobId, finished]);
+  }, [jobId, finished, visible]);
   const start = async () => {
     if (!path.trim() || locked || startPending.current) return;
     startPending.current = true;
@@ -150,6 +164,9 @@ function FileTranscriptionView({
   const locked = running || busy || choosing || Boolean(disabled);
   const filename = path.trim().split(/[\\/]/).pop();
   const preparing = running && !job?.total_s;
+  let progressText = `${Math.round(job?.done_s ?? 0)} of ${Math.round(job?.total_s ?? 0)} seconds transcribed`;
+  if (cancelRequested) progressText = "Stopping the import…";
+  else if (preparing) progressText = "Preparing audio…";
   useEffect(() => {
     if (!isTauri()) return;
     let alive = true;
@@ -225,13 +242,7 @@ function FileTranscriptionView({
             value={preparing ? undefined : Math.min(job?.done_s ?? 0, job?.total_s ?? 0)}
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs text-muted tabular-nums">
-              {cancelRequested
-                ? "Stopping the import…"
-                : preparing
-                  ? "Preparing audio…"
-                  : `${Math.round(job?.done_s ?? 0)} of ${Math.round(job?.total_s ?? 0)} seconds transcribed`}
-            </span>
+            <span className="text-xs text-muted tabular-nums">{progressText}</span>
             <button className="btn btn-ghost" disabled={cancelRequested} onClick={cancel}>
               {cancelRequested ? "Cancelling…" : "Cancel import"}
             </button>

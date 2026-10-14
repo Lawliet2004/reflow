@@ -7,6 +7,7 @@ import {
   SystemMetrics,
 } from "../types";
 import { api, safeListen } from "../services/tauriApi";
+import { useViewVisibility } from "./useViewVisibility";
 import type { IntelligenceDownloadEvent } from "../App";
 
 /**
@@ -45,7 +46,8 @@ function isInFlight(phase: string): boolean {
   return !TERMINAL.has(phase);
 }
 
-export function useIntelligenceHub(): IntelligenceHub {
+export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
+  const visible = useViewVisibility();
   const [flowStatus, setFlowStatus] = useState<FlowStatus | null>(null);
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
   const [intelligenceTiers, setIntelligenceTiers] = useState<IntelligenceTierState[] | null>(null);
@@ -147,25 +149,17 @@ export function useIntelligenceHub(): IntelligenceHub {
       }),
       subscribe<RuntimeDownloadEvent>("runtime:download-progress", (event) => {
         if (!alive) return;
-        const inFlight =
-          event.phase === "starting" ||
-          event.phase === "downloading" ||
-          event.phase === "verifying" ||
-          event.phase === "extracting";
-        setRuntimeDownloadActive(inFlight);
+        setRuntimeDownloadActive(isInFlight(event.phase));
         setRuntimeDownload(event);
         if (event.phase === "error") {
           setRuntimeDownloadError(event.error ?? "Runtime download failed");
-          setLastToast({
-            kind: "error",
-            text: event.error ?? "llama-server runtime download failed. Will retry next time.",
-          });
+          notifyToast(
+            "error",
+            event.error ?? "llama-server runtime download failed. Will retry next time.",
+          );
         } else if (event.phase === "complete") {
           setRuntimeDownloadError(null);
-          setLastToast({
-            kind: "info",
-            text: `llama-server ${event.kind_label ?? ""} runtime installed.`,
-          });
+          notifyToast("info", `llama-server ${event.kind_label ?? ""} runtime installed.`);
           void refresh();
         }
       }),
@@ -180,7 +174,7 @@ export function useIntelligenceHub(): IntelligenceHub {
   // clobber event-driven progress or resurrect Download buttons mid-write.
   const anyActive = activeDownloadTiers.size > 0 || runtimeDownloadActive;
   useEffect(() => {
-    if (anyActive) {
+    if (anyActive || !visible || !pollEnabled) {
       if (pollTimer.current) {
         clearInterval(pollTimer.current);
         pollTimer.current = null;
@@ -197,7 +191,7 @@ export function useIntelligenceHub(): IntelligenceHub {
         pollTimer.current = null;
       }
     };
-  }, [anyActive, refresh]);
+  }, [anyActive, pollEnabled, refresh, visible]);
 
   return {
     flowStatus,

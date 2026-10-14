@@ -5,13 +5,18 @@
   <summary>Local-first dictation for Linux and Windows</summary>
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
+  <url type="homepage">https://github.com/Lawliet2004/reflow</url>
+  <developer id="com.reflow">
+    <name>Reflow Team</name>
+  </developer>
+  <content_rating type="oars-1.1" />
   <description>
     <p>
       Reflow is a system-wide dictation utility. Speech is transcribed on your computer with Qwen3-ASR.
       Android phones can pair over the local network; audio is not sent to the cloud.
     </p>
   </description>
-  <launchable type="desktop-id">reflow.desktop</launchable>
+  <launchable type="desktop-id">Reflow.desktop</launchable>
   <categories>
     <category>Utility</category>
     <category>AudioVideo</category>

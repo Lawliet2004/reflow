@@ -52,10 +52,15 @@ fn apply_toggle(current: &AppSettings, enabled: bool) -> AppSettings {
 /// Off means Stage 2 genuinely does not run — not merely a lighter cleanup.
 #[test]
 fn turning_polish_off_disables_stage_two() {
-    let settings = AppSettings::default();
+    // Fresh defaults are deterministic-only, so the fixture starts from a
+    // tier the user deliberately chose.
+    let settings = AppSettings {
+        intelligence_tier: "smart_flow".into(),
+        ..AppSettings::default()
+    };
     assert!(
         settings.resolve_intent().run_llm,
-        "the default install should polish"
+        "an LLM-tier install should polish"
     );
 
     let off = apply_toggle(&settings, false);

@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { AppTheme, Appearance, WindowMaterial } from "../types";
+import { clampUiZoom, type AppTheme, type Appearance, type WindowMaterial } from "../types";
 
 /** Windows 11 reports platformVersion >= 13 through UA client hints (WebView2). */
 async function isWindows11(): Promise<boolean> {
@@ -68,6 +68,7 @@ export function appearanceDataset(a: Appearance): Record<string, string> {
     readingFont: a.reading_font,
     headingFont: a.heading_font,
     fontScale: a.ui_font_scale,
+    zoom: String(clampUiZoom(a.ui_zoom)),
     density: a.ui_density,
     corners: a.corner_style,
     overlayTheme: a.overlay_theme,

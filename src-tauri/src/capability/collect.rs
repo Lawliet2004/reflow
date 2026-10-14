@@ -39,6 +39,14 @@ fn cache() -> &'static Mutex<Option<Cached>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+// Serialize slow probes separately from the snapshot lock. Cached readers
+// stay cheap, and concurrent misses cannot spawn duplicate GPU probes or
+// publish snapshots out of order.
+fn probe_lock() -> &'static Mutex<()> {
+    static PROBE: OnceLock<Mutex<()>> = OnceLock::new();
+    PROBE.get_or_init(|| Mutex::new(()))
+}
+
 /// Facts that cannot change while the process runs, probed once.
 struct StaticProbes {
     vulkan: VulkanStatus,
@@ -79,6 +87,15 @@ pub fn capabilities() -> Capabilities {
             }
         }
     }
+    let _probe = probe_lock().lock().unwrap_or_else(|p| p.into_inner());
+    {
+        let guard = cache().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(cached) = guard.as_ref() {
+            if cached.at.elapsed() < CACHE_TTL {
+                return cached.caps.clone();
+            }
+        }
+    }
     let fresh = probe_now();
     let mut guard = cache().lock().unwrap_or_else(|p| p.into_inner());
     *guard = Some(Cached {
@@ -92,6 +109,7 @@ pub fn capabilities() -> Capabilities {
 /// decision and after every model load, where a stale free-VRAM figure would
 /// be actively harmful.
 pub fn capabilities_uncached() -> Capabilities {
+    let _probe = probe_lock().lock().unwrap_or_else(|p| p.into_inner());
     let fresh = probe_now();
     let mut guard = cache().lock().unwrap_or_else(|p| p.into_inner());
     *guard = Some(Cached {
@@ -290,6 +308,16 @@ fn probe_cpu_and_ram() -> (f32, RamInfo) {
 ///
 /// A missing binary is a normal outcome (no NVIDIA driver, no Vulkan loader),
 /// so failures are `None` rather than errors.
+#[cfg(target_os = "linux")]
+fn run_probe(program: &str, args: &[&str]) -> Option<String> {
+    // Reuse the bounded desktop probe runner: it drains output while the
+    // child runs, caps memory, and reaps the child and its descendants.
+    crate::platform::process::output(program, args, PROBE_TIMEOUT, 4 * 1024 * 1024)
+        .ok()
+        .filter(|text| !text.trim().is_empty())
+}
+
+#[cfg(not(target_os = "linux"))]
 fn run_probe(program: &str, args: &[&str]) -> Option<String> {
     use std::process::{Command, Stdio};
 
@@ -340,6 +368,15 @@ fn run_probe(program: &str, args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_large_hardware_probe_is_drained_instead_of_timing_out() {
+        let output = run_probe("seq", &["1", "200000"]).expect("coreutils seq is available");
+        assert!(output.len() > 64 * 1024);
+        assert!(output.starts_with("1\n"));
+        assert!(output.ends_with("200000\n"));
+    }
 
     /// The probe must work on any machine, including one with no GPU, no
     /// driver and no Vulkan loader. It must never panic and never report a

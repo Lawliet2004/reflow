@@ -572,6 +572,10 @@ pub struct ModelStatus {
     /// substitution rather than leaving the user to interpret it as a fault.
     #[serde(default)]
     pub asr_selection_notice: Option<String>,
+    /// Machine-readable last load failure ("python_missing",
+    /// "missing_dependency", "crash", ...). Drives first-run remediation UI.
+    #[serde(default)]
+    pub failure_kind: Option<String>,
 }
 
 impl Default for ModelStatus {
@@ -597,6 +601,7 @@ impl Default for ModelStatus {
             torch_cuda_version: None,
             asr_gpu_hint: None,
             asr_selection_notice: None,
+            failure_kind: None,
         }
     }
 }

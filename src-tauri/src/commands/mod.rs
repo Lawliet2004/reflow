@@ -98,26 +98,57 @@ fn spawn_action(app: AppHandle, action: &str, pressed_at: Instant) {
 }
 
 type HotkeyCallback = crate::hotkey::hook::platform::ComboFn;
-fn hotkey_dispatcher(
-    app: AppHandle,
-    action: String,
-) -> (HotkeyCallback, HotkeyCallback, HotkeyCallback) {
+
+/// What a bound key did, queued with the worker so press/release order is kept.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HotkeyEvent {
+    Press,
+    Release,
+    Toggle,
+    Cancel,
+}
+
+struct DispatchCallbacks {
+    press: HotkeyCallback,
+    release: HotkeyCallback,
+    toggle: HotkeyCallback,
+    cancel: HotkeyCallback,
+}
+
+fn hotkey_dispatcher(app: AppHandle, action: String) -> DispatchCallbacks {
     // One queue per binding preserves press/release order across slow ASR admission.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u8, Instant)>();
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<(HotkeyEvent, Instant, u64)>();
+    let guard = Arc::new(crate::hotkey::dispatch_guard::DispatchGuard::default());
+    let worker_guard = Arc::clone(&guard);
+    let cancel_ctx = app.state::<AppContext>().inner().clone();
     tauri::async_runtime::spawn(async move {
         let ctx = app.state::<AppContext>().inner().clone();
         let mut owned = None;
-        while let Some((event, at)) = rx.recv().await {
-            if event == 1
-                || (event == 2 && owned.is_some() && *ctx.current_session_id.read() == owned)
+        while let Some((event, at, generation)) = rx.recv().await {
+            if event == HotkeyEvent::Cancel {
+                if let Some(id) = owned.take() {
+                    let _ = session::cancel_owned_wait(&ctx, Some(id)).await;
+                }
+                worker_guard.own(None);
+                continue;
+            }
+            if !worker_guard.current(generation) {
+                continue;
+            }
+            if event == HotkeyEvent::Release
+                || (event == HotkeyEvent::Toggle
+                    && owned.is_some()
+                    && *ctx.current_session_id.read() == owned)
             {
                 if let Some(id) = owned.take() {
-                    if event == 1 {
+                    if event == HotkeyEvent::Release {
                         let _ = session::stop_hotkey_owned_at(&ctx, id, at).await;
                     } else {
                         let _ = session::stop_owned(&ctx, true, id).await;
                     }
                 }
+                worker_guard.own(None);
                 continue;
             }
             if owned.is_some() && *ctx.current_session_id.read() == owned {
@@ -133,7 +164,16 @@ fn hotkey_dispatcher(
                 _ => (crate::dory::SessionIntent::Dictate, None),
             };
             match session::start_microphone_with_intent_at(&ctx, Some(at), intent, mode_id).await {
-                Ok(id) => owned = Some(id),
+                Ok(id) => {
+                    worker_guard.own(Some(id));
+                    if worker_guard.current(generation) {
+                        owned = Some(id);
+                    } else {
+                        let _ = session::cancel_owned_wait(&ctx, Some(id)).await;
+                        worker_guard.own(None);
+                        owned = None;
+                    }
+                }
                 Err(err) => {
                     owned = None;
                     let _ = app.emit("recording:error", err.message);
@@ -143,50 +183,206 @@ fn hotkey_dispatcher(
     });
     let press = tx.clone();
     let release = tx.clone();
-    (
-        Arc::new(move |at| {
-            let _ = press.send((0, at));
+    let cancel = tx.clone();
+    let press_guard = Arc::clone(&guard);
+    let release_guard = Arc::clone(&guard);
+    let toggle_guard = Arc::clone(&guard);
+    DispatchCallbacks {
+        press: Arc::new(move |at| {
+            let _ = press.send((HotkeyEvent::Press, at, press_guard.generation()));
         }),
-        Arc::new(move |at| {
-            let _ = release.send((1, at));
+        release: Arc::new(move |at| {
+            let _ = release.send((HotkeyEvent::Release, at, release_guard.generation()));
         }),
-        Arc::new(move |at| {
-            let _ = tx.send((2, at));
+        toggle: Arc::new(move |at| {
+            let _ = tx.send((HotkeyEvent::Toggle, at, toggle_guard.generation()));
         }),
-    )
+        cancel: Arc::new(move |at| {
+            guard.revoke(&cancel_ctx);
+            let _ = cancel.send((HotkeyEvent::Cancel, at, guard.generation()));
+        }),
+    }
 }
 
 pub fn register_dictation_hotkey(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
+    let result = register_hotkeys_inner(app, shortcut_str);
+    if let Err(error) = &result {
+        platform::desktop::shortcut(
+            platform::desktop::ShortcutState::Unavailable,
+            None,
+            Some(error.clone()),
+        );
+        *app.state::<AppContext>().hotkey_error.write() = Some(error.clone());
+        let _ = app.emit("hotkey:error", error.clone());
+    } else {
+        let _ = app.emit("hotkey:ready", shortcut_str);
+    }
+    result
+}
+
+pub(crate) fn global_cancel_callback(app: &AppHandle) -> HotkeyCallback {
+    let app = app.clone();
+    Arc::new(move |_| {
+        let context = app.state::<AppContext>().inner().clone();
+        let owned = *context.current_session_id.read();
+        if let Some(id) = owned {
+            tauri::async_runtime::spawn(async move {
+                let _ = session::cancel_owned_wait(&context, Some(id)).await;
+            });
+        }
+    })
+}
+
+/// Register the session-scoped cancel binding while a recording is live.
+///
+/// Escape is a bare key other apps need; grabbing it globally at all times
+/// would swallow it system-wide on macOS and X11, where the platform API has
+/// no observe-and-pass-through mode like the Windows hook has. The binding is
+/// therefore armed on `Recording` and disarmed on every other state.
+#[cfg(not(windows))]
+pub(crate) fn arm_session_cancel(app: &AppHandle) {
+    let binding = app
+        .state::<AppContext>()
+        .session_cancel_shortcut
+        .read()
+        .clone();
+    let Some(binding) = binding else { return };
+    let Ok(shortcut) = binding.parse::<Shortcut>() else {
+        log::warn!("Session cancel shortcut '{binding}' is not parseable");
+        return;
+    };
+    let cancel = global_cancel_callback(app);
+    if let Err(error) = app.global_shortcut().on_shortcut(shortcut, move |_, _, event| {
+        if event.state() == ShortcutState::Pressed {
+            cancel(Instant::now());
+        }
+    }) {
+        log::warn!("Could not arm the session cancel shortcut: {error}");
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn disarm_session_cancel(app: &AppHandle) {
+    let binding = app
+        .state::<AppContext>()
+        .session_cancel_shortcut
+        .read()
+        .clone();
+    if let Some(shortcut) = binding
+        .as_deref()
+        .and_then(|value| value.parse::<Shortcut>().ok())
+    {
+        let _ = app.global_shortcut().unregister(shortcut);
+    }
+}
+
+fn register_hotkeys_inner(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
+    let previous = app.state::<AppContext>().registered_hotkey.read().clone();
+    match apply_hotkeys(app, shortcut_str) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Never leave the app without its working shortcuts: put the last
+            // successfully registered bindings back before reporting failure.
+            if !previous.is_empty() && previous != shortcut_str {
+                if let Err(rollback) = apply_hotkeys(app, &previous) {
+                    log::error!("Could not restore the previous hotkey '{previous}': {rollback}");
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+fn apply_hotkeys(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
     let mut settings = app.state::<AppContext>().settings_store.get();
     settings.hotkeys.dictation = shortcut_str.into();
     let registry = crate::hotkey::registry::HotkeyRegistry::from_settings(&settings)?;
-    // Parse every shortcut before replacing registrations.
-    for binding in &registry.bindings {
-        if HotkeyManager::modifier_only_flags(&binding.shortcut).is_none() {
-            binding
-                .shortcut
-                .parse::<Shortcut>()
-                .map_err(|e| format!("Invalid hotkey {}: {e}", binding.shortcut))?;
-        }
-    }
     let shortcuts = app.global_shortcut();
     shortcuts.unregister_all().map_err(|e| e.to_string())?;
     crate::hotkey::hook::clear_combo();
-    let cancel_app = app.clone();
-    crate::hotkey::hook::set_cancel(settings.hotkeys.cancel.as_ref().map(|_| {
-        std::sync::Arc::new(move |_| {
-            let ctx = cancel_app.state::<AppContext>();
-            if *ctx.state_enum.read() == AppStateEnum::Recording {
-                let ctx = ctx.inner().clone();
-                let id = *ctx.current_session_id.read();
-                tauri::async_runtime::spawn(async move {
-                    let _ = session::cancel_owned_wait(&ctx, id).await;
-                });
-            }
-        }) as crate::hotkey::hook::platform::ComboFn
-    }));
+    crate::hotkey::hook::set_cancel(None);
+    *app.state::<AppContext>()
+        .session_cancel_shortcut
+        .write() = None;
+    #[cfg(target_os = "linux")]
+    {
+        crate::hotkey::portal::clear();
+        if platform::session() == platform::DisplaySession::Wayland {
+            let bindings: Vec<crate::hotkey::portal::PortalBinding> = registry
+                .bindings
+                .into_iter()
+                .map(|binding| {
+                    let DispatchCallbacks {
+                        press,
+                        release,
+                        toggle,
+                        cancel,
+                    } = if binding.action == "cancel" {
+                        let cancel = global_cancel_callback(app);
+                        DispatchCallbacks {
+                            press: cancel.clone(),
+                            release: Arc::new(|_| {}),
+                            toggle: cancel,
+                            cancel: Arc::new(|_| {}),
+                        }
+                    } else {
+                        hotkey_dispatcher(app.clone(), binding.action.clone())
+                    };
+                    crate::hotkey::portal::PortalBinding {
+                        action: binding.action,
+                        shortcut: binding.shortcut,
+                        press,
+                        release,
+                        toggle,
+                        cancel,
+                    }
+                })
+                .collect();
+            *app.state::<AppContext>().registered_hotkey.write() = shortcut_str.into();
+            crate::hotkey::portal::register(app.clone(), bindings);
+            return Ok(());
+        }
+    }
     for binding in registry.bindings {
-        let (press, release, toggle) = hotkey_dispatcher(app.clone(), binding.action);
+        if binding.action == "cancel" {
+            let cancel = global_cancel_callback(app);
+            if cfg!(windows) && binding.shortcut == "Escape" {
+                // Preserve the transparent Escape hook on Windows.
+                crate::hotkey::hook::set_cancel(Some(cancel));
+            } else if !cfg!(windows) && binding.shortcut == "Escape" {
+                // Escape armed only for the duration of a recording — see
+                // arm_session_cancel. A session already in progress arms it
+                // immediately.
+                *app.state::<AppContext>()
+                    .session_cancel_shortcut
+                    .write() = Some(binding.shortcut.clone());
+                #[cfg(not(windows))]
+                if *app.state::<AppContext>().state_enum.read()
+                    == crate::state::AppStateEnum::Recording
+                {
+                    arm_session_cancel(app);
+                }
+            } else {
+                let shortcut = binding
+                    .shortcut
+                    .parse::<Shortcut>()
+                    .map_err(|error| error.to_string())?;
+                shortcuts
+                    .on_shortcut(shortcut, move |_, _, event| {
+                        if event.state() == ShortcutState::Pressed {
+                            cancel(Instant::now());
+                        }
+                    })
+                    .map_err(|error| format!("Could not register cancel shortcut: {error}"))?;
+            }
+            continue;
+        }
+        let DispatchCallbacks {
+            press,
+            release,
+            toggle,
+            ..
+        } = hotkey_dispatcher(app.clone(), binding.action);
         if let Some(flags) = HotkeyManager::modifier_only_flags(&binding.shortcut) {
             if !crate::hotkey::hook::set_combo(flags, press, release) {
                 return Err(format!(
@@ -225,6 +421,11 @@ pub fn register_dictation_hotkey(app: &AppHandle, shortcut_str: &str) -> Result<
     let ctx = app.state::<AppContext>();
     *ctx.registered_hotkey.write() = shortcut_str.into();
     *ctx.hotkey_error.write() = None;
+    platform::desktop::shortcut(
+        platform::desktop::ShortcutState::Ready,
+        Some(shortcut_str.into()),
+        None,
+    );
     Ok(())
 }
 
@@ -285,6 +486,19 @@ pub fn update_settings(
 
     let audio_retention_requested = patch.get("audio_retention").is_some();
     let previous = ctx.settings_store.get();
+    if patch
+        .get("asr")
+        .and_then(|asr| asr.get("python_path"))
+        .is_some()
+        && !matches!(
+            *ctx.state_enum.read(),
+            AppStateEnum::Ready | AppStateEnum::Idle
+        )
+    {
+        return Err(
+            "Finish or cancel the current session before changing the Python interpreter.".into(),
+        );
+    }
     let updated = ctx.settings_store.merge_update(patch)?;
     if updated.history_encryption != previous.history_encryption {
         if let Err(error) = ctx.history_store.set_encryption(updated.history_encryption) {
@@ -329,26 +543,101 @@ pub fn update_settings(
     }
     if updated.asr.runtime != previous.asr.runtime {
         prepare_asr_runtime(ctx.inner(), &app)?;
+        schedule_asr_reload(&app, ctx.inner());
+    } else if updated.asr.python_path != previous.asr.python_path {
+        ctx.asr_handle.unload_model_blocking()?;
+        schedule_asr_reload(&app, ctx.inner());
+    } else if updated.asr.model != previous.asr.model {
+        schedule_asr_reload(&app, ctx.inner());
     }
     let _ = app.emit("settings:changed", &updated);
 
-    if updated.hotkey != previous.hotkey
-        || serde_json::to_value(&updated.hotkeys).ok()
-            != serde_json::to_value(&previous.hotkeys).ok()
-        || serde_json::to_value(&updated.modes).ok() != serde_json::to_value(&previous.modes).ok()
-    {
+    // Rebinding unregister-and-registers every global shortcut — doing it
+    // for a change that did not touch any binding (mode instructions, labels,
+    // trigger wording) strands an active recording for no reason.
+    let bindings_changed = crate::hotkey::registry::HotkeyRegistry::from_settings(&previous)
+        .ok()
+        != crate::hotkey::registry::HotkeyRegistry::from_settings(&updated)
+            .ok();
+    if bindings_changed {
+        // A session owns the current grab set — rebinding under it drops the
+        // cancel/swallow bindings mid-recording. Defer to session end.
+        if matches!(
+            *ctx.state_enum.read(),
+            AppStateEnum::Recording | AppStateEnum::Processing | AppStateEnum::Injecting
+        ) {
+            ctx.pending_hotkey_rebind
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        } else {
         match register_dictation_hotkey(&app, &updated.hotkey) {
             Ok(()) => {}
             Err(err) => {
-                *ctx.hotkey_error.write() = Some(err.clone());
-                let _ = app.emit("hotkey:error", err);
+                // A broken shortcut must not persist, and neither can the
+                // rest of the patch: fields merged earlier have their
+                // side-effects applied below this point, so a partial revert
+                // would leave the store ahead of the running state. Restore
+                // the full previous snapshot and re-run the cheap
+                // side-effectors so they match it again.
+                match ctx.settings_store.update(previous.clone()) {
+                    Ok(reverted) => {
+                        if reverted.history_encryption != updated.history_encryption {
+                            if let Err(error) =
+                                ctx.history_store.set_encryption(reverted.history_encryption)
+                            {
+                                log::error!("Could not restore history encryption: {error}");
+                            }
+                        }
+                        ctx.history_store
+                            .require_encryption(reverted.history_encryption);
+                        if let Err(error) = crate::network_policy::configure(
+                            reverted.offline_mode,
+                            &PlatformSys::get_app_dir(),
+                        ) {
+                            log::error!("Could not restore the network policy: {error}");
+                        }
+                        if reverted.audio_retention != updated.audio_retention {
+                            if let Err(error) =
+                                ctx.history_store.set_audio_retention(&reverted.audio_retention)
+                            {
+                                log::error!("Could not restore audio retention: {error}");
+                            }
+                        }
+                        if reverted.asr.runtime != updated.asr.runtime {
+                            if let Err(error) = prepare_asr_runtime(ctx.inner(), &app) {
+                                log::error!("Could not restore the speech runtime: {error}");
+                            }
+                        } else if reverted.asr.python_path != updated.asr.python_path {
+                            if let Err(error) = ctx.asr_handle.unload_model_blocking() {
+                                log::error!("Could not restore the speech model state: {error}");
+                            }
+                        }
+                        // The inner rollback only restores the dictation
+                        // binding; re-register from the reverted settings so
+                        // every action's previous binding is live again.
+                        if let Err(rollback) = apply_hotkeys(&app, &previous.hotkey) {
+                            log::error!("Could not restore the previous hotkeys: {rollback}");
+                        }
+                        let _ = app.emit("settings:changed", &reverted);
+                    }
+                    Err(rollback) => {
+                        log::error!("Could not roll back settings: {rollback}");
+                    }
+                }
+                return Err(format!(
+                    "Could not register the shortcut: {err}. The previous settings were restored."
+                ));
             }
+        }
         }
     }
 
     if updated.launch_at_startup != previous.launch_at_startup {
         if let Err(err) = platform::set_launch_at_startup(updated.launch_at_startup) {
-            log::warn!("Failed to update autostart: {err}");
+            let reverted = ctx.settings_store.merge_update(serde_json::json!({
+                "launch_at_startup": previous.launch_at_startup
+            }))?;
+            let _ = app.emit("settings:changed", reverted);
+            return Err(format!("Could not update launch at startup: {err}"));
         }
     }
 
@@ -408,8 +697,29 @@ pub fn update_settings(
 }
 
 #[tauri::command]
-pub fn get_audio_devices() -> Result<Vec<AudioDeviceInfo>, String> {
-    AudioCaptureEngine::list_input_devices()
+pub async fn get_audio_devices() -> Result<Vec<AudioDeviceInfo>, String> {
+    tokio::task::spawn_blocking(AudioCaptureEngine::list_input_devices)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// The microphone dictation is using now, or would use on the next capture.
+/// While recording this is the stream's actual device — fallback ranking can
+/// pick a different input than the configured default.
+#[tauri::command]
+pub async fn get_active_microphone(ctx: State<'_, AppContext>) -> Result<String, String> {
+    if matches!(*ctx.state_enum.read(), AppStateEnum::Recording) {
+        let live = ctx.audio_engine.read().last_device_name();
+        if !live.is_empty() {
+            return Ok(live);
+        }
+    }
+    let device_id = ctx.settings_store.get().microphone_device_id;
+    tokio::task::spawn_blocking(move || {
+        AudioCaptureEngine::resolve_device_name(device_id.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -449,7 +759,12 @@ pub async fn test_microphone(
         );
     }
     let settings = ctx.settings_store.get();
-    let (health, _samples) = crate::audio::preflight::capture_sample(&settings, 3).await?;
+    let (health, _samples) = crate::audio::preflight::capture_sample(
+        &settings,
+        3,
+        Some(Arc::clone(&ctx.last_audio_level)),
+    )
+    .await?;
     Ok(health)
 }
 
@@ -469,7 +784,12 @@ pub async fn test_recognition(
         return Err("Load the speech model before testing recognition.".into());
     }
     let settings = ctx.settings_store.get();
-    let (health, samples) = crate::audio::preflight::capture_sample(&settings, 3).await?;
+    let (health, samples) = crate::audio::preflight::capture_sample(
+        &settings,
+        3,
+        Some(Arc::clone(&ctx.last_audio_level)),
+    )
+    .await?;
     if health.peak < 0.001 || health.dropped_chunks > 0 {
         return Err(health.assessment);
     }
@@ -507,14 +827,25 @@ pub fn retry_clipboard_restore() -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub async fn copy_text(text: String) -> Result<(), String> {
+    if text.len() > 1024 * 1024 {
+        return Err("Text exceeds the clipboard copy limit".into());
+    }
+    tokio::task::spawn_blocking(move || {
+        TextInjector::deliver(&text, &crate::settings::OutputAction::Copy, 0).map(|_| ())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn start_recording(
-    app: AppHandle,
+    _app: AppHandle,
     ctx: State<'_, AppContext>,
     intent: Option<crate::dory::SessionIntent>,
     mode_id: Option<String>,
 ) -> Result<(), String> {
     let ctx = ctx.inner().clone();
-    let _ = app;
     session::start_microphone_with_intent_at(
         &ctx,
         None,
@@ -555,12 +886,23 @@ pub async fn cancel_recording(app: AppHandle, ctx: State<'_, AppContext>) -> Res
 }
 
 #[tauri::command]
-pub fn inject_text(text: String, ctx: State<'_, AppContext>) -> Result<bool, String> {
+pub async fn inject_text(text: String, ctx: State<'_, AppContext>) -> Result<bool, String> {
     let settings = ctx.settings_store.get();
     // No target hwnd captured for this manual command — skip the
     // foreground-match verification and let the paste go to whatever is
     // currently focused.
-    let outcome = TextInjector::inject(&text, settings.clipboard_restore_enabled, 0)?;
+    let outcome = tokio::task::spawn_blocking(move || {
+        TextInjector::inject_with_shortcut(
+            &text,
+            settings.clipboard_restore_enabled,
+            0,
+            settings.paste_delay_ms,
+            &settings.inject_method,
+            &settings.paste_shortcut,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     Ok(outcome.pasted)
 }
 
@@ -717,7 +1059,14 @@ pub fn get_model_status(ctx: State<'_, AppContext>) -> ModelStatus {
     let active =
         crate::model::manager::runtime_model_id(&settings.asr.model, &settings.asr.runtime);
     let engine_status = ctx.asr_handle.engine_status();
-    let mut status = ctx.model_manager.get_status(&engine_status, &active);
+    let resolved = ctx
+        .last_asr_load
+        .read()
+        .as_ref()
+        .and_then(|t| (t.0 == active).then(|| t.1.clone()));
+    let mut status = ctx
+        .model_manager
+        .get_status(&engine_status, &active, resolved.as_deref());
     status.asr_selection_notice = ctx.asr_selection_notice.read().clone();
     status
 }
@@ -733,6 +1082,13 @@ pub fn get_model_status(ctx: State<'_, AppContext>) -> ModelStatus {
 pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), String> {
     let settings = ctx.settings_store.get();
     let requested = settings.asr.model.clone();
+    // The runtime-qualified selection this resolution answers for — recorded
+    // beside the result so a stale resolution can never bless the engine's
+    // model as current under a new selection.
+    let selected_key = crate::model::manager::runtime_model_id(
+        &requested,
+        &settings.asr.runtime,
+    );
     let manager = ctx.model_manager.clone();
     let installed = move |id: &str| manager.is_installed(id);
     let caps = crate::capability::capabilities_uncached();
@@ -757,6 +1113,7 @@ pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), St
         if fits {
             *ctx.asr_selection_notice.write() = Some(format!("Using the fastest qualified calibration for {}. Other languages require another sample.", settings.language));
             *ctx.last_asr_load.write() = Some((
+                selected_key.clone(),
                 choice.model.clone(),
                 choice.device.clone(),
                 choice.precision.clone(),
@@ -804,6 +1161,7 @@ pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), St
     }
     *ctx.asr_selection_notice.write() = selection.downgrade.clone();
     *ctx.last_asr_load.write() = Some((
+        selected_key,
         selection.model_id.to_string(),
         selection.device.as_str().to_string(),
         selection.precision.as_str().to_string(),
@@ -890,19 +1248,21 @@ pub fn install_model(
     prepare_asr_runtime(ctx.inner(), &app)?;
     let model_dir = ctx.model_manager.get_model_dir(&active);
     let repo = ctx.model_manager.repo_for(&active);
-    if matches!(active.as_str(), "phonon-2" | "zipformer-20m") {
-        let (_, backend, precision) = resolve_asr_load(ctx.inner())?;
-        ctx.asr_handle.install_model_dir_with_options_blocking(
-            &model_dir.to_string_lossy(),
-            repo,
-            &backend,
-            &precision,
-        )?;
-    } else {
-        ctx.asr_handle
-            .install_model_dir_blocking(&model_dir.to_string_lossy(), repo)?;
-    }
-    spawn_model_status_watch(app, ctx.inner().clone());
+    // Resolving here — not just for the bundled small models — keeps the
+    // post-install auto-load on the same device/precision the load resolver
+    // picked. Otherwise a first Qwen install loaded at "auto"/"auto" and
+    // could land on a different device than the next reload.
+    let (_, backend, precision) = resolve_asr_load(ctx.inner())?;
+    ctx.asr_handle.install_model_dir_with_options_blocking(
+        &model_dir.to_string_lossy(),
+        repo,
+        &backend,
+        &precision,
+    )?;
+    spawn_model_status_watch(app.clone(), ctx.inner().clone());
+    // A selection change that queued while this install held the lock.
+    drop(_operation);
+    kick_pending_asr_reload(&app, ctx.inner());
     Ok(())
 }
 
@@ -951,7 +1311,16 @@ pub struct DownloadedModel {
 /// Everything model-related that currently occupies disk, so the settings UI
 /// can offer deletion for more than just the active selection.
 #[tauri::command]
-pub fn get_downloaded_models(ctx: State<'_, AppContext>) -> Vec<DownloadedModel> {
+pub async fn get_downloaded_models(
+    ctx: State<'_, AppContext>,
+) -> Result<Vec<DownloadedModel>, String> {
+    let context = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || build_downloaded_models(&context))
+        .await
+        .map_err(|error| format!("Could not read installed models: {error}"))
+}
+
+fn build_downloaded_models(ctx: &AppContext) -> Vec<DownloadedModel> {
     let settings = ctx.settings_store.get();
     let active_asr =
         crate::model::manager::runtime_model_id(&settings.asr.model, &settings.asr.runtime);
@@ -1007,7 +1376,19 @@ pub fn get_downloaded_models(ctx: State<'_, AppContext>) -> Vec<DownloadedModel>
 }
 
 #[tauri::command]
-pub fn reload_model(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
+pub async fn reload_model(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
+    let context = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = reload_model_inner(app.clone(), &context);
+        // A queued selection change gets its turn once the lock is free.
+        kick_pending_asr_reload(&app, &context);
+        result
+    })
+    .await
+    .map_err(|error| format!("Could not reload speech model: {error}"))?
+}
+
+pub(crate) fn reload_model_inner(app: AppHandle, ctx: &AppContext) -> Result<(), String> {
     let _operation = ctx.session_operation.try_lock().map_err(|_| {
         "Wait for the active dictation to finish before reloading models.".to_string()
     })?;
@@ -1019,18 +1400,101 @@ pub fn reload_model(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), St
     }
     ctx.flow_runtime.shutdown();
     ctx.asr_handle.unload_model_blocking()?;
-    prepare_asr_runtime(ctx.inner(), &app)?;
+    prepare_asr_runtime(ctx, &app)?;
     // Same resolution as the startup load, so a manual reload cannot end up
     // running a different model than a launch would.
-    let (model_id, device, precision) = resolve_asr_load(ctx.inner())?;
+    let (model_id, device, precision) = resolve_asr_load(ctx)?;
     let model_dir = ctx.model_manager.get_model_dir(&model_id);
     ctx.asr_handle.load_model_with_precision_blocking(
         &model_dir.to_string_lossy(),
         &device,
         &precision,
     )?;
-    spawn_model_status_watch(app, ctx.inner().clone());
+    spawn_model_status_watch(app, ctx.clone());
     Ok(())
+}
+
+/// A settings write that changed the binding set while a session was
+/// recording applies here once the session ends — unregistering global
+/// shortcuts mid-capture would strand the session's cancel/swallow bindings.
+pub(crate) fn rebind_hotkeys_if_pending(app: &AppHandle) {
+    let ctx = app.state::<AppContext>();
+    if !ctx
+        .pending_hotkey_rebind
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    let settings = ctx.settings_store.get();
+    if let Err(error) = register_dictation_hotkey(app, &settings.hotkey) {
+        log::warn!("Could not apply the deferred hotkey change: {error}");
+    }
+}
+
+/// Mark the selection as needing a reload and kick it if nothing is running.
+/// Skipped when the resolved selection is not installed (install_model owns
+/// that path — the working engine is never unloaded against a failing
+/// install). A busy session lock leaves the flag set: the next idle hook
+/// (`kick_pending_asr_reload`) runs it with whatever the settings then say —
+/// the latest selection always wins.
+fn schedule_asr_reload(app: &AppHandle, ctx: &AppContext) {
+    let settings = ctx.settings_store.get();
+    let active = crate::model::manager::runtime_model_id(
+        &settings.asr.model,
+        &settings.asr.runtime,
+    );
+    if !ctx.model_manager.is_installed(&active) {
+        return;
+    }
+    ctx.pending_asr_reload
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    kick_pending_asr_reload(app, ctx);
+}
+
+/// Run the deferred reload once the session lock is free. Called from the
+/// Dory state loop on session end and after install/reload commands release
+/// the operation lock.
+/// `true` while a queued selection change still needs a reload: the flag is
+/// set and the *current* resolution is installed. Resolving the flag against
+/// the latest settings is what makes "latest selection wins" work. A flag
+/// whose selection is no longer installed is cleared — the install flow owns
+/// that path.
+fn pending_reload_is_actionable(ctx: &AppContext) -> bool {
+    if !ctx
+        .pending_asr_reload
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return false;
+    }
+    let settings = ctx.settings_store.get();
+    let active = crate::model::manager::runtime_model_id(
+        &settings.asr.model,
+        &settings.asr.runtime,
+    );
+    if !ctx.model_manager.is_installed(&active) {
+        ctx.pending_asr_reload
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+pub(crate) fn kick_pending_asr_reload(app: &AppHandle, ctx: &AppContext) {
+    if !pending_reload_is_actionable(ctx) {
+        return;
+    }
+    if ctx.session_operation.try_lock().is_err() {
+        return; // Still busy — the next completion hook retries.
+    }
+    ctx.pending_asr_reload
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let app_reload = app.clone();
+    let ctx_reload = ctx.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = reload_model_inner(app_reload, &ctx_reload) {
+            log::warn!("Could not switch the speech model: {error}");
+        }
+    });
 }
 
 /// Emits `model:status` to the UI whenever the sidecar model state changes
@@ -1091,8 +1555,17 @@ pub fn spawn_model_status_watch(app: AppHandle, ctx: AppContext) {
                     log::debug!("Could not refresh ASR model status: {err}");
                     ctx.asr_handle.engine_status()
                 });
+                let resolved_for_active = ctx
+                    .last_asr_load
+                    .read()
+                    .as_ref()
+                    .and_then(|t| (t.0 == active).then(|| t.1.clone()));
                 (
-                    ctx.model_manager.get_status(&engine_status, &active),
+                    ctx.model_manager.get_status(
+                        &engine_status,
+                        &active,
+                        resolved_for_active.as_deref(),
+                    ),
                     engine_status,
                 )
             };
@@ -1110,10 +1583,17 @@ pub fn spawn_model_status_watch(app: AppHandle, ctx: AppContext) {
                         || prev.is_loading != status.is_loading
                         || prev.download_progress_pct != status.download_progress_pct
                         || prev.backend != status.backend
+                        || prev.name != status.name
+                        || prev.version != status.version
                         || prev.error != status.error
                 })
                 .unwrap_or(true);
             if changed {
+                // Keep the tray status line truthful — it used to sit on
+                // "Ready" regardless of the actual model state.
+                if let Some(item) = ctx.tray_status_item.read().as_ref() {
+                    let _ = item.set_text(tray_status_label(&status));
+                }
                 let _ = app.emit("model:status", status.clone());
                 log::info!(
                     "Model status: loaded={} loading={} downloading={} backend={}",
@@ -1129,7 +1609,7 @@ pub fn spawn_model_status_watch(app: AppHandle, ctx: AppContext) {
             if ready {
                 let resolved = ctx.last_asr_load.read().clone();
                 let load_ms = (engine_status.load_seconds * 1000.0) as u64;
-                if let Some((model_id, device, precision)) = resolved {
+                if let Some((_selected, model_id, device, precision)) = resolved {
                     let stamp = (model_id.clone(), device.clone(), precision.clone(), load_ms);
                     if recorded_load.as_ref() != Some(&stamp)
                         && (engine_status.warmup_rtf.is_some() || engine_status.vram_mb > 0.0)
@@ -1239,22 +1719,67 @@ pub fn reset_latency_history(ctx: State<'_, AppContext>) -> LatencyReport {
 }
 
 #[tauri::command]
-pub fn get_system_metrics() -> SystemMetrics {
-    PlatformSys::get_system_metrics()
+pub async fn get_system_metrics() -> Result<SystemMetrics, String> {
+    // GPU subprocesses and process-memory scans must never stall GTK's event
+    // loop while the user is scrolling, navigating, or dragging the window.
+    tauri::async_runtime::spawn_blocking(PlatformSys::get_system_metrics)
+        .await
+        .map_err(|error| format!("Could not collect system metrics: {error}"))
 }
 
 /// The full hardware picture: separate total/used/free VRAM, GPU presence as
 /// distinct from CUDA availability, Vulkan, CPU topology and per-runtime RAM.
+/// Tray status-line text for a model status snapshot. Pure so it can be
+/// unit-tested without a tray.
+pub(crate) fn tray_status_label(status: &ModelStatus) -> String {
+    if status.is_downloading {
+        format!(
+            "● Reflow: Downloading {} — {}%",
+            status.version, status.download_progress_pct
+        )
+    } else if status.error.is_some() {
+        format!("● Reflow: {} — error", status.version)
+    } else if status.is_loading {
+        format!("● Reflow: Loading {}…", status.version)
+    } else if status.loaded {
+        format!("● Reflow: Ready ({})", status.backend)
+    } else {
+        "● Reflow: Not ready".into()
+    }
+}
+
+/// The speech model this machine can comfortably run: the 1.7B only when it
+/// clears its manifest's CPU-RAM or VRAM estimate, otherwise the 0.6B.
+/// Onboarding uses it to preselect a card; the resolver still owns the real
+/// load-time decision.
 #[tauri::command]
-pub fn get_capabilities() -> crate::capability::Capabilities {
-    crate::capability::capabilities()
+pub async fn recommended_asr_model() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let caps = crate::capability::capabilities();
+        Ok(crate::profile::recommended_asr_model(
+            caps.ram.available_mb,
+            caps.free_vram_mb(),
+        )
+        .to_string())
+    })
+    .await
+    .map_err(|error| format!("Could not probe hardware capabilities: {error}"))?
+}
+
+#[tauri::command]
+pub async fn get_capabilities() -> Result<crate::capability::Capabilities, String> {
+    tauri::async_runtime::spawn_blocking(crate::capability::capabilities)
+        .await
+        .map_err(|error| format!("Could not check hardware capabilities: {error}"))
 }
 
 /// Force a fresh probe. Used before a load decision, where a cached free-VRAM
 /// reading would be actively misleading.
 #[tauri::command]
-pub fn refresh_capabilities() -> crate::capability::Capabilities {
-    crate::capability::capabilities_uncached()
+pub async fn refresh_capabilities() -> Result<crate::capability::Capabilities, String> {
+    tauri::async_runtime::spawn_blocking(crate::capability::capabilities_uncached)
+        .await
+        .map_err(|error| format!("Could not refresh hardware capabilities: {error}"))
 }
 
 /// A snapshot of what has actually been measured on this machine.
@@ -1270,13 +1795,18 @@ fn current_benchmark_report(ctx: &AppContext) -> crate::benchmark::FullBenchmark
     let asr = status.loaded.then(|| {
         // The resolved triple is authoritative; the status strings are the
         // fallback for a model loaded before this field existed.
-        let (model_id, device, precision) = ctx.last_asr_load.read().clone().unwrap_or_else(|| {
-            (
-                status.backend.clone(),
-                status.device.clone(),
-                status.precision.clone(),
-            )
-        });
+        let (model_id, device, precision) = ctx
+            .last_asr_load
+            .read()
+            .clone()
+            .map(|t| (t.1, t.2, t.3))
+            .unwrap_or_else(|| {
+                (
+                    status.backend.clone(),
+                    status.device.clone(),
+                    status.precision.clone(),
+                )
+            });
         crate::benchmark::AsrBenchmarkMetrics {
             model_id,
             device,
@@ -1319,18 +1849,30 @@ fn current_benchmark_report(ctx: &AppContext) -> crate::benchmark::FullBenchmark
 }
 
 #[tauri::command]
-pub fn get_benchmark_report(ctx: State<'_, AppContext>) -> crate::benchmark::FullBenchmarkReport {
-    crate::benchmark::load_benchmark_report()
-        .unwrap_or_else(|| current_benchmark_report(ctx.inner()))
+pub async fn get_benchmark_report(
+    ctx: State<'_, AppContext>,
+) -> Result<crate::benchmark::FullBenchmarkReport, String> {
+    let context = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::benchmark::load_benchmark_report()
+            .unwrap_or_else(|| current_benchmark_report(&context))
+    })
+    .await
+    .map_err(|error| format!("Could not read benchmark report: {error}"))
 }
 
 #[tauri::command]
-pub fn run_system_benchmark(
+pub async fn run_system_benchmark(
     ctx: State<'_, AppContext>,
 ) -> Result<crate::benchmark::FullBenchmarkReport, String> {
-    let report = current_benchmark_report(ctx.inner());
-    crate::benchmark::persist_benchmark_report(&report);
-    Ok(report)
+    let context = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let report = current_benchmark_report(&context);
+        crate::benchmark::persist_benchmark_report(&report);
+        report
+    })
+    .await
+    .map_err(|error| format!("Could not collect benchmark report: {error}"))
 }
 
 /// Every declared model and runtime, for the settings and download UI.
@@ -1344,19 +1886,23 @@ pub fn get_model_manifests() -> Vec<crate::profile::ModelManifest> {
 /// This is what the settings page calls to preview a preset, so the user sees
 /// the resolved configuration and the reasons behind it before committing.
 #[tauri::command]
-pub fn preview_profile(
+pub async fn preview_profile(
     preset: String,
     overrides: Option<crate::profile::ProfileOverrides>,
-) -> crate::profile::ResolvedProfile {
-    let caps = crate::capability::capabilities_uncached();
-    let store = crate::profile::measurements::Measurements::load();
-    let measured = crate::profile::measurements::lookup_fn(&store, &caps);
-    crate::profile::resolve_profile(
-        &caps,
-        crate::profile::Preset::parse(&preset),
-        &overrides.unwrap_or_default(),
-        &measured,
-    )
+) -> Result<crate::profile::ResolvedProfile, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let caps = crate::capability::capabilities_uncached();
+        let store = crate::profile::measurements::Measurements::load();
+        let measured = crate::profile::measurements::lookup_fn(&store, &caps);
+        crate::profile::resolve_profile(
+            &caps,
+            crate::profile::Preset::parse(&preset),
+            &overrides.unwrap_or_default(),
+            &measured,
+        )
+    })
+    .await
+    .map_err(|error| format!("Could not preview hardware profile: {error}"))
 }
 
 #[tauri::command]
@@ -1367,18 +1913,148 @@ pub fn open_logs_folder() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_runtime_plan(ctx: State<'_, AppContext>) -> crate::runtime::RuntimePlan {
-    crate::runtime::current_plan(ctx.inner())
+pub async fn get_runtime_plan(
+    ctx: State<'_, AppContext>,
+) -> Result<crate::runtime::RuntimePlan, String> {
+    let context = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || crate::runtime::current_plan(&context))
+        .await
+        .map_err(|error| format!("Could not resolve hardware runtime plan: {error}"))
 }
 
 #[tauri::command]
-pub fn get_diagnostics_report() -> String {
-    PlatformSys::generate_diagnostics_report()
+pub async fn get_diagnostics_report() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        format!(
+            "{}\nDesktop integration: {}",
+            PlatformSys::generate_diagnostics_report(),
+            serde_json::to_string(&platform::desktop::snapshot()).unwrap_or_default()
+        )
+    })
+    .await
+    .map_err(|error| format!("Could not collect diagnostics: {error}"))
 }
 
 #[tauri::command]
 pub fn get_platform_info(ctx: State<'_, AppContext>) -> PlatformInfo {
     platform::platform_info(ctx.hotkey_error.read().clone())
+}
+
+#[tauri::command]
+pub fn get_desktop_integration_status() -> platform::desktop::DesktopIntegrationStatus {
+    platform::desktop::snapshot()
+}
+
+#[tauri::command]
+pub fn request_keyboard_access() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if platform::session() == platform::DisplaySession::Wayland {
+        return platform::linux_input_portal::retry_access();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn retry_desktop_shortcuts(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
+    register_dictation_hotkey(&app, &ctx.settings_store.get().hotkey)
+}
+
+#[tauri::command]
+pub async fn set_desktop_shortcut(
+    action: String,
+    shortcut: Option<String>,
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<platform::desktop::DesktopIntegrationStatus, String> {
+    #[cfg(target_os = "linux")]
+    if platform::session() == platform::DisplaySession::Wayland
+        && platform::kde_shortcuts::supported_desktop()
+    {
+        let _operation = ctx
+            .session_operation
+            .try_lock()
+            .map_err(|_| "Finish the current operation before changing shortcuts.".to_owned())?;
+        if !matches!(
+            *ctx.state_enum.read(),
+            AppStateEnum::Ready | AppStateEnum::Idle
+        ) {
+            return Err("Finish the current dictation before changing shortcuts.".into());
+        }
+        if !matches!(
+            platform::desktop::snapshot().shortcut.state,
+            platform::desktop::ShortcutState::Ready | platform::desktop::ShortcutState::Unassigned
+        ) {
+            return Err("Reconnect shortcuts and approve the desktop permission request before assigning a key.".into());
+        }
+        let action = if action == "dictation" {
+            "dictate"
+        } else {
+            action.as_str()
+        };
+        let registry =
+            crate::hotkey::registry::HotkeyRegistry::from_settings(&ctx.settings_store.get())?;
+        if !registry
+            .bindings
+            .iter()
+            .any(|binding| binding.action == action)
+        {
+            return Err("Enable this shortcut action before assigning a key.".into());
+        }
+        platform::kde_shortcuts::set_shortcut(
+            &app.config().identifier,
+            action,
+            shortcut.as_deref(),
+        )
+        .await?;
+        if !matches!(
+            platform::desktop::snapshot().shortcut.state,
+            platform::desktop::ShortcutState::Ready | platform::desktop::ShortcutState::Unassigned
+        ) {
+            return Err("KDE saved the key, but the shortcut session disconnected. Reconnect shortcuts to activate it.".into());
+        }
+        // KDE persists the actual key. Do not rewrite the portal's preferred
+        // hints or re-register a working session just to edit its binding.
+        platform::desktop::assigned(action, shortcut.clone());
+        if action == "dictate" {
+            if let Some(shortcut) = &shortcut {
+                *ctx.hotkey_error.write() = None;
+                let _ = app.emit("hotkey:ready", shortcut);
+            } else {
+                let message = "Choose a dictation shortcut in Settings → General.";
+                *ctx.hotkey_error.write() = Some(message.into());
+                let _ = app.emit("hotkey:error", message);
+            }
+        }
+        return Ok(platform::desktop::snapshot());
+    }
+    let _ = (action, shortcut, app, ctx);
+    Err("This desktop requires Configure desktop shortcuts to change global keys.".into())
+}
+
+#[tauri::command]
+pub async fn configure_global_shortcuts(
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if platform::session() == platform::DisplaySession::Wayland {
+        let response = match crate::hotkey::portal::configure() {
+            Ok(response) => response,
+            Err(_) => {
+                // A dismissed first permission dialog may have closed the session.
+                // Reconnect before opening desktop configuration; the request is queued
+                // until the new session has bound the persisted actions.
+                register_dictation_hotkey(&app, &ctx.settings_store.get().hotkey)?;
+                crate::hotkey::portal::configure()?
+            }
+        };
+        return tokio::time::timeout(std::time::Duration::from_secs(315), response)
+            .await
+            .map_err(|_| "Desktop shortcut setup timed out. Approve the pending desktop permission dialog and try again.".to_owned())?
+            .map_err(|_| "Desktop shortcut setup disconnected. Try again to reconnect.".to_owned())?;
+    }
+    let _ = (app, ctx);
+    Err("Desktop shortcut configuration is available for Wayland sessions".into())
 }
 
 #[tauri::command]
@@ -1439,7 +2115,7 @@ pub struct FlowStatus {
     pub mode: Option<String>,
     /// The actual `--n-gpu-layers` value the running child was launched with.
     pub n_gpu_layers: Option<u32>,
-    /// Approximate VRAM in use, in MB, polled from `nvidia-smi`.
+    /// Device-wide VRAM in use, in MB, from the cached hardware probe.
     pub vram_used_mb: f32,
     /// Last `ensure()` error, or `None` if the runtime is healthy. The
     /// frontend surfaces this as a one-line hint next to the model badge
@@ -1486,7 +2162,10 @@ fn build_flow_status(ctx: &AppContext) -> FlowStatus {
     });
     let n_gpu_layers = ctx.flow_runtime.active_n_gpu_layers();
     let vram_used_mb = if active_mode.as_ref().map(|m| m.is_gpu()).unwrap_or(false) {
-        crate::platform::PlatformSys::detect_gpu().1
+        crate::capability::capabilities()
+            .primary_gpu()
+            .map(|gpu| gpu.used_vram_mb)
+            .unwrap_or(0.0)
     } else {
         0.0
     };
@@ -1516,13 +2195,16 @@ fn build_flow_status(ctx: &AppContext) -> FlowStatus {
 }
 
 #[tauri::command]
-pub fn get_flow_status(ctx: State<'_, AppContext>) -> FlowStatus {
-    build_flow_status(ctx.inner())
+pub async fn get_flow_status(ctx: State<'_, AppContext>) -> Result<FlowStatus, String> {
+    let context = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || build_flow_status(&context))
+        .await
+        .map_err(|error| format!("Could not read refinement status: {error}"))
 }
 
 #[tauri::command]
-pub fn get_intelligence_status(ctx: State<'_, AppContext>) -> FlowStatus {
-    build_flow_status(ctx.inner())
+pub async fn get_intelligence_status(ctx: State<'_, AppContext>) -> Result<FlowStatus, String> {
+    get_flow_status(ctx).await
 }
 
 #[derive(serde::Serialize)]
@@ -1728,6 +2410,11 @@ pub fn install_intelligence_model(
     if let Some(parent) = dest.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    let already_downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    crate::network_policy::check_disk_space(
+        dest.parent().unwrap_or(&final_dest),
+        spec.approx_bytes.saturating_sub(already_downloaded),
+    )?;
     let url = format!(
         "https://huggingface.co/{}/resolve/{}/{}",
         manifest.repo, manifest.revision, manifest.filename
@@ -1762,6 +2449,9 @@ pub fn install_intelligence_model(
         );
         let client = match reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(60 * 30))
+            // Without this, a black-holed connection sits in the handshake
+            // until the 30-minute body timeout instead of failing to retry.
+            .connect_timeout(std::time::Duration::from_secs(30))
             .redirect(crate::network_policy::redirect_policy())
             .build()
         {
@@ -1775,14 +2465,14 @@ pub fn install_intelligence_model(
 
         // Resume from the existing file size if a partial file is on disk.
         let resume_from: u64 = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-        let mut request = client.get(&url);
-        if resume_from > 0 {
-            request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
-        }
 
         let started = Instant::now();
         let mut last_emit = Instant::now();
-        let mut response = match crate::network_policy::send_download(request) {
+        let mut response = match crate::rewrite::runtime_install::send_with_retry(
+            &client,
+            &url,
+            resume_from,
+        ) {
             Ok(r) => r,
             Err(err) => {
                 emit_error(
@@ -2490,4 +3180,97 @@ pub fn preview_cleanup(text: String, ctx: State<'_, AppContext>) -> String {
 #[tauri::command]
 pub fn dismiss_assistant(app: tauri::AppHandle) {
     overlay::hide_overlay(&app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pending_reload_is_actionable, tray_status_label};
+    use crate::state::ModelStatus;
+
+    fn status() -> ModelStatus {
+        ModelStatus {
+            installed: true,
+            loaded: true,
+            name: "repo".into(),
+            version: "1.7B".into(),
+            backend: "Qwen3-ASR 1.7B · CPU FP32".into(),
+            size_bytes: 0,
+            download_progress_pct: 100,
+            download_speed_mbps: 0.0,
+            is_downloading: false,
+            is_loading: false,
+            error: None,
+            gpu_available: false,
+            gpu_name: String::new(),
+            cuda_available: false,
+            torch_cuda_version: None,
+            asr_gpu_hint: None,
+            asr_selection_notice: None,
+            failure_kind: None,
+        }
+    }
+
+    /// A selection saved while the operation lock is held stays queued and is
+    /// resolvable later; a selection that becomes uninstalled clears the flag.
+    #[test]
+    fn pending_reload_survives_a_busy_lock_and_follows_the_latest_selection() {
+        let dir = std::env::temp_dir().join(format!("reflow_reload_{}", uuid::Uuid::new_v4()));
+        let ctx = crate::context::AppContext::bootstrap_test(dir.clone());
+        // Zipformer needs only its four manifest files present.
+        let model_dir = ctx.model_manager.get_model_dir("zipformer-20m");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for name in [
+            "encoder-epoch-99-avg-1.int8.onnx",
+            "decoder-epoch-99-avg-1.int8.onnx",
+            "joiner-epoch-99-avg-1.int8.onnx",
+            "tokens.txt",
+        ] {
+            std::fs::write(model_dir.join(name), b"x").unwrap();
+        }
+        ctx.settings_store
+            .merge_update(serde_json::json!({"asr": {"model": "zipformer-20m"}}))
+            .unwrap();
+
+        // Flag clear → nothing to do.
+        assert!(!pending_reload_is_actionable(&ctx));
+        ctx.pending_asr_reload
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Installed selection → stays actionable while the lock is held.
+        assert!(pending_reload_is_actionable(&ctx));
+
+        // Switch to a model that is not on disk — install flow owns it, and
+        // the pending flag must clear rather than reload the old one.
+        ctx.settings_store
+            .merge_update(serde_json::json!({"asr": {"model": "1.7b"}}))
+            .unwrap();
+        assert!(!pending_reload_is_actionable(&ctx));
+        assert!(!ctx
+            .pending_asr_reload
+            .load(std::sync::atomic::Ordering::SeqCst));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tray_status_label_tracks_download_load_error_and_ready() {
+        let mut status = status();
+        assert_eq!(
+            tray_status_label(&status),
+            "● Reflow: Ready (Qwen3-ASR 1.7B · CPU FP32)"
+        );
+        status.loaded = false;
+        assert_eq!(tray_status_label(&status), "● Reflow: Not ready");
+        status.is_downloading = true;
+        status.download_progress_pct = 42;
+        assert_eq!(
+            tray_status_label(&status),
+            "● Reflow: Downloading 1.7B — 42%"
+        );
+        status.is_downloading = false;
+        status.is_loading = true;
+        assert_eq!(tray_status_label(&status), "● Reflow: Loading 1.7B…");
+        status.is_loading = false;
+        status.error = Some("load failed".into());
+        assert_eq!(tray_status_label(&status), "● Reflow: 1.7B — error");
+    }
 }

@@ -14,6 +14,12 @@ impl TextCleaner {
     /// but a comma *before* the filler is kept, so "the key, uh, for the door"
     /// correctly keeps one comma instead of losing the clause boundary.
     pub fn remove_fillers(text: &str) -> String {
+        super::literals::map_unquoted(text, Self::remove_unquoted_fillers)
+            .trim()
+            .to_string()
+    }
+
+    fn remove_unquoted_fillers(text: &str, at_start: bool, at_end: bool) -> String {
         // Fillers that carry their own trailing separator. Handled first and
         // as one unit, because matching the bare word first would strip the
         // word and leave the separator behind.
@@ -32,7 +38,7 @@ impl TextCleaner {
             .replace_all(&out, filler_replacement)
             .to_string();
 
-        Self::repair_orphaned_punctuation(&out)
+        Self::repair_orphaned_punctuation(&out, at_start, at_end)
     }
 
     /// Repairs punctuation left dangling by a deletion.
@@ -40,7 +46,7 @@ impl TextCleaner {
     /// Split out from [`Self::remove_fillers`] because stutter removal and the
     /// backtrack pass can strand punctuation the same way, and because these
     /// rules are the part worth testing directly.
-    fn repair_orphaned_punctuation(text: &str) -> String {
+    fn repair_orphaned_punctuation(text: &str, at_start: bool, at_end: bool) -> String {
         let mut out = text.to_string();
 
         // ", ," -> ","  (a filler removed from between two clauses)
@@ -61,10 +67,14 @@ impl TextCleaner {
 
         // A leading separator or trailing comma can be stranded by deletion.
         // Terminal colons and semicolons can be explicit formatting commands.
-        let leading = Regex::new(r"^[\s,;:]+").unwrap();
-        out = leading.replace(&out, "").to_string();
-        let trailing = Regex::new(r"[\s,]+$").unwrap();
-        out = trailing.replace(&out, "").to_string();
+        if at_start {
+            let leading = Regex::new(r"^[\s,;:]+").unwrap();
+            out = leading.replace(&out, "").to_string();
+        }
+        if at_end {
+            let trailing = Regex::new(r"[\s,]+$").unwrap();
+            out = trailing.replace(&out, "").to_string();
+        }
 
         let space_re = Regex::new(r"[ \t]+").unwrap();
         space_re.replace_all(&out, " ").trim().to_string()
@@ -73,6 +83,12 @@ impl TextCleaner {
     /// Removes immediate stuttering word duplicates ("the the" -> "the")
     /// and whole repeated phrases ("we could, we could ship" -> "we could ship").
     pub fn remove_duplicates(text: &str) -> String {
+        super::literals::map_unquoted(text, |segment, _, _| {
+            Self::remove_unquoted_duplicates(segment)
+        })
+    }
+
+    fn remove_unquoted_duplicates(text: &str) -> String {
         // Work within each line: a spoken paragraph is intentional structure.
         // These repetitions can carry emphasis or grammatical meaning; let the
         // optional language model judge them with context instead of deleting.
@@ -240,6 +256,37 @@ fn quoted_words(words: &[&str], quote: &mut Option<char>) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quoted_fillers_are_content_and_only_surrounding_hesitations_are_removed() {
+        for (source, expected) in [
+            ("um say \"uh, hello\"", "say \"uh, hello\""),
+            ("uh the word is ‘erm’", "the word is ‘erm’"),
+            ("um print `um`", "print `um`"),
+            ("um quote \"ah\nuh, hmm\"", "quote \"ah\nuh, hmm\""),
+            ("um say \"uh, unfinished", "say \"uh, unfinished"),
+            ("uh I don't need that", "I don't need that"),
+            ("Alex said, uh, \"um, hello\".", "Alex said, \"um, hello\"."),
+        ] {
+            assert_eq!(TextCleaner::remove_fillers(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn repeated_literal_words_and_code_whitespace_remain_exact() {
+        for text in [
+            "print `go go go go` exactly",
+            "say \"go  go\" exactly",
+            "say 'go\n  go go' exactly",
+            "print `I don't  don't` exactly",
+        ] {
+            assert_eq!(TextCleaner::remove_duplicates(text), text, "{text}");
+        }
+        assert_eq!(
+            TextCleaner::remove_duplicates("we could we could print `go go go go`"),
+            "we could print `go go go go`"
+        );
+    }
 
     #[test]
     fn cleanup_keeps_explicit_paragraphs_with_or_without_fillers() {

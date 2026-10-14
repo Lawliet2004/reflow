@@ -60,6 +60,10 @@ jobs:
     name: Build ${{ matrix.name }} installer
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 90
+    env:
+      # Presence gate only — the secret value itself is masked and only
+      # forwarded to GITHUB_ENV on macOS when signing is configured.
+      APPLE_CERTIFICATE_PRESENT: ${{ secrets.APPLE_CERTIFICATE }}
     strategy:
       fail-fast: false
       matrix:
@@ -92,7 +96,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libgtk-layer-shell-dev libayatana-appindicator3-dev \
             librsvg2-dev libasound2-dev libxdo-dev libssl-dev patchelf pkg-config
       - run: npm ci
       - uses: Swatinem/rust-cache@v2
@@ -101,15 +105,70 @@ jobs:
       # This also covers the Intel Mac host, which is not in the reusable CI matrix.
       - name: Platform regressions before bundling
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests
+      # Export Apple Developer ID credentials only when the secrets exist —
+      # tauri-action imports the .p12 into a keychain and lets the bundler
+      # codesign (APPLE_SIGNING_IDENTITY overrides the ad-hoc "-" in
+      # tauri.conf.json) and notarize the DMG. Without them the macOS rows
+      # stay ad-hoc signed, so fork builds keep working.
+      - name: Configure Apple signing and notarization
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_PRESENT != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          # The certificate is configured but no identity was given — the
+          # config's ad-hoc "-" would be used, producing an unsigned/nearly-
+          # unsigned build that fails verification. Fail fast instead.
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "APPLE_CERTIFICATE is set but APPLE_SIGNING_IDENTITY is empty." >&2
+            echo "Add the secret, e.g. 'Developer ID Application: Name (TEAMID)'." >&2
+            exit 1
+          fi
+          {
+            echo 'APPLE_CERTIFICATE<<END-OF-CERTIFICATE'
+            printf '%s\n' "$APPLE_CERTIFICATE"
+            echo 'END-OF-CERTIFICATE'
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            echo "APPLE_ID=$APPLE_ID"
+            echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+            # tauri-action creates its own keychain; give it a per-run password.
+            echo "KEYCHAIN_PASSWORD=$(openssl rand -hex 16)"
+          } >> "$GITHUB_ENV"
+          echo "REFLOW_MACOS_SIGNED=true" >> "$GITHUB_ENV"
       - name: Build and upload desktop installers to draft
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
           tagName: ${{ github.ref_name }}
           releaseDraft: true
+          tauriScript: ${{ runner.os == 'Linux' && 'node scripts/tauri-linux.cjs' || '' }}
           args: --bundles ${{ matrix.bundles }}
+      - name: Verify macOS signature and notarization
+        if: runner.os == 'macOS' && env.REFLOW_MACOS_SIGNED == 'true'
+        shell: bash
+        run: |
+          app=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -n1)
+          test -n "$app" || { echo "No .app bundle found" >&2; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # Tauri notarizes the .app bundle and staples the ticket onto it;
+          # the dmg wrapper is not stapled, so stapler validates the .app.
+          xcrun stapler validate "$app"
+          dmg=$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' | head -n1)
+          if [ -n "$dmg" ]; then
+            codesign --verify --verbose=2 "$dmg"
+          else
+            echo "No .dmg found; skipping dmg signature check"
+          fi
       - name: Native launcher smoke check
         shell: bash
         run: |

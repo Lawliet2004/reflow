@@ -220,6 +220,7 @@ fn a_grammar_refinement_does_not_apply_a_second_vocabulary_replacement() {
     let settings = AppSettings {
         cleanup_level: "high".into(),
         processing_mode: "flow".into(),
+        intelligence_tier: "smart_flow".into(),
         auto_style_from_app: false,
         style: "faithful".into(),
         custom_replacements: vec![
@@ -403,6 +404,7 @@ fn accepted_email_and_review_structure_reach_the_final_pipeline_output() {
             cleanup_level: "high".into(),
             processing_mode: "flow".into(),
             dictation_mode: mode.into(),
+            intelligence_tier: "smart_flow".into(),
             auto_style_from_app: false,
             style: "faithful".into(),
             custom_replacements: vec![],
@@ -430,12 +432,16 @@ fn builtin_email_mode_formats_a_short_greeting_body_and_signoff_in_the_pipeline(
         part.replace("The invoice are attached.", "The invoice is attached.")
     });
     let defaults = AppSettings::default();
-    let mode = defaults
+    let mut mode = defaults
         .modes
         .iter()
         .find(|mode| mode.id == "email")
-        .expect("builtin Email mode");
-    let settings = defaults.settings_for_mode("notepad", mode);
+        .expect("builtin Email mode")
+        .clone();
+    // Builtin modes are deterministic-only on a fresh install; opt the mode
+    // into the tier that runs the rewriter.
+    mode.intelligence_tier = "smart_flow".into();
+    let settings = defaults.settings_for_mode("notepad", &mode);
     let outcome = postprocess_transcript(original, &settings, "notepad", &model.client());
 
     assert_eq!(

@@ -9,6 +9,36 @@ const crypto = require("node:crypto");
 const root = path.resolve(__dirname, "..");
 const helper = fs.existsSync(path.join(__dirname, "package.cjs")) ? require("./package.cjs") : {};
 
+test(
+  "AppImage hooks retain explicit backends and let GTK choose the native session",
+  { skip: process.platform !== "linux" },
+  () => {
+    const config = JSON.parse(
+      fs.readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"),
+    );
+    assert.equal(config.bundle.linux.appimage.bundleMediaFramework, true);
+    assert.equal(typeof helper.finalizeAppImage, "function");
+    for (const original of [undefined, "x11", "wayland"]) {
+      const env = { ...process.env };
+      delete env.GDK_BACKEND;
+      if (original) env.GDK_BACKEND = original;
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          'source "$1"; export GDK_BACKEND=x11; source "$2"; printf "%s" "${GDK_BACKEND-unset}"',
+          "reflow-hook-test",
+          path.join(root, "linux/apprun-hooks/00-reflow-environment.sh"),
+          path.join(root, "linux/apprun-hooks/zz-reflow-desktop.sh"),
+        ],
+        { env, encoding: "utf8" },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, original ?? "unset");
+    }
+  },
+);
+
 test("installed speech runtime and language catalogue use the paths the app resolves", () => {
   const config = JSON.parse(
     fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"),
@@ -137,6 +167,58 @@ function fixture(t) {
   return directory;
 }
 
+test(
+  "AppImage finalization wraps GTK hooks before repacking and preserves explicit input",
+  { skip: process.platform !== "linux" },
+  (t) => {
+    const directory = fixture(t);
+    const plan = helper.buildPlan({ platform: "linux", root: directory, environment: {} });
+    const appdir = path.join(plan.artifactRoot, "appimage", "Reflow.AppDir");
+    fs.mkdirSync(path.join(appdir, "apprun-hooks"), { recursive: true });
+    fs.mkdirSync(path.join(directory, "linux", "apprun-hooks"), { recursive: true });
+    for (const name of ["00-reflow-environment.sh", "zz-reflow-desktop.sh"])
+      fs.copyFileSync(
+        path.join(root, "linux", "apprun-hooks", name),
+        path.join(directory, "linux", "apprun-hooks", name),
+      );
+    fs.writeFileSync(
+      path.join(appdir, "AppRun.wrapped"),
+      '#!/usr/bin/env bash\nprintf "%s" "${GDK_BACKEND-unset}|${REFLOW_APPIMAGE_ORIGINAL_PYTHONHOME}"\n',
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(
+      path.join(appdir, "apprun-hooks", "linuxdeploy-plugin-gtk.sh"),
+      "export GDK_BACKEND=x11\n",
+    );
+    const image = path.join(plan.artifactRoot, "appimage", "Reflow_0.4.0_amd64.AppImage");
+    const cache = path.join(directory, "cache");
+    fs.mkdirSync(path.join(cache, "tauri"), { recursive: true });
+    fs.writeFileSync(path.join(cache, "tauri", "linuxdeploy-plugin-appimage.AppImage"), "fixture");
+    const previousCache = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CACHE_HOME = cache;
+    try {
+      helper.finalizeAppImage(
+        plan,
+        [image],
+        { productName: "Reflow" },
+        (_program, args, options) => {
+          assert.deepEqual(args, ["--appimage-extract-and-run", "--appdir", appdir]);
+          assert.equal(options.env.LDAI_OUTPUT, image);
+          assert.equal(options.shell, false);
+          return { status: 0 };
+        },
+      );
+    } finally {
+      if (previousCache === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = previousCache;
+    }
+    const env = { ...process.env, GDK_BACKEND: "wayland", PYTHONHOME: "/chosen/python" };
+    const result = spawnSync(path.join(appdir, "AppRun"), [], { env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "wayland|/chosen/python");
+  },
+);
+
 test("checksums cover actual installer bytes and require every requested format", (t) => {
   const directory = fixture(t);
   const plan = helper.buildPlan({ platform: "win32", root: directory, environment: {} });
@@ -195,5 +277,20 @@ test("failed or mismatched Tauri command cannot generate checksums or claim succ
   assert.equal(commands.length, 2);
   assert.equal(commands[1].options.cwd, directory);
   assert.equal(commands[1].options.shell, false);
+  if (process.platform === "linux") {
+    assert.equal(
+      commands[1].options.env.APPIMAGE_EXTRACT_AND_RUN,
+      process.env.APPIMAGE_EXTRACT_AND_RUN || "1",
+    );
+  }
   assert.ok(!fs.existsSync(plan.artifactRoot));
+});
+
+test("Linux AppStream metadata references the generated desktop launcher", () => {
+  const config = JSON.parse(
+    fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"),
+  );
+  const metadata = fs.readFileSync(path.join(root, "linux", "com.reflow.app.metainfo.xml"), "utf8");
+  const launcher = metadata.match(/<launchable type="desktop-id">([^<]+)<\/launchable>/)?.[1];
+  assert.equal(launcher, `${config.productName}.desktop`);
 });

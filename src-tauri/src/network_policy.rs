@@ -43,6 +43,30 @@ pub fn check_download() -> Result<(), String> {
     require_online(OFFLINE.load(Ordering::SeqCst))
 }
 
+/// Fail fast when the filesystem holding `dir` cannot fit the download plus a
+/// 10% margin. Best effort: when no mounted disk matches the path, allow the
+/// download and let the eventual write error surface instead.
+pub fn check_disk_space(dir: &Path, expected_bytes: u64) -> Result<(), String> {
+    let required = expected_bytes.saturating_add(expected_bytes / 10);
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let Some(disk) = disks
+        .iter()
+        .filter(|disk| dir.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().as_os_str().len())
+    else {
+        return Ok(());
+    };
+    let free = disk.available_space();
+    if free < required {
+        return Err(format!(
+            "Not enough disk space: need {:.1} GB, {:.1} GB free",
+            required as f64 / 1e9,
+            free as f64 / 1e9
+        ));
+    }
+    Ok(())
+}
+
 pub fn allowed_host(host: &str) -> bool {
     matches!(
         host,

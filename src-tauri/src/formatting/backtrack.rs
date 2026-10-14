@@ -26,8 +26,11 @@ pub fn apply_backtrack(text: &str) -> String {
     let mut out = text.to_string();
     out = apply_value_corrections(&out);
     out = apply_scratch_that(&out);
-    out = strip_lone_no_wait(&out);
-    squeeze_ws(&out)
+    // An unresolved "no wait" may be ordinary speech ("No, wait for me").
+    // Preserve it for contextual refinement rather than deleting a negation.
+    super::literals::map_unquoted(&out, |text, _, _| squeeze_ws(text))
+        .trim()
+        .to_string()
 }
 
 /// `<value> actually|i mean|no wait <value>` → keep the replacement value.
@@ -44,7 +47,8 @@ fn apply_value_corrections(text: &str) -> String {
 
     for class in [NUMERIC, DAYS, MONTHS] {
         // Both sides drawn from the same class; the second one wins.
-        let pattern = format!(r"(?i)\b({class})\s+{REPAIR_MARKERS}\s+({class})\b");
+        let pattern =
+            format!(r"(?i)\b({class})[ \t]*,?[ \t]+{REPAIR_MARKERS}[ \t]*,?[ \t]+({class})\b");
         let re = Regex::new(&pattern).expect("backtrack value-correction regex");
         // Repeat so a chain ("5 actually 6 no wait 7") collapses fully.
         for _ in 0..4 {
@@ -52,9 +56,11 @@ fn apply_value_corrections(text: &str) -> String {
                 .replace_all(&out, |captures: &regex::Captures<'_>| {
                     let before = captures.get(1).expect("value before marker");
                     let after = captures.get(2).expect("value after marker");
-                    if class == NUMERIC
-                        && (!standalone_numeric_value(&out, before.start(), before.end())
-                            || !standalone_numeric_value(&out, after.start(), after.end()))
+                    let whole = captures.get(0).expect("value correction");
+                    if super::literals::overlaps_literal(&out, whole.range())
+                        || class == NUMERIC
+                            && (!standalone_numeric_value(&out, before.start(), before.end())
+                                || !standalone_numeric_value(&out, after.start(), after.end()))
                     {
                         captures[0].to_string()
                     } else {
@@ -173,7 +179,9 @@ fn apply_scratch_that(text: &str) -> String {
         let Some(m) = marker.find_at(&out, search_from) else {
             break;
         };
-        if unsupported_numeric_repair(&out, m.start(), m.end()) {
+        if super::literals::overlaps_literal(&out, m.range())
+            || unsupported_numeric_repair(&out, m.start(), m.end())
+        {
             search_from = m.end();
             continue;
         }
@@ -192,19 +200,6 @@ fn apply_scratch_that(text: &str) -> String {
     out
 }
 
-fn strip_lone_no_wait(text: &str) -> String {
-    let re = Regex::new(r"(?i)\s*\bno\s+wait\b[,\.]?").expect("no wait regex");
-    re.replace_all(text, |captures: &regex::Captures<'_>| {
-        let marker = captures.get(0).expect("repair marker");
-        if unsupported_numeric_repair(text, marker.start(), marker.end()) {
-            marker.as_str().to_string()
-        } else {
-            " ".to_string()
-        }
-    })
-    .to_string()
-}
-
 fn squeeze_ws(text: &str) -> String {
     let horiz = Regex::new(r"[^\S\n]+").expect("horiz space");
     let collapsed = horiz.replace_all(text, " ");
@@ -215,6 +210,34 @@ fn squeeze_ws(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_wait_requests_and_quoted_repairs_preserve_their_meaning() {
+        for text in [
+            "no wait for me",
+            "No, wait until I arrive.",
+            "the sign says \"scratch that\"",
+            "say 'friday i mean thursday' exactly",
+            "print `5 actually 6`",
+            "say “scratch that\nno wait”",
+            "say \"scratch that without closing the quote",
+            "we should meet friday\ni mean thursday",
+        ] {
+            assert_eq!(apply_backtrack(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn punctuated_self_corrections_keep_the_final_value() {
+        for (source, expected) in [
+            ("meet at 5, actually, 6", "meet at 6"),
+            ("ship friday, i mean, thursday", "ship thursday"),
+            ("ship june, sorry, july", "ship july"),
+            ("meet at 5 actually 6, no wait, 7", "meet at 7"),
+        ] {
+            assert_eq!(apply_backtrack(source), expected, "{source}");
+        }
+    }
 
     #[test]
     fn actually_replaces_previous_number() {

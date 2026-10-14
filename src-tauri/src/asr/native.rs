@@ -136,6 +136,7 @@ fn load_native(
                 .unwrap_or_else(|| "cpu".into());
             state.backend = format!("{} · {}", manifest.label, state.device);
             state.precision = "int8".into();
+            state.model_id = Some(manifest.id.to_string());
             state.error = runtime.last_error();
             Ok(())
         }
@@ -191,6 +192,7 @@ impl ASREngine for NativeAsrEngine {
         state.loaded = false;
         state.is_loading = false;
         state.is_downloading = false;
+        state.model_id = None;
         self.status = Arc::new(RwLock::new(state));
         Ok(())
     }
@@ -416,6 +418,18 @@ fn download_native(
     installation_active: &Mutex<bool>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let already_on_disk: u64 = std::iter::once(manifest.filename)
+        .chain(manifest.auxiliary_files.iter().map(|f| f.filename))
+        .map(|name| {
+            std::fs::metadata(dir.join(name))
+                .map(|m| m.len())
+                .unwrap_or(0)
+        })
+        .sum();
+    crate::network_policy::check_disk_space(
+        dir,
+        manifest.download_bytes.saturating_sub(already_on_disk),
+    )?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60 * 60))
         .redirect(crate::network_policy::redirect_policy())

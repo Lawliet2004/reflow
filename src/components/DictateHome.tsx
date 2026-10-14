@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Mic,
   Square,
@@ -22,7 +22,7 @@ import {
   isModelReady,
   IntelligenceTierState,
 } from "../types";
-import { api } from "../services/tauriApi";
+import { api, isTauri } from "../services/tauriApi";
 import { createEventScope } from "../services/eventScope";
 import { FileTranscription, FileTranscriptionController } from "./FileTranscription";
 import { LanguageOptions } from "./LanguageOptions";
@@ -34,6 +34,9 @@ import { relativeTime } from "../historyDisplay";
 import { LlmSelector } from "./LlmSelector";
 import { selectedLlm } from "../llmSelection";
 import { WritingTaskPicker } from "./WritingTaskPicker";
+import { useDesktopIntegration } from "../hooks/useDesktopIntegration";
+import { useViewVisibility } from "../hooks/useViewVisibility";
+import { useActiveMicrophone } from "../hooks/useActiveMicrophone";
 
 interface DictateHomeProps {
   appState: AppState;
@@ -50,6 +53,8 @@ interface DictateHomeProps {
   intelligenceTiers?: IntelligenceTierState[] | null;
   onOpenHistory: () => void;
   onOpenSettings?: () => void;
+  /** Reopens the setup wizard — used for the not-yet-installed CTA. */
+  onFinishSetup?: () => void;
   backendStage?: BackendStage | null;
   fileTranscription?: FileTranscriptionController;
 }
@@ -86,9 +91,19 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   intelligenceTiers,
   onOpenHistory,
   onOpenSettings,
+  onFinishSetup,
   backendStage = null,
   fileTranscription,
 }) => {
+  const visible = useViewVisibility();
+  const { status: desktop } = useDesktopIntegration();
+  const shortcut =
+    desktop?.session === "wayland"
+      ? (desktop.assigned_shortcuts.dictation ?? desktop.shortcut.assigned_trigger)
+      : settings.hotkey;
+  const cancelShortcut =
+    desktop?.session === "wayland" ? desktop.assigned_shortcuts.cancel : settings.hotkeys?.cancel;
+  const recordingStarted = useRef<number | null>(null);
   const [draft, setDraft] = useState<{ source: string; text: string } | null>(null);
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -96,10 +111,13 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   const [copied, setCopied] = useState<string | null>(null);
   const [seconds, setSeconds] = useState(0);
   const isRecording = appState === "RECORDING";
+  const micName = useActiveMicrophone(settings.microphone_device_id, isRecording);
   useEffect(() => {
-    if (!isRecording) return;
+    // Native cancellation follows the registered desktop binding. This local
+    // Escape fallback is only for the browser preview, which has no global hook.
+    if (!isRecording || isTauri()) return;
     const cancel = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && settings.hotkeys?.cancel !== null) {
+      if (event.key === "Escape" && settings.hotkeys?.cancel === "Escape") {
         void api
           .cancelRecording()
           .catch((error: unknown) => setFeedback({ error: true, text: String(error) }));
@@ -145,13 +163,18 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
     };
   }, [isRecording, isProcessing, historyRevision]);
   useEffect(() => {
-    if (!isRecording) return;
-    const started = Date.now();
+    if (!isRecording) {
+      recordingStarted.current = null;
+      return;
+    }
+    recordingStarted.current ??= Date.now();
+    if (!visible) return;
+    const started = recordingStarted.current;
     const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => {
       clearInterval(timer);
     };
-  }, [isRecording]);
+  }, [isRecording, visible]);
   useEffect(() => {
     if (!feedback) return;
     const timer = setTimeout(() => setFeedback(null), 5000);
@@ -165,7 +188,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   // Success is confirmed on the button that was pressed; only failures get a message.
   const copy = async (text: string, key: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await api.copyText(text);
       setFeedback(null);
       setCopied(key);
     } catch {
@@ -180,6 +203,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
         ? { intelligence_tier: "raw_verbatim" as const, flow_model: "none" as const }
         : {}),
     });
+  const polishEnabled = selectedLlm(settings) !== "none";
   // Radio-group keyboard model: arrows move the selection, Tab leaves the group.
   const onCleanupKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
@@ -198,24 +222,102 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
         HTMLElement | undefined
     )?.focus();
   };
-  const polishEnabled = selectedLlm(settings) !== "none";
-  const status = isRecording
-    ? "Listening to you"
-    : isProcessing
-      ? appState === "INJECTING"
-        ? "Inserting your words"
-        : phase === "polish"
-          ? "A final polish"
-          : asrProgress?.total
-            ? `Transcribing segment ${Math.min(asrProgress.completed + 1, asrProgress.total)} of ${asrProgress.total}`
-            : "Finding your words"
-      : modelReady
-        ? "Ready when you are"
-        : modelStatus?.is_downloading
-          ? `Downloading speech model · ${Math.round(modelStatus.download_progress_pct ?? 0)}%`
-          : "Let’s get your voice ready";
+
+  const statusText = () => {
+    if (isRecording) return "Listening to you";
+    if (isProcessing) {
+      if (appState === "INJECTING") return "Inserting your words";
+      if (phase === "polish") return "A final polish";
+      if (asrProgress?.total) {
+        return `Transcribing segment ${Math.min(asrProgress.completed + 1, asrProgress.total)} of ${asrProgress.total}`;
+      }
+      return "Finding your words";
+    }
+    if (modelReady) return "Ready when you are";
+    if (modelStatus?.is_downloading) {
+      return `Downloading speech model · ${Math.round(modelStatus.download_progress_pct ?? 0)}%`;
+    }
+    if (modelStatus?.is_loading) return "Loading speech model";
+    return "Let’s get your voice ready";
+  };
+  const status = statusText();
   const words = editableText.trim() ? editableText.trim().split(/\s+/).length : 0;
   const busy = isRecording || isProcessing;
+
+  const statusDetail = () => {
+    if (isRecording) {
+      return (
+        <div className="manuscript-live">
+          <Waveform level={transcript.audio_level} active barCount={24} height={22} />
+          <span className="text-sm text-muted tabular-nums">
+            {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              void api
+                .cancelRecording()
+                .catch((error: unknown) => setFeedback({ error: true, text: String(error) }));
+            }}
+          >
+            Cancel{cancelShortcut ? ` · ${cancelShortcut}` : ""}
+          </button>
+        </div>
+      );
+    }
+    if (isProcessing) {
+      return (
+        <div className="stage-track" data-phase={phase}>
+          <StageRail phase={phase} polishEnabled={polishEnabled} />
+        </div>
+      );
+    }
+    if (modelReady) {
+      let shortcutVerb = "Assign a shortcut in Settings";
+      if (shortcut) shortcutVerb = settings.push_to_talk ? "Hold" : "Press";
+      return (
+        <p className="shortcut-hint">
+          {shortcutVerb}{" "}
+          {shortcut?.split("+").map((key, index) => (
+            <kbd key={index} className="kbd">
+              {key}
+            </kbd>
+          ))}{" "}
+          {shortcut ? "in any app, or click the microphone." : "or click the microphone."}
+        </p>
+      );
+    }
+    if (modelStatus?.is_downloading) {
+      return <p>You can keep working while it downloads.</p>;
+    }
+    if (modelStatus?.is_loading) {
+      return <p>The speech model is loading. Recording becomes available when it is ready.</p>;
+    }
+    return (
+      <>
+        <p role={modelStatus?.error ? "alert" : undefined}>
+          {modelStatus?.error ??
+            (modelStatus?.installed
+              ? "Your speech model is installed. Reload it in Model settings to start recording."
+              : "Download a speech model once. After that, everything runs on this computer.")}
+        </p>
+        {modelStatus?.installed || !onFinishSetup ? (
+          onOpenSettings && (
+            <button className="btn btn-primary" onClick={onOpenSettings}>
+              {modelStatus?.installed ? "Open Model settings" : "Set up speech model"}{" "}
+              <ArrowUpRight size={14} />
+            </button>
+          )
+        ) : (
+          <button className="btn btn-primary" onClick={onFinishSetup}>
+            Finish setup <ArrowUpRight size={14} />
+          </button>
+        )}
+      </>
+    );
+  };
+
   return (
     <div className="workspace-page dictate-page animate-fade-rise">
       <header className="page-heading">
@@ -260,50 +362,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
           </button>
           <div className="manuscript-status">
             <h2>{status}</h2>
-            {isRecording ? (
-              <div className="manuscript-live">
-                <Waveform level={transcript.audio_level} active barCount={24} height={22} />
-                <span className="text-sm text-muted tabular-nums">
-                  {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
-                </span>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    void api
-                      .cancelRecording()
-                      .catch((error: unknown) => setFeedback({ error: true, text: String(error) }));
-                  }}
-                >
-                  Cancel · Esc
-                </button>
-              </div>
-            ) : isProcessing ? (
-              <div className="stage-track" data-phase={phase}>
-                <StageRail phase={phase} polishEnabled={polishEnabled} />
-              </div>
-            ) : modelReady ? (
-              <p className="shortcut-hint">
-                {!settings.push_to_talk ? "Press" : "Hold"}{" "}
-                {settings.hotkey.split("+").map((key, index) => (
-                  <kbd key={index} className="kbd">
-                    {key}
-                  </kbd>
-                ))}{" "}
-                in any app, or click the microphone.
-              </p>
-            ) : modelStatus?.is_downloading ? (
-              <p>You can keep working while it downloads.</p>
-            ) : (
-              <>
-                <p>Download a speech model once. After that, everything runs on this computer.</p>
-                {onOpenSettings && (
-                  <button className="btn btn-primary" onClick={onOpenSettings}>
-                    Set up speech model <ArrowUpRight size={14} />
-                  </button>
-                )}
-              </>
-            )}
+            {statusDetail()}
           </div>
         </div>
         <textarea
@@ -325,6 +384,14 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
           <span>
             <ShieldCheck size={14} aria-hidden /> Speech is processed on your computer.
             {words > 0 && ` · ${words} ${words === 1 ? "word" : "words"}`}
+            {micName && (
+              <>
+                {" · "}
+                <span className="mic-name" title={micName}>
+                  <Mic size={12} aria-hidden /> {micName}
+                </span>
+              </>
+            )}
           </span>
           <div>
             <button

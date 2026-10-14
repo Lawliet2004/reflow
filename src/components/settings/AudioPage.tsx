@@ -4,6 +4,7 @@ import { api } from "../../services/tauriApi";
 import { Section, Row } from "./ui";
 import { LanguageOptions } from "../LanguageOptions";
 import { RecognitionCheck } from "../RecognitionCheck";
+import { useActiveMicrophone } from "../../hooks/useActiveMicrophone";
 
 import { Mic } from "lucide-react";
 
@@ -19,6 +20,7 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
   const [testing, setTesting] = useState(false);
   const [health, setHealth] = useState<MicrophoneHealth | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+  const activeMic = useActiveMicrophone(settings.microphone_device_id, false);
 
   const testMicrophone = async () => {
     setTesting(true);
@@ -78,9 +80,9 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
           {devices
             .filter((d) => d.id !== "default")
             .map((d) => (
-              <option key={d.id} value={d.id}>
+              <option key={d.id} value={d.id} disabled={d.is_available === false}>
                 {d.name}
-                {d.is_default ? " · System default" : ""}
+                {d.is_available === false ? " (unplugged)" : d.is_default ? " · System default" : ""}
               </option>
             ))}
         </select>
@@ -90,6 +92,19 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
           {devicesError}
         </p>
       )}
+      {(() => {
+        // Compare the live device against the *name* of the selected device —
+        // device ids ("pipewire:…") never equal names, so comparing raw id vs
+        // name would claim a fallback that never happened.
+        if (!activeMic) return null;
+        if (!settings.microphone_device_id)
+          return <p className="text-sm text-muted">Currently using: {activeMic}</p>;
+        const selected = devices.find((d) => d.id === settings.microphone_device_id);
+        const fallback = !selected || selected.name !== activeMic;
+        return fallback ? (
+          <p className="text-sm text-muted">Currently using: {activeMic}</p>
+        ) : null;
+      })()}
       <button className="btn btn-ghost" disabled={loadingDevices} onClick={refreshDevices}>
         {loadingDevices ? "Refreshing microphones…" : "Refresh microphones"}
       </button>

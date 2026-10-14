@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   AppSettings,
   FlowModel,
@@ -18,6 +18,7 @@ import { api } from "../../services/tauriApi";
 import { ModelNotice } from "../ModelNotice";
 import { PresetSelector } from "./PresetSelector";
 import { RuntimeInventoryPanel } from "./RuntimeInventoryPanel";
+import { PythonRuntimeSetup } from "../PythonRuntimeSetup";
 import { CalibrationPanel } from "./CalibrationPanel";
 import { Section, Row, Toggle } from "./ui";
 import {
@@ -98,6 +99,14 @@ const DOWNLOAD_SIZE: Record<string, { python: string; native: string }> = {
   "zipformer-20m": { python: "44 MB", native: "44 MB" },
 };
 
+/** Compact display names for "Loading …" status text. */
+const ASR_SHORT_LABEL: Record<string, string> = {
+  "0.6b": "0.6B",
+  "1.7b": "1.7B",
+  "phonon-2": "Phonon-2",
+  "zipformer-20m": "Zipformer 20M",
+};
+
 type Precision = "auto" | "int4" | "int8" | "bf16";
 const PRECISIONS: {
   id: Precision;
@@ -126,7 +135,10 @@ export const ModelPage: React.FC<Props> = ({
   onInstallRuntime,
   onRemoveRuntime,
 }) => {
+  const [pythonPathDraft, setPythonPathDraft] = useState<string | null>(null);
   const [installingModel, setInstallingModel] = useState<string | null>(null);
+  const [importPath, setImportPath] = useState("");
+  const [importing, setImporting] = useState(false);
   const { flowStatus, intelligenceTiers } = intelligence;
   const [selectingLlm, setSelectingLlm] = useState(false);
   const selectLlm = async (model: FlowModel) => {
@@ -153,7 +165,7 @@ export const ModelPage: React.FC<Props> = ({
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const refreshDownloaded = React.useCallback(async () => {
+  const refreshDownloaded = useCallback(async () => {
     try {
       setDownloaded(await api.getDownloadedModels());
     } catch (e) {
@@ -161,7 +173,7 @@ export const ModelPage: React.FC<Props> = ({
     }
   }, []);
 
-  React.useEffect(() => {
+  useEffect(() => {
     let alive = true;
     api
       .refreshCapabilities()
@@ -184,7 +196,7 @@ export const ModelPage: React.FC<Props> = ({
   // mid-download refresh can't resurrect a row that's still being written.
   const anyDownloadActive =
     Boolean(modelStatus?.is_downloading) || activeDownloadTiers.size > 0 || runtimeDownloadActive;
-  React.useEffect(() => {
+  useEffect(() => {
     if (!anyDownloadActive) queueMicrotask(() => refreshDownloaded());
   }, [anyDownloadActive, refreshDownloaded]);
 
@@ -291,16 +303,39 @@ export const ModelPage: React.FC<Props> = ({
     try {
       const status = await api.getModelStatus();
       if (!status.installed) {
+        // Installed models are reloaded by update_settings itself — calling
+        // reloadModel here too raced the same session_operation path.
         setInstallingModel(id);
         await api.installModel(id);
-      } else {
-        await api.reloadModel();
       }
     } catch (e) {
       intelligence.notifyToast("error", `Couldn't switch to ${title}: ${String(e)}`);
       console.error("Model select error:", e);
     } finally {
       setInstallingModel(null);
+    }
+  };
+
+  const importModel = async () => {
+    const path = importPath.trim();
+    if (!path) return;
+    setImporting(true);
+    try {
+      const imported = await api.importModelFile(path);
+      intelligence.notifyToast("info", `Imported ${imported.id} (${formatBytes(imported.bytes)})`);
+      const native = imported.id.startsWith("native-");
+      await onUpdateSettings({
+        asr: {
+          ...settings.asr,
+          model: native ? imported.id.slice("native-".length) : imported.id,
+          runtime: native ? "native" : "python",
+        },
+      });
+      setImportPath("");
+    } catch (error) {
+      intelligence.notifyToast("error", `Could not import the model: ${String(error)}`);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -311,7 +346,7 @@ export const ModelPage: React.FC<Props> = ({
     } catch (error) {
       intelligence.notifyToast(
         "error",
-        "Could not download the speech model. Check your connection and available disk space.",
+        `Could not download the speech model: ${String(error)}`,
       );
       console.error("Speech model install failed:", error);
     } finally {
@@ -378,11 +413,13 @@ export const ModelPage: React.FC<Props> = ({
   const approxDownloadSize = (id: string) =>
     DOWNLOAD_SIZE[id]?.[settings.asr.runtime === "native" ? "native" : "python"] ?? "";
 
-  const gpuDetectionText = !capabilities
-    ? (capabilitiesError ?? "Checking GPU support…")
-    : refinementGpuAvailable
-      ? `${detectedGpu?.name ?? "GPU"} · automatic full or partial offload`
-      : "No compatible GPU detected";
+  const gpuDetectionText = (() => {
+    if (!capabilities) return capabilitiesError ?? "Checking GPU support…";
+    if (refinementGpuAvailable) {
+      return `${detectedGpu?.name ?? "GPU"} · automatic full or partial offload`;
+    }
+    return "No compatible GPU detected";
+  })();
 
   const confirmStrip = (key: string, prompt: React.ReactNode, onConfirm: () => void) => (
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-control)] border border-danger/30 bg-danger-soft px-3 py-2">
@@ -415,13 +452,57 @@ export const ModelPage: React.FC<Props> = ({
     </div>
   );
 
-  const statusDotClass = modelReady
-    ? "bg-success"
-    : downloading || loading
-      ? "bg-accent"
-      : modelStatus?.error
-        ? "bg-danger"
-        : "bg-faint/50";
+  const statusDotClass = (() => {
+    if (modelReady) return "bg-success";
+    if (downloading || loading) return "bg-accent";
+    if (modelStatus?.error) return "bg-danger";
+    return "bg-faint/50";
+  })();
+
+  const engineStatusText = (() => {
+    if (modelReady) return modelStatus?.backend;
+    if (downloading) {
+      return `Downloading weights · ${modelStatus?.download_progress_pct ?? 0}%`;
+    }
+    if (loading) {
+      if (backendLabel && !/loading/i.test(backendLabel)) return backendLabel;
+      return `Loading ${ASR_SHORT_LABEL[settings.asr.model] ?? "0.6B"} model`;
+    }
+    return (
+      modelStatus?.error ??
+      (modelStatus?.installed ? "Model is not loaded" : "Speech model is not installed")
+    );
+  })();
+
+  const speechRuntimeHint = (() => {
+    if (phononSelected) return "Phonon uses the Fermion Python runtime.";
+    if (zipformerSelected) return "Zipformer uses the sherpa-onnx Python runtime.";
+    return "Native is an experimental Python-free runtime; download its model files separately.";
+  })();
+
+  const gpuOffloadHint = (() => {
+    if (flowStatus?.ready && flowStatus.mode === "gpu") {
+      return `${flowStatus.n_gpu_layers ?? 0} layers are currently offloaded to the GPU.`;
+    }
+    if (flowStatus?.ready && flowStatus.mode === "cpu") {
+      return "The GPU runtime fell back to CPU. Reinstall the GPU runtime or free VRAM and try again.";
+    }
+    return "The runtime will choose full offload when it fits, otherwise the fastest safe partial offload.";
+  })();
+
+  const downloadedDescription = (() => {
+    if (downloaded === null) return "Checking downloads…";
+    if (downloaded.length === 0) return "Nothing downloaded yet.";
+    return `${formatBytes(downloaded.reduce((sum, m) => sum + m.size_bytes, 0))} of models and runtimes.`;
+  })();
+
+  const deleteWarning = (active: boolean, kind: DownloadedModel["kind"]) => {
+    if (!active) return "You can download it again later.";
+    if (kind === "asr") {
+      return "This is the model you dictate with. Dictation stops until you download or choose another.";
+    }
+    return "This model is currently in use.";
+  };
 
   return (
     <>
@@ -441,22 +522,7 @@ export const ModelPage: React.FC<Props> = ({
                 <p className="text-sm font-medium text-ink truncate">
                   {modelStatus?.name || "Qwen3-ASR Engine"}
                 </p>
-                <p className="text-xs text-muted truncate">
-                  {modelReady
-                    ? modelStatus?.backend
-                    : downloading
-                      ? `Downloading weights · ${modelStatus?.download_progress_pct ?? 0}%`
-                      : loading
-                        ? `${
-                            backendLabel && !/loading/i.test(backendLabel)
-                              ? backendLabel
-                              : `Loading ${phononSelected ? "Phonon-2" : zipformerSelected ? "Zipformer 20M" : settings.asr.model === "1.7b" ? "1.7B" : "0.6B"} model`
-                          }`
-                        : (modelStatus?.error ??
-                          (modelStatus?.installed
-                            ? "Model is not loaded"
-                            : "Speech model is not installed"))}
-                </p>
+                <p className="text-xs text-muted truncate">{engineStatusText}</p>
                 {precisionLabel && (
                   <p className="text-2xs text-accent mt-0.5 font-medium">{precisionLabel}</p>
                 )}
@@ -503,6 +569,22 @@ export const ModelPage: React.FC<Props> = ({
               {installingModel ? "Downloading…" : "Download speech model"}
             </button>
           )}
+          {settings.offline_mode && !modelReady && !downloading && (
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-line bg-base-2 px-3 py-2.5">
+              <p className="text-xs text-muted leading-snug">
+                Airplane mode is on — models can’t be downloaded until it is off.
+              </p>
+              <button
+                type="button"
+                className="btn btn-secondary shrink-0"
+                onClick={() => {
+                  change("offline_mode", false);
+                }}
+              >
+                Turn off
+              </button>
+            </div>
+          )}
         </div>
 
         <ModelNotice notice={modelStatus?.asr_selection_notice} />
@@ -536,16 +618,14 @@ export const ModelPage: React.FC<Props> = ({
             const hasFiles = Boolean(entry) || (isActive && Boolean(modelStatus?.installed));
             const key = `asr:${asrOnDiskId(m.id)}`;
             const sizeText = entry ? formatBytes(entry.size_bytes) : approxDownloadSize(m.id);
-            const statusText =
-              isActive && downloading
-                ? `Downloading · ${modelStatus?.download_progress_pct ?? 0}%`
-                : installingModel === m.id
-                  ? "Downloading…"
-                  : partial
-                    ? "Incomplete download"
-                    : installed
-                      ? "Installed"
-                      : "Not installed";
+            const statusText = (() => {
+              if (isActive && downloading) {
+                return `Downloading · ${modelStatus?.download_progress_pct ?? 0}%`;
+              }
+              if (installingModel === m.id) return "Downloading…";
+              if (partial) return "Incomplete download";
+              return installed ? "Installed" : "Not installed";
+            })();
             return (
               <li key={m.id} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex items-center justify-between gap-4">
@@ -618,10 +698,7 @@ export const ModelPage: React.FC<Props> = ({
                   confirmStrip(
                     key,
                     <>
-                      Delete {m.title} ({sizeText})?{" "}
-                      {isActive
-                        ? "This is the model you dictate with. Dictation stops until you download or choose another."
-                        : "You can download it again later."}
+                      Delete {m.title} ({sizeText})? {deleteWarning(isActive, "asr")}
                     </>,
                     () => deleteModel("asr", asrOnDiskId(m.id), m.title),
                   )}
@@ -644,6 +721,28 @@ export const ModelPage: React.FC<Props> = ({
             hotword bias is unavailable.
           </p>
         )}
+        <Row
+          label="Import model files"
+          hint="Point at a model directory (Python models need the full folder; a GGUF file works for the native runtime) — already on this computer, so no download is needed."
+        >
+          <div className="flex gap-2 items-center">
+            <input
+              className="field"
+              aria-label="Model import path"
+              placeholder="Path to a model folder or file"
+              value={importPath}
+              onChange={(event) => setImportPath(event.target.value)}
+            />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={importing || !importPath.trim() || speechBusy}
+              onClick={importModel}
+            >
+              {importing ? "Importing…" : "Import"}
+            </button>
+          </div>
+        </Row>
       </Section>
 
       <Section
@@ -682,15 +781,15 @@ export const ModelPage: React.FC<Props> = ({
             const tierDownloading = isIntelligenceDownloading(tier);
             const isActive = selectedLlm(settings) === meta.modelId;
             const key = `llm:${tier}`;
-            const statusText = tierDownloading
-              ? `Downloading ${intelligenceDownload?.progress_pct ?? 0}% · ${(intelligenceDownload?.speed_mbps ?? 0).toFixed(1)} MB/s`
-              : installed
-                ? "Installed"
-                : showRuntimeMissing
-                  ? "Weights only"
-                  : runtimeDownloadActive
-                    ? "Installing runtime"
-                    : "Not installed";
+            const statusText = (() => {
+              if (tierDownloading) {
+                return `Downloading ${intelligenceDownload?.progress_pct ?? 0}% · ${(intelligenceDownload?.speed_mbps ?? 0).toFixed(1)} MB/s`;
+              }
+              if (installed) return "Installed";
+              if (showRuntimeMissing) return "Weights only";
+              if (runtimeDownloadActive) return "Installing runtime";
+              return "Not installed";
+            })();
             return (
               <li key={tier} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex items-center justify-between gap-4">
@@ -773,7 +872,7 @@ export const ModelPage: React.FC<Props> = ({
                           · {flowStatus.n_gpu_layers}
                           {flowStatus.mode === "gpu" ? "/99 layers" : " layers"}
                           {flowStatus.mode === "gpu" && flowStatus.vram_used_mb
-                            ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB VRAM`
+                            ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB GPU memory in use`
                             : ""}
                         </>
                       )}
@@ -872,13 +971,7 @@ export const ModelPage: React.FC<Props> = ({
             </div>
           </Row>
           {refinementDevice === "gpu" && (
-            <p className="text-2xs text-muted leading-snug">
-              {flowStatus?.ready && flowStatus.mode === "gpu"
-                ? `${flowStatus.n_gpu_layers ?? 0} layers are currently offloaded to the GPU.`
-                : flowStatus?.ready && flowStatus.mode === "cpu"
-                  ? "The GPU runtime fell back to CPU. Reinstall the GPU runtime or free VRAM and try again."
-                  : "The runtime will choose full offload when it fits, otherwise the fastest safe partial offload."}
-            </p>
+            <p className="text-2xs text-muted leading-snug">{gpuOffloadHint}</p>
           )}
         </div>
       </Section>
@@ -903,18 +996,47 @@ export const ModelPage: React.FC<Props> = ({
             })();
           }}
         />
+        {settings.asr.runtime === "python" && (
+          <PythonRuntimeSetup
+            settings={settings}
+            modelStatus={modelStatus}
+            onUpdateSettings={onUpdateSettings}
+            showRemove
+          />
+        )}
+        {settings.asr.runtime === "python" && (
+          <Row
+            label="Python interpreter"
+            hint="Leave blank for automatic discovery. Save a full interpreter path to use the same environment from the app menu and installers. REFLOW_PYTHON overrides this choice."
+          >
+            <div className="flex gap-2 items-center">
+              <input
+                className="field"
+                aria-label="Python interpreter"
+                placeholder="Automatic"
+                value={pythonPathDraft ?? settings.asr.python_path ?? ""}
+                onChange={(event) => setPythonPathDraft(event.target.value)}
+              />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={loading || downloading}
+                onClick={async () => {
+                  const python_path =
+                    (pythonPathDraft ?? settings.asr.python_path ?? "").trim() || null;
+                  if (!(await onUpdateSettings({ asr: { ...settings.asr, python_path } }))) return;
+                  setPythonPathDraft(null);
+                  onReloadModel();
+                }}
+              >
+                Apply and reload
+              </button>
+            </div>
+          </Row>
+        )}
         {settings.preset === "custom" ? (
           <>
-            <Row
-              label="Speech runtime"
-              hint={
-                phononSelected
-                  ? "Phonon uses the Fermion Python runtime."
-                  : zipformerSelected
-                    ? "Zipformer uses the sherpa-onnx Python runtime."
-                    : "Native is an experimental Python-free runtime; download its model files separately."
-              }
-            >
+            <Row label="Speech runtime" hint={speechRuntimeHint}>
               <select
                 className="field"
                 value={settings.asr.runtime}
@@ -1010,13 +1132,7 @@ export const ModelPage: React.FC<Props> = ({
       <Section
         icon={<HardDrive className="w-4 h-4" {...ICON_PROPS} />}
         title="On this computer"
-        description={
-          downloaded === null
-            ? "Checking downloads…"
-            : downloaded.length === 0
-              ? "Nothing downloaded yet."
-              : `${formatBytes(downloaded.reduce((sum, m) => sum + m.size_bytes, 0))} of models and runtimes.`
-        }
+        description={downloadedDescription}
       >
         {downloaded === null || downloaded.length === 0 ? (
           <p className="text-sm text-muted">Models and runtimes you download appear here.</p>
@@ -1054,11 +1170,7 @@ export const ModelPage: React.FC<Props> = ({
                       key,
                       <>
                         Delete {m.label} ({formatBytes(m.size_bytes)})?{" "}
-                        {m.active
-                          ? m.kind === "asr"
-                            ? "This is the model you dictate with. Dictation stops until you download or choose another."
-                            : "This model is currently in use."
-                          : "You can download it again later."}
+                        {deleteWarning(m.active, m.kind)}
                       </>,
                       () => deleteModel(m.kind, m.id, m.label),
                     )}

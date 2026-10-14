@@ -370,7 +370,12 @@ pub async fn run(
     };
     let settings = ctx.settings_store.get();
     let result = async {
-        let (health, samples) = crate::audio::preflight::capture_sample(&settings, seconds).await?;
+        let (health, samples) = crate::audio::preflight::capture_sample(
+            &settings,
+            seconds,
+            Some(std::sync::Arc::clone(&ctx.last_audio_level)),
+        )
+        .await?;
         if health.peak < 0.001 || health.dropped_chunks > 0 || health.clipped_pct > 5.0 {
             return Err(format!(
                 "Sample failed the microphone check: {}",
@@ -391,7 +396,7 @@ pub async fn run(
         .and_then(|result| result);
         phase("Restoring speech model");
         if was_loaded {
-            if let Some((model, device, precision)) = original_load {
+            if let Some((_sel, model, device, precision)) = original_load {
                 let directory = ctx.model_manager.get_model_dir(&model);
                 if let Err(error) = ctx
                     .asr_handle

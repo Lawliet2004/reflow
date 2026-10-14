@@ -31,6 +31,21 @@ async function home(update = vi.fn(), overrides: Partial<AppSettings> = {}) {
   );
 }
 
+describe("microphone indicator", () => {
+  it("shows the microphone dictation will use", async () => {
+    vi.spyOn(api, "getActiveMicrophone").mockResolvedValue("USB Yeti Stereo");
+    await home();
+    expect(await screen.findByText("USB Yeti Stereo")).toBeInTheDocument();
+  });
+
+  it("hides the indicator when no microphone resolves", async () => {
+    vi.spyOn(api, "getActiveMicrophone").mockRejectedValue(new Error("No audio input device"));
+    const view = await home();
+    await waitFor(() => expect(api.getActiveMicrophone).toHaveBeenCalled());
+    expect(view.container.querySelector(".mic-name")).toBeNull();
+  });
+});
+
 describe("transcript actions", () => {
   it("refreshes recent dictations after a correction in another application", async () => {
     const listeners = new Map<string, (payload: unknown) => void>();

@@ -3,13 +3,17 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use tauri::{LogicalPosition, Manager};
+use tauri::{Emitter, LogicalPosition, Manager};
 
 use crate::commands::AppContext;
 use crate::state::AppStateEnum;
 
 static OVERLAY_GEN: AtomicU64 = AtomicU64::new(0);
 static RESPONSE_FOCUS: Mutex<(isize, isize)> = Mutex::new((0, 0));
+
+// The webview already leaves four logical pixels below the pill for its shadow.
+pub(crate) const BOTTOM_MARGIN: i32 = 0;
+const HIDE_TRANSITION_MS: u64 = 180;
 
 fn response_target(foreground: isize, overlay: isize, previous: isize) -> isize {
     if overlay != 0 && foreground == overlay && previous != 0 {
@@ -76,6 +80,13 @@ fn position_overlay_sized(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("overlay") else {
         return;
     };
+    let (win_w, win_h) = overlay_dims(&kind, &size);
+
+    #[cfg(target_os = "linux")]
+    if crate::overlay_layer::is_active() {
+        crate::overlay_layer::anchor(app, &position, win_w as i32, win_h as i32);
+        return;
+    }
 
     let Ok(Some(monitor)) = window.primary_monitor() else {
         return;
@@ -84,11 +95,13 @@ fn position_overlay_sized(app: &tauri::AppHandle) {
     let scale = monitor.scale_factor();
     let screen = monitor.size();
     let origin = monitor.position();
-    let (win_w, win_h) = overlay_dims(&kind, &size);
     let screen_w = screen.width as f64 / scale;
-    let screen_h = screen.height as f64 / scale;
     let origin_x = origin.x as f64 / scale;
     let origin_y = origin.y as f64 / scale;
+    let work_area = monitor.work_area();
+    let bottom = (work_area.position.y as f64 + work_area.size.height as f64) / scale
+        - win_h
+        - f64::from(BOTTOM_MARGIN);
 
     let left = origin_x + 24.0;
     let center = origin_x + (screen_w - win_w) / 2.0;
@@ -98,9 +111,9 @@ fn position_overlay_sized(app: &tauri::AppHandle) {
         "top_center" => (center, top),
         "top_left" => (left, top),
         "top_right" => (right, top),
-        "bottom_left" => (left, origin_y + screen_h - win_h - 40.0),
-        "bottom_right" => (right, origin_y + screen_h - win_h - 40.0),
-        _ => (center, origin_y + screen_h - win_h - 48.0),
+        "bottom_left" => (left, bottom),
+        "bottom_right" => (right, bottom),
+        _ => (center, bottom),
     };
 
     let _ = window.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -133,9 +146,17 @@ pub fn show_overlay(app: &tauri::AppHandle, position: &str, size: &str) {
     position_overlay_sized(app);
     if let Some(window) = app.get_webview_window("overlay") {
         let _ = window.set_focusable(false);
-        let _ = window.set_ignore_cursor_events(true);
         let _ = window.set_always_on_top(true);
+        // GTK has no native window until the overlay is first shown, and tao
+        // aborts the process when click-through is applied before that.
+        #[cfg(not(target_os = "linux"))]
+        let _ = window.set_ignore_cursor_events(true);
+        #[cfg(target_os = "linux")]
+        crate::overlay_layer::set_interactive(app, false);
         show_without_activating(&window);
+        #[cfg(target_os = "linux")]
+        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.emit("window:visibility", true);
     }
 }
 
@@ -193,7 +214,10 @@ pub fn show_response(app: &tauri::AppHandle) {
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE.0 as isize));
             }
         }
+        #[cfg(target_os = "linux")]
+        crate::overlay_layer::set_interactive(app, true);
         let _ = window.show();
+        let _ = window.emit("window:visibility", true);
         let _ = window.set_focus();
     }
 }
@@ -207,6 +231,7 @@ pub fn hide_overlay(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("overlay") {
         hide_native(&window);
         let _ = window.hide();
+        let _ = window.emit("window:visibility", false);
     }
 }
 
@@ -230,9 +255,14 @@ pub fn hide_overlay_later(app: tauri::AppHandle, delay_ms: u64) {
         return;
     }
     resize_overlay(&app, "preview");
-    let gen = OVERLAY_GEN.load(Ordering::SeqCst);
+    // A newer result or recording supersedes both the hold and the fade.
+    let gen = OVERLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.emit("hud:hide", false);
+    }
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        let transition_ms = delay_ms.min(HIDE_TRANSITION_MS);
+        tokio::time::sleep(Duration::from_millis(delay_ms - transition_ms)).await;
         if OVERLAY_GEN.load(Ordering::SeqCst) != gen {
             return;
         }
@@ -242,6 +272,20 @@ pub fn hide_overlay_later(app: tauri::AppHandle, delay_ms: u64) {
             current,
             AppStateEnum::Recording | AppStateEnum::Processing | AppStateEnum::Injecting
         ) {
+            if let Some(window) = app.get_webview_window("overlay") {
+                let _ = window.emit("hud:hide", true);
+            }
+            tokio::time::sleep(Duration::from_millis(transition_ms)).await;
+            if OVERLAY_GEN.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            let current = *ctx.state_enum.read();
+            if matches!(
+                current,
+                AppStateEnum::Recording | AppStateEnum::Processing | AppStateEnum::Injecting
+            ) {
+                return;
+            }
             hide_overlay(&app);
         }
     });

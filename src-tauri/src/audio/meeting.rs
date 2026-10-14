@@ -1,5 +1,7 @@
 //! Two native capture streams share a bounded 16 kHz wall-clock timeline.
 //! Missing loopback callbacks represent silence, rather than delayed audio.
+#[cfg(target_os = "linux")]
+use super::pipewire::{self, PipeWireCapture};
 use super::{
     capture::AudioCaptureEngine, resampler::AudioResampler, VadConfig, VoiceActivityDetector,
 };
@@ -90,6 +92,19 @@ impl MeetingMixer {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn pipewire_mic(device_id: Option<&str>) -> Result<Option<(String, String)>, String> {
+    device_id.map_or(Ok(None), pipewire::resolve_selected)
+}
+
+#[cfg(target_os = "linux")]
+fn pipewire_system_node(monitor_id: Option<&str>) -> Option<String> {
+    match monitor_id {
+        Some(id) => id.strip_prefix(pipewire::ID_PREFIX).map(str::to_string),
+        None => pipewire::default_sink().map(|sink| format!("{sink}.monitor")),
+    }
+}
+
 fn system_device(
     host: &cpal::Host,
     monitor: Option<&str>,
@@ -114,7 +129,9 @@ fn system_device(
                     name.to_lowercase().contains("monitor") && monitor.is_none_or(|id| name == id)
                 })
             });
-        let device = devices.next().ok_or("No monitor capture source is exposed. Configure a PipeWire/PulseAudio monitor through ALSA, then select it in Advanced settings.")?;
+        let device = devices.next().ok_or(
+            "No system audio monitor is available. Select a PipeWire monitor in Advanced settings.",
+        )?;
         if devices.next().is_some() {
             return Err(
                 "Several monitor sources are available. Select one in Advanced settings.".into(),
@@ -146,14 +163,44 @@ impl AudioCaptureEngine {
             return Err("Input gain must be between 0.5 and 3.0".into());
         }
         let host = cpal::default_host();
-        let (mic, mic_name) = super::capture::resolve_input_device(&host, device_id.as_deref())?;
-        if mic_name.to_lowercase().contains("monitor") {
-            return Err(
-                "Select a microphone as the primary input, rather than a monitor source".into(),
-            );
+        #[cfg(target_os = "linux")]
+        let mic_pw = pipewire_mic(device_id.as_deref())?;
+        #[cfg(not(target_os = "linux"))]
+        let mic_pw: Option<(String, String)> = None;
+        #[cfg(target_os = "linux")]
+        let system_node = pipewire_system_node(monitor_id.as_deref());
+        #[cfg(not(target_os = "linux"))]
+        let system_node: Option<String> = None;
+        let mut mic_cpal = None;
+        let mic_name = match &mic_pw {
+            #[cfg(target_os = "linux")]
+            Some((node, name)) => {
+                if node.ends_with(".monitor") {
+                    return Err(
+                        "Select a microphone as the primary input, rather than a monitor source"
+                            .into(),
+                    );
+                }
+                name.clone()
+            }
+            _ => {
+                let (mic, mic_name) =
+                    super::capture::resolve_input_device(&host, device_id.as_deref())?;
+                if mic_name.to_lowercase().contains("monitor") {
+                    return Err(
+                        "Select a microphone as the primary input, rather than a monitor source"
+                            .into(),
+                    );
+                }
+                let mic_config = mic.default_input_config().map_err(|e| e.to_string())?;
+                mic_cpal = Some((mic, mic_config));
+                mic_name
+            }
+        };
+        let mut system_cpal = None;
+        if system_node.is_none() {
+            system_cpal = Some(system_device(&host, monitor_id.as_deref())?);
         }
-        let mic_config = mic.default_input_config().map_err(|e| e.to_string())?;
-        let (system, system_config) = system_device(&host, monitor_id.as_deref())?;
         *self.last_device_name.lock() = format!("{mic_name} + system audio");
         let mixer = Arc::new(Mutex::new(MeetingMixer::default()));
         let epoch = Arc::new(std::sync::OnceLock::<Instant>::new());
@@ -200,7 +247,48 @@ impl AudioCaptureEngine {
                 let _ = auto_stop.try_send(());
             }, None).map_err(|e| format!("Cannot open meeting audio: {e}"))
         };
-        for config in [&mic_config, &system_config] {
+        #[cfg(target_os = "linux")]
+        let build_pipewire = |node: &str, is_system: bool| -> Result<PipeWireCapture, String> {
+            let epoch = epoch.clone();
+            let mixer = mixer.clone();
+            let recording = self.is_recording.clone();
+            let error_recording = recording.clone();
+            let error = self.stream_error.clone();
+            let auto_stop = auto_stop.clone();
+            let mut resampler = AudioResampler::new(RATE as u32, 1);
+            let mut timeline = CaptureTimeline::default();
+            PipeWireCapture::spawn(
+                node,
+                move |samples| {
+                    if !recording.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let mut mono = resampler.resample_f32(samples);
+                    if !is_system {
+                        for sample in &mut mono {
+                            *sample *= gain;
+                        }
+                    }
+                    let Some(epoch) = epoch.get() else {
+                        return;
+                    };
+                    let observed = (epoch.elapsed().as_secs_f64() * RATE as f64) as u64;
+                    let start = timeline.place(None, observed, mono.len());
+                    mixer.lock().push_at(is_system, start, &mono);
+                },
+                move |message| {
+                    *error.lock() = Some(message);
+                    error_recording.store(false, Ordering::SeqCst);
+                    let _ = auto_stop.try_send(());
+                },
+            )
+        };
+        let configs: Vec<&cpal::SupportedStreamConfig> = mic_cpal
+            .iter()
+            .chain(system_cpal.iter())
+            .map(|(_, config)| config)
+            .collect();
+        for config in configs {
             if !matches!(
                 config.sample_format(),
                 cpal::SampleFormat::F32
@@ -214,12 +302,30 @@ impl AudioCaptureEngine {
                 ));
             }
         }
-        let mic_stream = build(&mic, mic_config, false)?;
-        let system_stream = build(&system, system_config, true)?;
+        let mic_stream = mic_cpal
+            .map(|(device, config)| build(&device, config, false))
+            .transpose()?;
+        let system_stream = system_cpal
+            .map(|(device, config)| build(&device, config, true))
+            .transpose()?;
+        #[cfg(target_os = "linux")]
+        let mic_pipewire = mic_pw
+            .as_ref()
+            .map(|(node, _)| build_pipewire(node.as_str(), false))
+            .transpose()?;
+        #[cfg(target_os = "linux")]
+        let system_pipewire = system_node
+            .as_deref()
+            .map(|node| build_pipewire(node, true))
+            .transpose()?;
         let started = Instant::now();
         let _ = epoch.set(started);
         self.is_recording.store(true, Ordering::SeqCst);
-        if let Err(error) = system_stream.play().and_then(|_| mic_stream.play()) {
+        let played = [system_stream.as_ref(), mic_stream.as_ref()]
+            .into_iter()
+            .flatten()
+            .try_for_each(|stream| stream.play());
+        if let Err(error) = played {
             self.is_recording.store(false, Ordering::SeqCst);
             return Err(format!("Cannot start meeting audio: {error}"));
         }
@@ -269,8 +375,11 @@ impl AudioCaptureEngine {
                 self.is_recording.store(false, Ordering::SeqCst);
                 e.to_string()
             })?;
-        self.current_stream = Some(mic_stream);
-        self.system_stream = Some(system_stream);
+        self.current_stream = mic_stream;
+        self.system_stream = system_stream;
+        #[cfg(target_os = "linux")]
+        self.pipewire_streams
+            .extend(mic_pipewire.into_iter().chain(system_pipewire));
         self.meeting_thread = Some(worker);
         Ok(())
     }

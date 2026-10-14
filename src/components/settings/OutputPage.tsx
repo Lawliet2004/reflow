@@ -1,6 +1,7 @@
 import { AppSettings } from "../../types";
-import { Section } from "./ui";
+import { Section, Row } from "./ui";
 import { OutputPicker } from "./OutputPicker";
+
 export function OutputPage({
   settings,
   onUpdateSettings,
@@ -23,6 +24,25 @@ export function OutputPage({
           void onUpdateSettings({ send_key });
         }}
       />
+      <Row
+        label="Paste shortcut"
+        hint="Use Ctrl + Shift + V for terminals when this desktop cannot detect the foreground app."
+      >
+        <select
+          className="select-field"
+          aria-label="Paste shortcut"
+          value={settings.paste_shortcut ?? "auto"}
+          onChange={(event) => {
+            void onUpdateSettings({
+              paste_shortcut: event.target.value as AppSettings["paste_shortcut"],
+            });
+          }}
+        >
+          <option value="auto">Automatic</option>
+          <option value="ctrl_v">Ctrl + V</option>
+          <option value="ctrl_shift_v">Ctrl + Shift + V</option>
+        </select>
+      </Row>
     </Section>
   );
 }

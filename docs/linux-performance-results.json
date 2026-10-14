@@ -1,0 +1,1052 @@
+{
+  "before-desktop": {
+    "binary": "/tmp/reflow-linux-audit/before/reflow",
+    "scope": "portable, tray-hidden, same selected model; CPU is percent of one logical core; RSS sums owned processes",
+    "samples": [
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1632.0703125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1631.42578125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.9877494200386616,
+        "rss_mb": 1628.62109375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 1.9673061418884419,
+        "rss_mb": 1628.62109375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 5.900321897173836,
+        "rss_mb": 1629.1953125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.9841241292297922,
+        "rss_mb": 1628.64453125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1628.64453125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1628.93359375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1628.7890625,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 1.9671514177910514,
+        "rss_mb": 1621.16796875,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.16796875,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.16796875,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.9821215892121427,
+        "rss_mb": 1621.16796875,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.16796875,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 3.9530383862423415,
+        "rss_mb": 1621.03515625,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.9882485975714849,
+        "rss_mb": 1621.03515625,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.03515625,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.03515625,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.03515625,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.03515625,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 1.9750299842638228,
+        "rss_mb": 1621.26953125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.9887951630606212,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.9884826401518795,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 6.887938882491008,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1617.0234375,
+        "processes": 6
+      }
+    ],
+    "model_ready_ms": 5935.590366999804,
+    "idle_cpu_median_pct": 0.0,
+    "idle_rss_median_mb": 1621.1015625,
+    "owned_processes_surviving_termination": 1,
+    "idle_cpu_mean_pct": 0.9523436083038361
+  },
+  "after-desktop-final": {
+    "binary": "/tmp/reflow-linux-audit/after/reflow",
+    "scope": "portable, tray-hidden, same selected model; CPU is percent of one logical core; RSS sums owned processes",
+    "samples": [
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1623.0390625,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.99609375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.25,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.25,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 5.930155089969852,
+        "rss_mb": 1621.68359375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.14453125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.14453125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.14453125,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 2.9633481660296725,
+        "rss_mb": 1620.859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 4.939550438690065,
+        "rss_mb": 1620.984375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.984375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.9883101899857696,
+        "rss_mb": 1620.984375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.984375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.74609375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.74609375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1620.74609375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 4.933840343843427,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.9831049588554506,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      },
+      {
+        "cpu_pct": 0.0,
+        "rss_mb": 1621.05859375,
+        "processes": 6
+      }
+    ],
+    "model_ready_ms": 4142.084068000258,
+    "idle_cpu_median_pct": 0.0,
+    "idle_rss_median_mb": 1621.05859375,
+    "owned_processes_surviving_termination": 0,
+    "idle_cpu_mean_pct": 0.6912769729124746
+  },
+  "asr-before": {
+    "scope": "sequential, same waveform/settings, one untimed warmup + 30 warm repetitions; no GUI insertion or cleanup",
+    "fixture_sha256": "6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f",
+    "asr": [
+      {
+        "runtime": "python",
+        "model": "zipformer-20m",
+        "requested_device": "cpu",
+        "requested_precision": "int8",
+        "load_wall_seconds": 5.045051629998852,
+        "device": "cpu",
+        "precision": "int8",
+        "vram_mb": 0.0,
+        "spill_detected": false,
+        "runs": [
+          {
+            "language": "en",
+            "repetition": 0,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.349727000473649,
+            "rtf": 0.0011093927547884753,
+            "recognition_ms": 173.45678000128828,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 1,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.431021998854703,
+            "rtf": 0.0011216636979403327,
+            "recognition_ms": 166.53351400054817,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 2,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.555186999525176,
+            "rtf": 0.001140405584833989,
+            "recognition_ms": 171.206474000428,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 3,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.5316920010664035,
+            "rtf": 0.0011368591699722874,
+            "recognition_ms": 179.13072199917224,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 4,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.22602200039546,
+            "rtf": 0.0010907203019464846,
+            "recognition_ms": 179.59034599880397,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 5,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.155647999752546,
+            "rtf": 0.0010800978112834032,
+            "recognition_ms": 166.09548199994606,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 6,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.129949000955094,
+            "rtf": 0.0010762187171252972,
+            "recognition_ms": 162.7417380004772,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 7,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.503078000809182,
+            "rtf": 0.001132540075593839,
+            "recognition_ms": 161.60925700023654,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 8,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.016974999918602,
+            "rtf": 0.0012101094339499777,
+            "recognition_ms": 165.1907420000498,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 9,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.403038000120432,
+            "rtf": 0.001117439698131386,
+            "recognition_ms": 167.37549400022544,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 10,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.073482000123477,
+            "rtf": 0.001067695396245053,
+            "recognition_ms": 163.80202300024393,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 11,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.158492999427835,
+            "rtf": 0.0012314706414230695,
+            "recognition_ms": 164.12242299884383,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 12,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.118478001051699,
+            "rtf": 0.001225430641668181,
+            "recognition_ms": 168.46853099923464,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 13,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.001996000326471,
+            "rtf": 0.0010569050566530524,
+            "recognition_ms": 168.86100599913334,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 14,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.318848000068101,
+            "rtf": 0.0011047317735951852,
+            "recognition_ms": 162.24811999927624,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 15,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.046210001135478,
+            "rtf": 0.0010635788680959212,
+            "recognition_ms": 162.3506260002614,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 16,
+            "audio_seconds": 6.625,
+            "decode_ms": 9.521092999420944,
+            "rtf": 0.0014371461131201424,
+            "recognition_ms": 164.15876100109017,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 17,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.522775998950237,
+            "rtf": 0.0011355133583321113,
+            "recognition_ms": 168.67492300116282,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 18,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.163813999795821,
+            "rtf": 0.0010813304150635202,
+            "recognition_ms": 168.47347099974286,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 19,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.25561799845309,
+            "rtf": 0.0010951876224080137,
+            "recognition_ms": 162.51639999973122,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 20,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.518758000514936,
+            "rtf": 0.0011349068680022545,
+            "recognition_ms": 166.1357280008815,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 21,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.580676001452957,
+            "rtf": 0.0011442529813513898,
+            "recognition_ms": 169.81500000110827,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 22,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.604721999086905,
+            "rtf": 0.0011478825658999103,
+            "recognition_ms": 166.79990000011458,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 23,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.401585000479827,
+            "rtf": 0.0011172203774309172,
+            "recognition_ms": 168.52718299924163,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 24,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.669974998862017,
+            "rtf": 0.0011577320752999272,
+            "recognition_ms": 170.2229050006281,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 25,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.243104999564821,
+            "rtf": 0.001244242264085256,
+            "recognition_ms": 166.40153400112467,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 26,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.273881999935838,
+            "rtf": 0.001097944452820504,
+            "recognition_ms": 163.60679200079176,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 27,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.825070000762935,
+            "rtf": 0.001181142641624594,
+            "recognition_ms": 165.36224800074706,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 28,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.663562999368878,
+            "rtf": 0.0011567642263198307,
+            "recognition_ms": 177.7600679997704,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 29,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.827755000107572,
+            "rtf": 0.0011815479245445393,
+            "recognition_ms": 175.7897839997895,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          }
+        ],
+        "per_language": {
+          "en": {
+            "median_recognition_ms": 166.66670700033137,
+            "p95_recognition_ms": 179.13072199917224,
+            "warm_runs": 30,
+            "median_decode_ms": 7.510918000662059,
+            "p95_decode_ms": 8.243104999564821,
+            "mean_wer": 0.05555555555555555,
+            "mean_cer": 0.034482758620689655
+          }
+        },
+        "median_decode_ms": 7.510918000662059,
+        "p95_decode_ms": 8.243104999564821,
+        "median_rtf": 0.0011337234717980467,
+        "repeats": 30
+      }
+    ]
+  },
+  "asr-after": {
+    "scope": "sequential, same waveform/settings, one untimed warmup + 30 warm repetitions; no GUI insertion or cleanup",
+    "fixture_sha256": "6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f",
+    "asr": [
+      {
+        "runtime": "python",
+        "model": "zipformer-20m",
+        "requested_device": "cpu",
+        "requested_precision": "int8",
+        "load_wall_seconds": 3.384070423000594,
+        "device": "cpu",
+        "precision": "int8",
+        "vram_mb": 0.0,
+        "spill_detected": false,
+        "runs": [
+          {
+            "language": "en",
+            "repetition": 0,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.3012550001294585,
+            "rtf": 0.0011020762264346352,
+            "recognition_ms": 164.95033600040188,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 1,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.466217999739456,
+            "rtf": 0.0012779196980738801,
+            "recognition_ms": 200.30263500120782,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 2,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.743516000322415,
+            "rtf": 0.0013197760000486665,
+            "recognition_ms": 189.92107699887129,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 3,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.654396000361885,
+            "rtf": 0.001155380528356511,
+            "recognition_ms": 185.44760599979782,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 4,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.270717000210425,
+            "rtf": 0.0010974667170128942,
+            "recognition_ms": 166.09882800003106,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 5,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.55954499982181,
+            "rtf": 0.0011410633961995184,
+            "recognition_ms": 171.11519999889424,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 6,
+            "audio_seconds": 6.625,
+            "decode_ms": 6.666188000963302,
+            "rtf": 0.0010062170567491776,
+            "recognition_ms": 163.2555650012364,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 7,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.1525119983562035,
+            "rtf": 0.0010796244525820686,
+            "recognition_ms": 158.980000000156,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 8,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.1172249990922865,
+            "rtf": 0.0010742981130705338,
+            "recognition_ms": 161.30343499935407,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 9,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.153974999004276,
+            "rtf": 0.0012307886790949851,
+            "recognition_ms": 162.87268700034474,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 10,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.181937999121146,
+            "rtf": 0.00108406611307489,
+            "recognition_ms": 177.83566099933523,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 11,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.301425001263851,
+            "rtf": 0.001253045283209638,
+            "recognition_ms": 164.80779399898893,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 12,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.503329001337988,
+            "rtf": 0.0011325779624661114,
+            "recognition_ms": 174.7253310004453,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 13,
+            "audio_seconds": 6.625,
+            "decode_ms": 9.056250000867294,
+            "rtf": 0.001366981132206384,
+            "recognition_ms": 174.67906300043978,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 14,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.381617000646656,
+            "rtf": 0.00111420633972025,
+            "recognition_ms": 177.79647700081114,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 15,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.079342998622451,
+            "rtf": 0.001068580075263766,
+            "recognition_ms": 168.33277300065674,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 16,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.029729000350926,
+            "rtf": 0.0010610911698642907,
+            "recognition_ms": 161.3830459991732,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 17,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.050677999359323,
+            "rtf": 0.0010642532829221619,
+            "recognition_ms": 163.95045500030392,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 18,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.272169001225848,
+            "rtf": 0.0010976858869774864,
+            "recognition_ms": 163.14956400128722,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 19,
+            "audio_seconds": 6.625,
+            "decode_ms": 6.966519000343396,
+            "rtf": 0.0010515500377876825,
+            "recognition_ms": 161.48967899971467,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 20,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.022185000096215,
+            "rtf": 0.0010599524528447117,
+            "recognition_ms": 163.56642599930638,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 21,
+            "audio_seconds": 6.625,
+            "decode_ms": 6.933196000318276,
+            "rtf": 0.0010465201509914379,
+            "recognition_ms": 165.3338750002149,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 22,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.208488999822293,
+            "rtf": 0.001088073811293931,
+            "recognition_ms": 166.85805099950812,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 23,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.1315120003419,
+            "rtf": 0.0010764546415610414,
+            "recognition_ms": 163.89802599951508,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 24,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.31943900063925,
+            "rtf": 0.001104820981228566,
+            "recognition_ms": 162.84202899987577,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 25,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.4088799992750864,
+            "rtf": 0.0011183215093245413,
+            "recognition_ms": 163.8380620006501,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 26,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.103638999979012,
+            "rtf": 0.001072247396223247,
+            "recognition_ms": 163.07542199865566,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 27,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.090232998962165,
+            "rtf": 0.0010702238488999494,
+            "recognition_ms": 164.33735999999044,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 28,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.433075999870198,
+            "rtf": 0.0011219737358294638,
+            "recognition_ms": 171.8585329999769,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 29,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.446240000717808,
+            "rtf": 0.0011239607548253294,
+            "recognition_ms": 175.0941119989875,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          }
+        ],
+        "per_language": {
+          "en": {
+            "median_recognition_ms": 164.8790649996954,
+            "p95_recognition_ms": 189.92107699887129,
+            "warm_runs": 30,
+            "median_decode_ms": 7.271443000718136,
+            "p95_decode_ms": 8.743516000322415,
+            "mean_wer": 0.05555555555555555,
+            "mean_cer": 0.034482758620689655
+          }
+        },
+        "median_decode_ms": 7.271443000718136,
+        "p95_decode_ms": 8.743516000322415,
+        "median_rtf": 0.0010975763019951904,
+        "repeats": 30
+      }
+    ]
+  }
+}

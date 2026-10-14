@@ -129,6 +129,10 @@ pub struct AppContext {
     pub dictation_target_hwnd: Arc<RwLock<isize>>,
     pub correction_watch_generation: Arc<std::sync::atomic::AtomicU64>,
     pub registered_hotkey: Arc<RwLock<String>>,
+    /// Cancel binding that must not be grabbed globally while idle — Escape on
+    /// every non-Windows platform, where the hook cannot pass it through.
+    /// lib.rs registers it only for the duration of a recording session.
+    pub session_cancel_shortcut: Arc<RwLock<Option<String>>>,
     pub hotkey_error: Arc<RwLock<Option<String>>>,
     pub bus: DoryBus,
     pub capture_kind: Arc<RwLock<CaptureKind>>,
@@ -162,7 +166,23 @@ pub struct AppContext {
     /// The (model, device, precision) the resolver last chose for a load —
     /// the *resolved* triple, not the Settings one. The status poller records
     /// measured peaks against it once the sidecar reports them.
-    pub last_asr_load: Arc<RwLock<Option<(String, String, String)>>>,
+    /// Settings saved a changed binding set while a session was recording —
+    /// rebinding mid-capture would strand the session's cancel/swallow state.
+    /// The Dory state loop applies it once the session ends.
+    pub pending_hotkey_rebind: Arc<AtomicBool>,
+    /// Settings selected a different installed model while an
+    /// install/reload/dictation held the session lock. Applied on the next
+    /// idle point — the flag always resolves the *current* settings, so the
+    /// latest selection wins.
+    pub pending_asr_reload: Arc<AtomicBool>,
+    /// `(selected_id, resolved_model_id, device, precision)` — the resolved
+    /// target is only meaningful while the selection it was computed for is
+    /// still current; callers must compare `selected_id` first.
+    pub last_asr_load: Arc<RwLock<Option<(String, String, String, String)>>>,
+    /// The tray's status line, installed by lib.rs at startup so the model
+    /// status watcher can retitle it without threading a MenuItem through
+    /// every watcher call site.
+    pub tray_status_item: Arc<RwLock<Option<tauri::menu::MenuItem<tauri::Wry>>>>,
 }
 
 impl AppContext {
@@ -218,6 +238,9 @@ impl AppContext {
             dictation_target_hwnd: Arc::new(RwLock::new(0)),
             correction_watch_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             registered_hotkey: Arc::new(RwLock::new(initial_settings.hotkey)),
+            session_cancel_shortcut: Arc::new(RwLock::new(None)),
+            pending_hotkey_rebind: Arc::new(AtomicBool::new(false)),
+            pending_asr_reload: Arc::new(AtomicBool::new(false)),
             hotkey_error: Arc::new(RwLock::new(None)),
             bus: DoryBus::new(),
             capture_kind: Arc::new(RwLock::new(CaptureKind::None)),
@@ -238,6 +261,7 @@ impl AppContext {
             model_status_watch_active: Arc::new(AtomicBool::new(false)),
             asr_selection_notice: Arc::new(RwLock::new(None)),
             last_asr_load: Arc::new(RwLock::new(None)),
+            tray_status_item: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -279,6 +303,9 @@ impl AppContext {
             dictation_target_hwnd: Arc::new(RwLock::new(0)),
             correction_watch_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             registered_hotkey: Arc::new(RwLock::new(initial.hotkey)),
+            session_cancel_shortcut: Arc::new(RwLock::new(None)),
+            pending_hotkey_rebind: Arc::new(AtomicBool::new(false)),
+            pending_asr_reload: Arc::new(AtomicBool::new(false)),
             hotkey_error: Arc::new(RwLock::new(None)),
             bus: DoryBus::new(),
             capture_kind: Arc::new(RwLock::new(CaptureKind::None)),
@@ -295,6 +322,7 @@ impl AppContext {
             model_status_watch_active: Arc::new(AtomicBool::new(false)),
             asr_selection_notice: Arc::new(RwLock::new(None)),
             last_asr_load: Arc::new(RwLock::new(None)),
+            tray_status_item: Arc::new(RwLock::new(None)),
         }
     }
 }

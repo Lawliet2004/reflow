@@ -3,6 +3,7 @@ pub mod engine;
 pub mod languages;
 pub mod mock;
 pub mod native;
+pub mod python_setup;
 pub mod sidecar;
 pub mod stabilizer;
 

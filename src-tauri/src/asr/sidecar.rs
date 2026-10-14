@@ -24,6 +24,10 @@ mod transport_tests;
 #[path = "sidecar_load_deadline_tests.rs"]
 mod load_deadline_tests;
 
+#[cfg(test)]
+#[path = "sidecar_python_tests.rs"]
+mod python_tests;
+
 /// Marker prefix for a sidecar read timeout.
 ///
 /// Timeouts have to be distinguishable from ordinary engine errors so the
@@ -307,26 +311,208 @@ impl Qwen3AsrSidecar {
     }
 
     pub(crate) fn find_python() -> Option<String> {
-        let names: &[&str] = if cfg!(windows) {
-            &["python", "python3"]
-        } else {
-            &["python3", "python"]
-        };
+        let saved = std::fs::read(crate::platform::PlatformSys::get_config_path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|settings| {
+                settings
+                    .get("asr")?
+                    .get("python_path")?
+                    .as_str()
+                    .map(str::to_owned)
+            });
+        let environment = std::env::var("REFLOW_PYTHON").ok();
+        let explicit = environment
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .or(saved.as_deref().filter(|path| !path.trim().is_empty()));
+        // Only a binary physically inside a Reflow checkout may use its .venv.
+        // A distributed release never consults a compiled-in build-machine path
+        // or an unrelated working directory.
+        let checkout = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Self::checkout_root(&exe));
+        let mut candidates = Self::python_candidates(
+            explicit,
+            std::env::var_os("VIRTUAL_ENV").as_deref().map(Path::new),
+            checkout.as_deref(),
+            cfg!(windows),
+        );
+        if explicit.is_none() {
+            let interpreter = if cfg!(windows) {
+                "Scripts/python.exe"
+            } else {
+                "bin/python"
+            };
+            let installed = crate::platform::PlatformSys::get_app_dir()
+                .join("python-runtime")
+                .join(interpreter)
+                .to_string_lossy()
+                .into_owned();
+            // An activated environment keeps first pick; otherwise the
+            // bundled interpreter is tried before PATH names.
+            let at = usize::from(std::env::var_os("VIRTUAL_ENV").is_some());
+            candidates.insert(at.min(candidates.len()), installed);
+        }
+        Self::select_python(&candidates, |candidate| {
+            Self::bounded_python_probe(candidate, "import sys; print(sys.executable)")
+        })
+    }
 
-        for name in names {
-            if let Some(out) = Self::bounded_python_probe(name, "import sys; print(sys.executable)")
-            {
-                let exe = String::from_utf8_lossy(&out).to_lowercase();
-                if !exe.contains("windowsapps") {
-                    return Some((*name).to_string());
-                }
+    fn checkout_root(executable: &Path) -> Option<PathBuf> {
+        executable
+            .parent()?
+            .ancestors()
+            .take(6)
+            .find(|root| {
+                root.join("src-tauri/Cargo.toml").is_file()
+                    && root.join("model-runtime/qwen3_asr_runtime.py").is_file()
+                    && executable.starts_with(root.join("src-tauri/target"))
+            })
+            .map(Path::to_path_buf)
+    }
+
+    fn python_candidates(
+        explicit: Option<&str>,
+        virtual_env: Option<&Path>,
+        dev_root: Option<&Path>,
+        windows: bool,
+    ) -> Vec<String> {
+        // An explicit interpreter is authoritative: silently falling back would
+        // run a different environment than the user asked for.
+        if let Some(explicit) = explicit.filter(|value| !value.trim().is_empty()) {
+            return vec![explicit.to_string()];
+        }
+        let mut candidates = Vec::new();
+        let interpreter = if windows {
+            "Scripts/python.exe"
+        } else {
+            "bin/python"
+        };
+        if let Some(root) = virtual_env {
+            candidates.push(root.join(interpreter).to_string_lossy().into_owned());
+        }
+        // `tauri dev` need not inherit an activated shell. The source checkout's
+        // isolated environment is preferred over Ubuntu's managed system Python.
+        // Release builds must never depend on a build machine's checkout path.
+        if let Some(root) = dev_root {
+            let path = root
+                .join(".venv")
+                .join(interpreter)
+                .to_string_lossy()
+                .into_owned();
+            if !candidates.contains(&path) {
+                candidates.push(path);
+            }
+        }
+        let names = if windows {
+            ["python", "python3"]
+        } else {
+            ["python3", "python"]
+        };
+        candidates.extend(names.into_iter().map(str::to_string));
+        candidates
+    }
+
+    fn select_python(
+        candidates: &[String],
+        mut probe: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) -> Option<String> {
+        for candidate in candidates {
+            let Some(output) = probe(candidate) else {
+                continue;
+            };
+            let executable = String::from_utf8_lossy(&output).trim().to_string();
+            if !executable.is_empty() && !executable.to_lowercase().contains("windowsapps") {
+                // Keep the interpreter path, including a venv's symlink. Resolving
+                // the symlink would turn it back into the system Python environment.
+                return Some(executable);
             }
         }
         None
     }
 
+    /// Which Python modules the selected model needs. Qwen needs the torch
+    /// stack; the bundled lightweight runtimes have their own dependencies,
+    /// so checking torch there would wrongly block a working setup.
+    /// `torchao` is only required when the saved precision quantizes on CUDA.
+    fn required_python_modules() -> Vec<&'static str> {
+        let asr = std::fs::read(crate::platform::PlatformSys::get_config_path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|settings| settings.get("asr").cloned());
+        let field = |name: &str| {
+            asr.as_ref()
+                .and_then(|asr| asr.get(name))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let model = field("model");
+        let device = field("device");
+        let precision = field("precision");
+        let mut modules = vec!["numpy"];
+        match model.as_str() {
+            "phonon-2" => {
+                modules.extend(["fermion", "zstandard"]);
+                if device == "cuda" {
+                    modules.extend(["torch", "transformers"]);
+                }
+                return modules;
+            }
+            "zipformer-20m" => {
+                modules.push("sherpa_onnx");
+                return modules;
+            }
+            _ => {}
+        }
+        modules.extend(["torch", "transformers", "huggingface_hub"]);
+        if matches!(precision.as_str(), "int4" | "int8") && device != "cpu" {
+            modules.push("torchao");
+        }
+        modules
+    }
+
+    fn missing_dependency_error(python: &str, script: &Path, missing: &str) -> String {
+        let message = format!(
+            "Speech runtime dependency '{missing}' is missing from Python {python}. \
+             Install the speech dependencies with: \"{python}\" -m pip install -r \"{}\"",
+            script.with_file_name("requirements.txt").display()
+        );
+        #[cfg(target_os = "linux")]
+        if Path::new(python).starts_with("/usr") {
+            let runtime = crate::platform::PlatformSys::get_app_dir().join("python-runtime");
+            return format!("Speech runtime dependency '{missing}' is missing from Python {python}. Linux system Python is managed by the OS. Create an isolated environment with python3 -m venv \"{}\", then install the pinned dependencies with \"{}\" -m pip install -r \"{}\". Reflow discovers that environment automatically; reload the speech model after setup. You can also choose an existing environment in Model settings → Python interpreter.", runtime.display(), runtime.join("bin/python").display(), script.with_file_name("requirements.txt").display());
+        }
+        message
+    }
+
+    fn check_startup_dependencies(python: &str, script: &Path) -> Result<(), String> {
+        // numpy is imported before the sidecar's IPC reader starts. Check the
+        // modules the selected model will need without loading native
+        // libraries so a setup error is reported directly, rather than
+        // consuming three crash strikes and a cooldown.
+        let modules = Self::required_python_modules();
+        let list = modules
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let code = format!("import importlib.util,json; print(json.dumps([name for name in [{list}] if importlib.util.find_spec(name) is None]))");
+        if let Some(output) = Self::bounded_python_probe(python, &code) {
+            if let Ok(missing) = serde_json::from_slice::<Vec<String>>(&output) {
+                if let Some(missing) = missing.first() {
+                    return Err(Self::missing_dependency_error(python, script, missing));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn bounded_python_probe(python: &str, code: &str) -> Option<Vec<u8>> {
         let mut command = Command::new(python);
+        #[cfg(target_os = "linux")]
+        crate::platform::process::host_environment(&mut command);
         command
             .args(["-c", code])
             .stdout(Stdio::piped())
@@ -356,7 +542,7 @@ impl Qwen3AsrSidecar {
         }
     }
 
-    fn find_runtime_script(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    pub(crate) fn find_runtime_script(resource_dir: Option<&Path>) -> Option<PathBuf> {
         let mut candidates = Vec::new();
         if let Some(dir) = resource_dir {
             candidates.push(dir.join("model-runtime").join("qwen3_asr_runtime.py"));
@@ -893,17 +1079,26 @@ impl ASREngine for Qwen3AsrSidecar {
 
         log::info!("Initializing Qwen3-ASR sidecar process...");
 
-        let Some(python) = Self::find_python() else {
-            self.fallback("Python 3 was not found on PATH");
-            return Err(
-                "Python 3 was not found on PATH. Install Python and restart Reflow.".into(),
-            );
-        };
-
         let Some(script) = Self::find_runtime_script(self.resource_dir.as_deref()) else {
             self.fallback("qwen3_asr_runtime.py was not found");
             return Err("qwen3_asr_runtime.py was not found.".into());
         };
+
+        let Some(python) = Self::find_python() else {
+            let error = if let Ok(explicit) = std::env::var("REFLOW_PYTHON") {
+                format!("Could not start Python at REFLOW_PYTHON={explicit}. Check that interpreter path.")
+            } else {
+                "Python could not be started. Choose its full interpreter path in Settings → Model → Python interpreter, or install a Python environment in Reflow's python-runtime folder. Then reload the speech model.".into()
+            };
+            self.fallback(&error);
+            self.status_cache.failure_kind = Some("python_missing".into());
+            return Err(error);
+        };
+        if let Err(error) = Self::check_startup_dependencies(&python, &script) {
+            self.fallback(&error);
+            self.status_cache.failure_kind = Some("missing_dependency".into());
+            return Err(error);
+        }
 
         log::info!("Spawning ASR sidecar: {} {}", python, script.display());
 
@@ -930,6 +1125,8 @@ impl ASREngine for Qwen3AsrSidecar {
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             }
 
+            #[cfg(target_os = "linux")]
+            crate::platform::process::own_child(&mut cmd);
             match cmd.spawn() {
                 Ok(mut child) => {
                     let stdin = child.stdin.take();
@@ -1011,6 +1208,7 @@ impl ASREngine for Qwen3AsrSidecar {
                 self.load_in_flight = true;
                 self.consecutive_probe_timeouts = 0;
                 self.status_cache.loaded = false;
+                self.status_cache.model_id = manifest.map(|m| m.id.to_string());
                 self.status_cache.is_loading = true;
                 self.status_cache.backend = "loading…".into();
                 self.status_cache.error = None;
@@ -1411,6 +1609,11 @@ impl Qwen3AsrSidecar {
                     .unwrap_or(false),
                 failure_kind: resp
                     .get("failure_kind")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+                model_id: resp
+                    .get("model_id")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(String::from),

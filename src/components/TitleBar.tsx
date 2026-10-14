@@ -17,7 +17,8 @@ const WindowControls: React.FC = () => {
         if (alive) setIsMaximized(maximized);
         unlisten = await appWindow.onResized(async () => {
           try {
-            setIsMaximized(await appWindow.isMaximized());
+            const next = await appWindow.isMaximized();
+            if (alive) setIsMaximized(next);
           } catch {
             /* ignore */
           }
@@ -150,23 +151,12 @@ export const TitleBar: React.FC<{
   sidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
 }> = ({ offline, sidebarCollapsed, onToggleSidebar }) => {
-  const handleDoubleClick = async () => {
-    if (!isTauri()) return;
-    try {
-      const appWindow = getCurrentWindow();
-      await appWindow.toggleMaximize();
-    } catch (err) {
-      console.error("Double click maximize failed:", err);
-    }
-  };
-
   return (
     <header
-      data-tauri-drag-region
-      onDoubleClick={handleDoubleClick}
+      data-tauri-drag-region="deep"
       className="titlebar h-10 w-full shrink-0 flex items-center justify-between select-none z-50 text-ink"
     >
-      <div className="flex items-center gap-2.5 pl-3 pr-3.5 h-full" data-tauri-drag-region>
+      <div className="flex items-center gap-2.5 pl-3 pr-3.5 h-full" data-tauri-drag-region="deep">
         {onToggleSidebar && (
           <button
             type="button"

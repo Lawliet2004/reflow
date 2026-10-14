@@ -29,7 +29,7 @@ function modelBadgeLabel(status: ModelStatus | null): string | null {
   if (!status?.installed || status.is_downloading) return null;
   if (!isModelReady(status)) return "Loading";
   const isGpu = /cuda|gpu/i.test(status.backend ?? "");
-  return `${status.name?.includes("1.7") ? "1.7B" : "0.6B"} · ${isGpu ? "GPU" : "CPU"}`;
+  return `${status.name || "Speech"} · ${isGpu ? "GPU" : "CPU"}`;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({

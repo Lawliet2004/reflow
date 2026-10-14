@@ -3,6 +3,52 @@
 
 use reflow_lib::settings::{AppSettings, SettingsStore, CURRENT_SETTINGS_VERSION};
 
+#[test]
+fn custom_cancel_persists_but_invalid_keys_preserve_saved_bindings() {
+    let directory = std::env::temp_dir().join(format!("reflow_cancel_{}", uuid::Uuid::new_v4()));
+    let path = directory.join("settings.json");
+    let store = SettingsStore::new(path.clone());
+    let saved = store
+        .merge_update(serde_json::json!({
+            "hotkeys": {"cancel": "Ctrl+Alt+Backspace"}
+        }))
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    assert_eq!(saved.hotkeys.cancel.as_deref(), Some("Ctrl+Alt+Backspace"));
+    assert_eq!(
+        SettingsStore::new(path.clone()).get().hotkeys.cancel,
+        saved.hotkeys.cancel
+    );
+    for invalid in ["  ", "Ctrl+NotAKey", &saved.hotkeys.dictation] {
+        assert!(
+            store
+                .merge_update(serde_json::json!({
+                    "hotkeys": {"cancel": invalid}
+                }))
+                .is_err(),
+            "{invalid}"
+        );
+        assert_eq!(store.get().hotkeys.cancel, saved.hotkeys.cancel);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn legacy_settings_keep_automatic_paste_and_explicit_terminal_chords_validate() {
+    let mut legacy = serde_json::to_value(AppSettings::default()).unwrap();
+    legacy.as_object_mut().unwrap().remove("paste_shortcut");
+    let settings: AppSettings = serde_json::from_value(legacy).unwrap();
+    assert_eq!(settings.paste_shortcut, "auto");
+    for shortcut in ["auto", "ctrl_v", "ctrl_shift_v"] {
+        let selected = AppSettings {
+            paste_shortcut: shortcut.into(),
+            ..AppSettings::default()
+        };
+        assert!(selected.validate_expansion().is_ok());
+    }
+}
+
 /// Every combination reachable through the UI or a persisted file must resolve
 /// to a self-consistent intent. This is the property the old
 /// independent-field scheme violated for the shipped default.
@@ -87,24 +133,23 @@ fn resolve_intent_is_self_consistent_for_every_reachable_combination() {
     }
 }
 
-/// The headline bug: a fresh install advertised smart_flow refinement and never
-/// ran it, because `cleanup_level: light` doubled as the Stage 2 gate.
-///
-/// Fresh installs request Natural cleanup, with refinement enabled by the tier.
+/// A fresh install must not gate on an LLM it does not have: the default
+/// tier is deterministic-only `raw_verbatim`, which still applies basic
+/// cleanup, and the LLM tiers remain opt-in.
 #[test]
-fn fresh_install_actually_runs_refinement() {
+fn fresh_install_is_deterministic_until_an_llm_tier_is_picked() {
     let defaults = AppSettings::default();
     assert_eq!(defaults.cleanup_level, "medium");
     assert_eq!(defaults.style, "faithful");
     assert!(!defaults.auto_style_from_app);
 
     let intent = defaults.resolve_intent();
-    assert_eq!(intent.tier, "smart_flow");
-    assert_eq!(intent.flow_model, "qwen3.5-0.8b");
-    assert_eq!(intent.cleanup_level, "medium");
+    assert_eq!(intent.tier, "raw_verbatim");
+    assert_eq!(intent.flow_model, "none");
+    assert_eq!(intent.cleanup_level, "light");
     assert!(
-        intent.run_llm,
-        "the default install must run its Natural cleanup pass"
+        !intent.run_llm,
+        "the default install has no LLM installed and must not try to run one"
     );
 }
 
@@ -491,7 +536,11 @@ fn selecting_a_tier_sets_the_stage_two_gate_only() {
     let dir = std::env::temp_dir().join(format!("reflow_cfg_tier_{}", uuid::Uuid::new_v4()));
     let store = SettingsStore::new(dir.join("settings.json"));
 
-    // Start from an explicit Stage 1 choice.
+    // Start from an explicit Stage 1 choice on a tier that permits it —
+    // raw_verbatim clamps "medium" down to "light" by design.
+    store
+        .merge_update(serde_json::json!({ "intelligence_tier": "smart_flow" }))
+        .unwrap();
     let base = store
         .merge_update(serde_json::json!({ "cleanup_level": "medium" }))
         .unwrap();
@@ -531,8 +580,11 @@ fn selecting_a_tier_sets_the_stage_two_gate_only() {
 fn changing_cleanup_level_does_not_disable_refinement() {
     let dir = std::env::temp_dir().join(format!("reflow_cfg_clean_{}", uuid::Uuid::new_v4()));
     let store = SettingsStore::new(dir.join("settings.json"));
-
-    let initial = store.get();
+    // Fresh installs are deterministic-only now; this regression concerns
+    // refinement behavior after a tier is deliberately chosen.
+    let initial = store
+        .merge_update(serde_json::json!({ "intelligence_tier": "smart_flow" }))
+        .unwrap();
     assert_eq!(initial.intelligence_tier, "smart_flow");
     assert!(initial.resolve_intent().run_llm);
 
@@ -572,6 +624,11 @@ fn changing_cleanup_level_does_not_disable_refinement() {
 fn legacy_processing_mode_still_maps_to_a_cleanup_level() {
     let dir = std::env::temp_dir().join(format!("reflow_cfg_legacy_{}", uuid::Uuid::new_v4()));
     let store = SettingsStore::new(dir.join("settings.json"));
+    // The verbatim tier clamps medium/high to light by design; exercise the
+    // legacy field mapping under a tier that permits those levels.
+    store
+        .merge_update(serde_json::json!({ "intelligence_tier": "smart_flow" }))
+        .unwrap();
 
     for (mode, expected) in [("raw", "raw"), ("flow", "medium"), ("smart", "light")] {
         let updated = store

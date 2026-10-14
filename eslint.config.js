@@ -18,6 +18,8 @@ export default tseslint.config(
     ignores: [
       "dist/**",
       "node_modules/**",
+      ".venv/**",
+      "venv/**",
       "src-tauri/**",
       "coverage/**",
       "android/**",

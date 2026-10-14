@@ -167,6 +167,22 @@ impl HotkeyStateMachine {
     }
 }
 
+/// Which entries of a held-key set survive live-state reconciliation in the
+/// Windows hook. Pure (no Win32 calls) so it is unit-testable everywhere:
+/// `is_modifier` identifies keys tracked for the combo and `physically_down`
+/// is `GetAsyncKeyState`'s down bit. A modifier whose key-down the hook
+/// swallowed never reaches the OS key state, so it would read as "up" while
+/// still physically held — entries in `swallowed` are exempt.
+#[cfg_attr(not(windows), allow(dead_code))] // Only the Windows hook calls this outside tests.
+fn reconcile_held(
+    down: &mut std::collections::HashSet<i32>,
+    swallowed: &std::collections::HashSet<i32>,
+    is_modifier: impl Fn(i32) -> bool,
+    physically_down: impl Fn(i32) -> bool,
+) {
+    down.retain(|&vk| !is_modifier(vk) || swallowed.contains(&vk) || physically_down(vk));
+}
+
 #[cfg(windows)]
 pub mod platform {
     use super::*;
@@ -242,21 +258,33 @@ pub mod platform {
         }
     }
     fn ensure_hook() -> bool {
-        if !HOOK_STARTED.swap(true, Ordering::SeqCst)
-            && std::thread::Builder::new()
-                .name("mod-hotkey-hook".into())
-                .spawn(pump_thread)
-                .is_err()
-        {
-            HOOK_STARTED.store(false, Ordering::SeqCst);
-            return false;
-        }
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while Instant::now() < deadline
-            && HOOK_STARTED.load(Ordering::SeqCst)
-            && !HOOK_INSTALLED.load(Ordering::SeqCst)
-        {
-            std::thread::sleep(Duration::from_millis(5));
+        // Installing the LL hook can outlive a short wait on a cold or busy
+        // machine: give each attempt 500ms, respawn the pump thread if it
+        // died, and keep waiting up to ~2s before reporting failure.
+        let deadline = Instant::now() + Duration::from_millis(2000);
+        while Instant::now() < deadline {
+            if !HOOK_STARTED.swap(true, Ordering::SeqCst)
+                && std::thread::Builder::new()
+                    .name("mod-hotkey-hook".into())
+                    .spawn(pump_thread)
+                    .is_err()
+            {
+                HOOK_STARTED.store(false, Ordering::SeqCst);
+                return false;
+            }
+            let wait_until = (Instant::now() + Duration::from_millis(500)).min(deadline);
+            while Instant::now() < wait_until
+                && HOOK_STARTED.load(Ordering::SeqCst)
+                && !HOOK_INSTALLED.load(Ordering::SeqCst)
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if HOOK_INSTALLED.load(Ordering::SeqCst) {
+                return true;
+            }
+            // HOOK_STARTED still true means installation is merely pending —
+            // keep waiting instead of reporting a failure that may resolve.
+            // A dead pump thread clears HOOK_STARTED and the loop respawns it.
         }
         HOOK_INSTALLED.load(Ordering::SeqCst)
     }
@@ -407,6 +435,19 @@ pub mod platform {
             let mut actions = Vec::new();
             let mut swallow = false;
             for st in guard.iter_mut() {
+                // A missed key-up (focus loss, hook timeout, debugger pause)
+                // would leave a modifier in `down` forever and the combo could
+                // never match again. Reconcile modifier entries against the
+                // kernel's live key state — except modifiers whose key-down
+                // this hook swallowed, which GetAsyncKeyState never saw go
+                // down. The current event is applied right after, so its own
+                // vk is authoritative either way.
+                reconcile_held(
+                    &mut st.down,
+                    &st.swallowed,
+                    |vk| vk_family(vk).is_some(),
+                    |vk| unsafe { GetAsyncKeyState(vk) } < 0,
+                );
                 if is_down {
                     st.down.insert(vk);
                 } else if is_up {
@@ -670,5 +711,34 @@ mod tests {
         sm.mode = HookMode::AutoLocked;
         sm.reset();
         assert_eq!(sm.mode, HookMode::Idle);
+    }
+
+    #[test]
+    fn reconcile_keeps_swallowed_modifiers_despite_reported_key_up() {
+        use std::collections::HashSet;
+        const SHIFT: i32 = 0xA0;
+        const WIN: i32 = 0x5B;
+        const KEY_A: i32 = 0x41;
+        let is_modifier = |vk: i32| vk == SHIFT || vk == WIN;
+        // Win's key-down was swallowed by the hook, so GetAsyncKeyState
+        // reports it up even while held; Shift reports down normally.
+        let physically_down = |vk: i32| vk == SHIFT;
+        let mut down = HashSet::from([SHIFT, WIN, KEY_A]);
+        let swallowed = HashSet::from([WIN]);
+        reconcile_held(&mut down, &swallowed, is_modifier, physically_down);
+        assert_eq!(down, HashSet::from([SHIFT, WIN, KEY_A]));
+    }
+
+    #[test]
+    fn reconcile_drops_modifier_with_missed_key_up() {
+        use std::collections::HashSet;
+        const SHIFT: i32 = 0xA0;
+        const WIN: i32 = 0x5B;
+        let is_modifier = |vk: i32| vk == SHIFT || vk == WIN;
+        // Both modifiers report up and neither was swallowed: a missed
+        // key-up must not wedge the combo — the stale entries are dropped.
+        let mut down = HashSet::from([SHIFT, WIN]);
+        reconcile_held(&mut down, &HashSet::new(), is_modifier, |_| false);
+        assert!(down.is_empty());
     }
 }

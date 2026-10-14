@@ -5,9 +5,22 @@ interface HotkeyPickerProps {
   value: string;
   onChange: (value: string) => void;
   size?: "sm" | "md";
+  /** Override for previews/tests. Native Windows is the only modifier-hook backend. */
+  allowModifierOnly?: boolean;
+  disabled?: boolean;
+  ariaLabel?: string;
+  allowEscape?: boolean;
 }
 
 const ORDER = ["Ctrl", "Alt", "Shift", "Win"];
+
+/** KeyboardEvent.key → display modifier name, for keyup detection. */
+const MODIFIER_KEYS: Record<string, string> = {
+  Control: "Ctrl",
+  Alt: "Alt",
+  Shift: "Shift",
+  Meta: "Win",
+};
 
 /**
  * Click to arm, then press a key/combo. Esc cancels.
@@ -15,16 +28,32 @@ const ORDER = ["Ctrl", "Alt", "Shift", "Win"];
  * are held simultaneously and then released. Waiting for release also allows
  * shortcuts such as Ctrl+Shift+K to include a non-modifier key.
  */
-export const HotkeyPicker: React.FC<HotkeyPickerProps> = ({ value, onChange, size = "md" }) => {
+export const HotkeyPicker: React.FC<HotkeyPickerProps> = ({
+  value,
+  onChange,
+  size = "md",
+  allowModifierOnly = /Windows|Win32|Win64/.test(navigator.userAgent + navigator.platform),
+  disabled = false,
+  ariaLabel,
+  allowEscape = false,
+}) => {
   const [recording, setRecording] = useState(false);
+  const [needsKey, setNeedsKey] = useState(false);
   const heldRef = useRef<string[]>([]);
 
   useEffect(() => {
-    if (!recording) return;
+    if (!recording || disabled) return;
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === "Escape") {
+      if (
+        e.key === "Escape" &&
+        !allowEscape &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        !e.metaKey
+      ) {
         setRecording(false);
         heldRef.current = [];
         return;
@@ -48,15 +77,14 @@ export const HotkeyPicker: React.FC<HotkeyPickerProps> = ({ value, onChange, siz
       heldRef.current = [];
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      const map: Record<string, string> = {
-        Control: "Ctrl",
-        Alt: "Alt",
-        Shift: "Shift",
-        Meta: "Win",
-      };
-      const mod = map[e.key];
+      const mod = MODIFIER_KEYS[e.key];
       if (mod) {
         if (heldRef.current.length >= 2) {
+          if (!allowModifierOnly) {
+            heldRef.current = [];
+            setNeedsKey(true);
+            return;
+          }
           onChange(ORDER.filter((m) => heldRef.current.includes(m)).join("+"));
           setRecording(false);
           heldRef.current = [];
@@ -77,25 +105,34 @@ export const HotkeyPicker: React.FC<HotkeyPickerProps> = ({ value, onChange, siz
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", cancel);
     };
-  }, [recording, onChange]);
+  }, [recording, onChange, allowModifierOnly, disabled, allowEscape]);
 
   const sizeClass = size === "sm" ? "!w-[140px] !text-sm" : "!w-[180px]";
 
   return (
     <button
       type="button"
+      disabled={disabled}
+      aria-label={ariaLabel}
       onClick={() => {
         setRecording((v) => !v);
+        setNeedsKey(false);
         heldRef.current = [];
       }}
-      title={recording ? "Press keys… (Esc to cancel)" : "Click to record a new shortcut"}
+      title={
+        recording
+          ? needsKey
+            ? "Include a letter, number or Space (Esc to cancel)"
+            : "Press keys… (Esc to cancel)"
+          : "Click to record a new shortcut"
+      }
       className={`field ${sizeClass} !text-center font-semibold cursor-pointer transition-colors ${
         recording ? "!border-accent !text-accent ring-2 ring-accent/30" : ""
       }`}
     >
       <span className="inline-flex items-center gap-1.5">
         {recording && <Keyboard className="w-3.5 h-3.5" />}
-        {recording ? "Press keys… (Esc)" : value}
+        {recording ? (needsKey ? "Include a key… (Esc)" : "Press keys… (Esc)") : value}
       </span>
     </button>
   );

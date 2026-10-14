@@ -145,7 +145,10 @@ pub fn accept_rewrite(
         return None;
     }
 
+    let original_literals = crate::formatting::literals::literal_contents(original);
     if numeric_literals(original) != numeric_literals(trimmed)
+        || !original_literals.is_empty()
+            && original_literals != crate::formatting::literals::literal_contents(trimmed)
         || spoken_quantities(original) != spoken_quantities(trimmed)
         || !preserves_identifiers(original, trimmed)
         || punctuation_arguments(original) != punctuation_arguments(trimmed)
@@ -875,7 +878,7 @@ fn tokenize(text: &str) -> Vec<String> {
     separated
         .split_whitespace()
         .map(|word| {
-            word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+            word.trim_matches(|c: char| !c.is_alphanumeric())
                 .to_lowercase()
                 .replace('’', "'")
         })

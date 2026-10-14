@@ -42,3 +42,39 @@ it("keeps live overlay state and settings when startup snapshots arrive late", a
   expect(document.documentElement.dataset.accent).toBe("rose");
   expect(screen.getByRole("status")).toHaveAttribute("data-style", "waveform");
 });
+
+it("keeps active dictation visible when a previous completion is fading", async () => {
+  const listeners = new Map<string, (value: any) => void>();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    listeners.set(event, handler);
+    return () => {};
+  });
+  render(<OverlayApp />);
+  await waitFor(() => expect(listeners.has("settings:changed")).toBe(true));
+  await act(async () => {
+    listeners.get("app:state-changed")?.("RECORDING");
+    listeners.get("transcript:final")?.({ full_text: "Hello.", audio_level: 0 });
+    listeners.get("app:state-changed")?.("READY");
+    listeners.get("hud:hide")?.(true);
+  });
+  expect(screen.getByRole("status")).toHaveAttribute("data-exiting", "true");
+
+  await act(async () => listeners.get("app:state-changed")?.("RECORDING"));
+  expect(screen.getByRole("status")).not.toHaveAttribute("data-exiting");
+
+  // A late fade event from the previous recording must not hide active audio.
+  await act(async () => listeners.get("hud:hide")?.(true));
+  expect(screen.getByRole("status")).not.toHaveAttribute("data-exiting");
+
+  await act(async () => {
+    listeners.get("transcript:final")?.({ full_text: "Hello.", audio_level: 0 });
+    listeners.get("app:state-changed")?.("READY");
+  });
+  expect(screen.getByRole("status")).toHaveAttribute("data-exiting", "true");
+  await act(async () => listeners.get("hud:hide")?.(false));
+  expect(screen.getByRole("status")).not.toHaveAttribute("data-exiting");
+
+  await act(async () => listeners.get("hud:hide")?.(true));
+  await act(async () => listeners.get("window:visibility")?.(true));
+  expect(screen.getByRole("status")).not.toHaveAttribute("data-exiting");
+});

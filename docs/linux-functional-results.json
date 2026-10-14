@@ -1,0 +1,419 @@
+{
+  "application": "Reflow",
+  "version": "0.4.0",
+  "date": "2026-10-13",
+  "completion": "Native end-to-end recording-to-visible-insertion remains Not tested; Linux functionality is not declared complete",
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS",
+    "desktop": "KDE Plasma/KWin 6.6.6",
+    "session": "Wayland",
+    "pipewire": "1.6.2",
+    "portal": "1.21.1",
+    "kde_portal": "6.6.6",
+    "gpu": "RTX 2050 4 GiB",
+    "nvidia_driver": "595.99.02",
+    "python": "3.14.4",
+    "torch": "2.13.0+cu130",
+    "git_head": "52d34565af99d107d826b640d05e950c9e60e773",
+    "worktree": "uncommitted user work retained"
+  },
+  "automated": {
+    "frontend": {
+      "tests_passed": 240,
+      "lint": "Passed",
+      "format": "Passed",
+      "types": "Passed",
+      "production_build": "Passed"
+    },
+    "rust": {
+      "tests_passed": 847,
+      "failed": 0,
+      "ignored": 18,
+      "fmt": "Passed",
+      "clippy_all_targets_warnings_denied": "Passed"
+    },
+    "python": {
+      "selftest": "Passed",
+      "regressions_passed": 37,
+      "benchmark_helpers_passed": 11,
+      "zipformer_protocol_passed": 3
+    },
+    "node": {
+      "passed": 19,
+      "failed": 0,
+      "windows_only_skips": 2
+    }
+  },
+  "backend_hardware": {
+    "physical_capture": {
+      "cycles": 30,
+      "dropped_chunks": 0,
+      "worker_growth": false,
+      "scope": "capture/cancel only"
+    },
+    "rust_asr_actor": {
+      "cycles": 30,
+      "cancel_recovery": "Passed",
+      "worker_growth": false,
+      "scope": "fixture recognition only; repeated after user-runtime setup"
+    },
+    "prepared_capture": {
+      "result": "Passed",
+      "peak": 0.5349994,
+      "rms": 0.038477864,
+      "duration_ms": 9920,
+      "dropped_chunks": 0
+    },
+    "prepared_meeting_capture": {
+      "result": "Passed",
+      "dropped_chunks": 0,
+      "temporary_modules_removed": true
+    },
+    "clipboard_snapshot": {
+      "result": "Passed",
+      "mime_payloads": 8,
+      "total_bytes": 492,
+      "write_performed": false,
+      "live_restore": "Not tested: rich original selection safety prerequisite refused"
+    }
+  },
+  "private_portal_regression": {
+    "pending_request_cancellation": "Passed",
+    "method": "isolated dbus-run-session fake portal; no real desktop input"
+  },
+  "packaged_native_launches": [
+    {
+      "package": "deb",
+      "pid": 327945,
+      "model_ready": true,
+      "exit_before_termination": null,
+      "scope": "native process launch and readiness log, isolated XDG data and automatic user-runtime discovery, no activated or checkout environment; visual UI unverified"
+    },
+    {
+      "package": "appimage",
+      "pid": 328329,
+      "model_ready": true,
+      "exit_before_termination": null,
+      "scope": "native process launch and readiness log, isolated XDG data and automatic user-runtime discovery, no activated or checkout environment; visual UI unverified"
+    }
+  ],
+  "user_runtime": {
+    "path": "/home/papan/.local/share/reflow/python-runtime",
+    "source": "existing local speech dependency environment; copied without downloads",
+    "setup": "Passed",
+    "privacy": "no audio/transcript or network transfer",
+    "saved_preferences": "unchanged"
+  },
+  "qwen_attempt": {
+    "model": "Qwen3-ASR-0.6B-hf",
+    "revision": "7f1569a48a89f3e3f4dc3a5c9d28bddd903bc76c",
+    "device_requested": "cuda",
+    "precision_requested": "bf16",
+    "error": "[Errno 2] No such file or directory: '/home/papan/.local/share/reflow/models/qwen3-asr-0.6b/model.safetensors'",
+    "elapsed_seconds": 293.4792157260017,
+    "sidecar_log": "/home/papan/.local/share/reflow/logs/benchmarks/sidecar-nuod2u_e.log"
+  },
+  "recognition_measurement": {
+    "scope": "Installed models only; loading and untimed warmup are separate from warm final decoding. LLM timings are isolated; coexistence and insertion require native verification.",
+    "languages": ["en"],
+    "data_dir": "/home/papan/.local/share/reflow",
+    "asr": [
+      {
+        "runtime": "python",
+        "model": "zipformer-20m",
+        "requested_device": "cpu",
+        "requested_precision": "int8",
+        "load_wall_seconds": 6.33157243900132,
+        "device": "cpu",
+        "precision": "int8",
+        "vram_mb": 0.0,
+        "spill_detected": false,
+        "runs": [
+          {
+            "language": "en",
+            "repetition": 0,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.233202002680628,
+            "rtf": 0.001091804075876321,
+            "recognition_ms": 173.0425949972414,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 1,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.075866000377573,
+            "rtf": 0.001068055245340011,
+            "recognition_ms": 164.0423089993419,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 2,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.233350999740651,
+            "rtf": 0.0010918265659985889,
+            "recognition_ms": 161.13220300030662,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 3,
+            "audio_seconds": 6.625,
+            "decode_ms": 6.827017001342028,
+            "rtf": 0.001030493132278042,
+            "recognition_ms": 160.35798600205453,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 4,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.426665000821231,
+            "rtf": 0.0011210060378598085,
+            "recognition_ms": 164.3004750003456,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 5,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.296099996892735,
+            "rtf": 0.001101298112738526,
+            "recognition_ms": 165.56021600263193,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 6,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.442415000696201,
+            "rtf": 0.001123383396331502,
+            "recognition_ms": 169.86101899965433,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 7,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.83937199958018,
+            "rtf": 0.0011833014338988952,
+            "recognition_ms": 175.24057099944912,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 8,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.194518999313004,
+            "rtf": 0.0010859651319717742,
+            "recognition_ms": 171.80381399884936,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 9,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.163960999605479,
+            "rtf": 0.0010813526037140345,
+            "recognition_ms": 163.48290700261714,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 10,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.428378001350211,
+            "rtf": 0.0011212646039773903,
+            "recognition_ms": 168.4522969990212,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 11,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.670964998396812,
+            "rtf": 0.0011578815091919717,
+            "recognition_ms": 178.93127700153855,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 12,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.269860001542838,
+            "rtf": 0.0010973373587234473,
+            "recognition_ms": 171.51366799953394,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 13,
+            "audio_seconds": 6.625,
+            "decode_ms": 8.282757000415586,
+            "rtf": 0.001250227471760843,
+            "recognition_ms": 169.522672000312,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 14,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.89317299859249,
+            "rtf": 0.0011914223394101872,
+            "recognition_ms": 173.61198700018576,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 15,
+            "audio_seconds": 6.625,
+            "decode_ms": 6.95079000070109,
+            "rtf": 0.0010491758491624288,
+            "recognition_ms": 178.1856230008998,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 16,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.245062999572838,
+            "rtf": 0.0010935944150298623,
+            "recognition_ms": 162.09287000310724,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 17,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.335452999541303,
+            "rtf": 0.001107238188610008,
+            "recognition_ms": 162.99026899650926,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 18,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.225946999824373,
+            "rtf": 0.0010907089811055658,
+            "recognition_ms": 163.48745499999495,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          },
+          {
+            "language": "en",
+            "repetition": 19,
+            "audio_seconds": 6.625,
+            "decode_ms": 7.201922002423089,
+            "rtf": 0.0010870825664034852,
+            "recognition_ms": 165.97558699868387,
+            "wer": 0.05555555555555555,
+            "cer": 0.034482758620689655,
+            "warning": null
+          }
+        ],
+        "per_language": {
+          "en": {
+            "median_recognition_ms": 167.21394199885253,
+            "p95_recognition_ms": 178.1856230008998,
+            "warm_runs": 20,
+            "median_decode_ms": 7.257461500557838,
+            "p95_decode_ms": 7.89317299859249,
+            "mean_wer": 0.05555555555555555,
+            "mean_cer": 0.034482758620689655
+          }
+        },
+        "median_decode_ms": 7.257461500557838,
+        "p95_decode_ms": 7.89317299859249,
+        "median_rtf": 0.001095465886876655,
+        "repeats": 20
+      }
+    ],
+    "llm": []
+  },
+  "native_interactive": {
+    "browser_editor_konsole": "Not tested",
+    "physical_toggle_hold_release_cancel": "Not tested",
+    "permission_denial_revocation_recovery": "Not tested",
+    "clipboard_restore_and_focus": "Not tested",
+    "complete_30_native_cycles": "Not tested",
+    "bluetooth": "Not tested",
+    "tray_quit_lock_suspend_resume": "Not tested",
+    "themes_scaling_titlebar_accessibility": "Not tested",
+    "menu_launch_autostart": "Not tested",
+    "qwen_cuda_hindi_and_cleanup_coexistence": "Failed / Not tested: required weights unavailable",
+    "computer_use_blocker": "empty native-app inventory; listWindows unavailable; browser request-header policy failed",
+    "user_assisted_result": "not supplied"
+  },
+  "artifacts": [
+    {
+      "format": "deb",
+      "path": "/home/papan/Desktop/Projects/reflow/src-tauri/target/release/bundle/deb/Reflow_0.4.0_amd64.deb",
+      "bytes": 14972900,
+      "sha256": "18de030d7eae2b39a9396e2ca0e40ff40175d5a293ad66f86185b30d16683d24"
+    },
+    {
+      "format": "appimage",
+      "path": "/home/papan/Desktop/Projects/reflow/src-tauri/target/release/bundle/appimage/Reflow_0.4.0_amd64.AppImage",
+      "bytes": 109722104,
+      "sha256": "b219bda273ace806c363911fe7157080c20ed0e48ab387900a73ebfe1633fda3"
+    }
+  ],
+  "binary_sha256": "6301d70e3b69dff44109e283dcdb058540655e19849fe891ead05a402c800b05",
+  "limitations": [
+    "External Python and dependencies are installed separately; not bundled in installers",
+    "Packages built on Ubuntu 26.04; older distributions and Windows behavior not measured",
+    "Wayland payload reads are bounded; compositor offer negotiation uses wl-clipboard-rs synchronous protocol",
+    "No qualified startup/idle speedup, visible-insertion latency, multilingual accuracy or precision recommendation",
+    "Multi-format clipboard snapshots are not proven atomic if the selection changes while retaining the same MIME set"
+  ],
+  "final_user_launch": {
+    "binary": "/home/papan/Desktop/Projects/reflow/src-tauri/target/release/bundle/appimage/Reflow_0.4.0_amd64.AppImage",
+    "launcher_pid": 328907,
+    "process_group": 328907,
+    "model_ready": true,
+    "user_settings": "retained",
+    "interpreter_override": "none",
+    "scope": "normal user-data launch; visual UI and insertion unverified",
+    "left_running": true,
+    "artifact_sha256": "b219bda273ace806c363911fe7157080c20ed0e48ab387900a73ebfe1633fda3"
+  }
+}

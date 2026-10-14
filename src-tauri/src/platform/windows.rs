@@ -110,7 +110,9 @@ impl PlatformAdapter for WindowsAdapter {
             ];
             let sent = SendInput(&releases, std::mem::size_of::<INPUT>() as i32);
             if sent != releases.len() as u32 {
-                return Err("Failed to release held modifiers before pasting".into());
+                return Err(paste_failure_reason(
+                    "Failed to release held modifiers before pasting",
+                ));
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
 
@@ -122,7 +124,9 @@ impl PlatformAdapter for WindowsAdapter {
             ];
             let sent = SendInput(&chord, std::mem::size_of::<INPUT>() as i32);
             if sent != chord.len() as u32 {
-                return Err("Failed to send full Ctrl+V keystroke input".into());
+                return Err(paste_failure_reason(
+                    "Failed to send full Ctrl+V keystroke input",
+                ));
             }
             Ok(())
         }
@@ -219,5 +223,77 @@ impl PlatformAdapter for WindowsAdapter {
             let _ = hwnd;
             false
         }
+    }
+}
+/// `true` when the given process handle's token is elevated. Module scope —
+/// trait impls cannot carry non-trait methods, and the Win32 calls each need
+/// their own `unsafe` block (an inner fn does not inherit the caller's).
+#[cfg(windows)]
+fn token_is_elevated(process: windows::Win32::Foundation::HANDLE) -> Option<bool> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::OpenProcessToken;
+
+    let mut token = windows::Win32::Foundation::HANDLE::default();
+    unsafe {
+        OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut returned = 0u32;
+        let result = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut _ as *mut core::ffi::c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        );
+        let _ = CloseHandle(token);
+        result.ok().map(|_| elevation.TokenIsElevated != 0)
+    }
+}
+
+/// `true` when the foreground window's process runs elevated and Reflow
+/// does not — the case where UIPI silently refuses the synthetic Ctrl+V.
+/// Any lookup failure reports `false`: a wrong hint is worse than none.
+#[cfg(windows)]
+fn foreground_process_is_elevated() -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return false;
+        }
+        let target = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(handle) => handle,
+            Err(_) => return false,
+        };
+        let target_elevated = token_is_elevated(target);
+        let _ = CloseHandle(target);
+        let self_elevated = token_is_elevated(GetCurrentProcess());
+        matches!((target_elevated, self_elevated), (Some(true), Some(false)))
+    }
+}
+
+/// Paste failures against an elevated foreground window deserve a real
+/// explanation, not a generic SendInput error.
+#[cfg(windows)]
+fn paste_failure_reason(fallback: &str) -> String {
+    if foreground_process_is_elevated() {
+        "Can't paste into apps running as administrator unless Reflow also runs as administrator — text copied to clipboard.".into()
+    } else {
+        fallback.to_string()
     }
 }

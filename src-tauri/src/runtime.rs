@@ -298,7 +298,7 @@ pub fn current_plan(ctx: &crate::context::AppContext) -> RuntimePlan {
     // Live status is authoritative while a model is resident. Free memory at
     // this point excludes its weights and cannot be used to select its replacement.
     if engine.loaded {
-        if let Some((model, _, _)) = ctx.last_asr_load.read().as_ref() {
+        if let Some((_sel, model, _, _)) = ctx.last_asr_load.read().as_ref() {
             result.asr_model = model.clone();
         }
         if !engine.device.is_empty() {

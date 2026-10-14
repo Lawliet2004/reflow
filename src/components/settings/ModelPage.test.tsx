@@ -5,6 +5,24 @@ import { api } from "../../services/tauriApi";
 import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
 import type { AsrSettings } from "../../types";
 
+it("saves a persistent Python interpreter without changing model or precision", async () => {
+  const { save } = await modelPage(true);
+  fireEvent.change(screen.getByRole("textbox", { name: "Python interpreter" }), {
+    target: { value: " /user/runtime/bin/python " },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Apply and reload" }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      asr: expect.objectContaining({
+        python_path: "/user/runtime/bin/python",
+        model: "0.6b",
+        precision: "auto",
+        runtime: "python",
+      }),
+    }),
+  );
+});
+
 it("selects Phonon with its Python runtime and automatic precision", async () => {
   const install = vi.spyOn(api, "installModel").mockResolvedValue();
   vi.spyOn(api, "getModelStatus").mockResolvedValue({
@@ -288,6 +306,8 @@ it("switches to an installed model without downloading", async () => {
       asr: expect.objectContaining({ model: "1.7b" }),
     }),
   );
-  await waitFor(() => expect(reload).toHaveBeenCalled());
+  // The backend reloads on the settings write itself — the page must not
+  // pile a second switch on top of it.
+  expect(reload).not.toHaveBeenCalled();
   expect(install).not.toHaveBeenCalled();
 });

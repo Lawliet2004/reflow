@@ -545,6 +545,25 @@ async fn start_microphone_with_source_at(
             None => "Model is not loaded. Open Settings → Model and reload it.".into(),
         }));
     }
+    // The engine may still hold the model from the previous selection — a
+    // pending switch must not transcribe on the old weights.
+    if let Some(engine_id) = engine.model_id.as_deref() {
+        let current = ctx.settings_store.get();
+        let active = crate::model::manager::runtime_model_id(
+            &current.asr.model,
+            &current.asr.runtime,
+        );
+        let resolved_for_current = ctx
+            .last_asr_load
+            .read()
+            .as_ref()
+            .and_then(|t| (t.0 == active).then(|| t.1.clone()));
+        if engine_id != active && resolved_for_current.as_deref() != Some(engine_id) {
+            return Err(SessionError::other(
+                "The speech model is switching to your new selection. Try again in a few seconds.",
+            ));
+        }
+    }
 
     let base = ctx.settings_store.get();
     let (title, process) = crate::platform::active_window();
@@ -1053,7 +1072,7 @@ async fn finish_stop(
     let rms = (pcm.iter().map(|s| s * s).sum::<f32>() / n as f32).sqrt();
     let capture_device = ctx.audio_engine.read().last_device_name();
     log::info!(
-        "Captured {:.2}s of audio (rms={:.4}, peak={:.3}, {} samples) from '{capture_device}'",
+        "Session {session_id}: captured {:.2}s of audio (rms={:.4}, peak={:.3}, {} samples) from '{capture_device}'",
         pcm.len() as f32 / 16000.0,
         rms,
         peak,
@@ -1065,7 +1084,7 @@ async fn finish_stop(
     if silent_mic {
         log::warn!(
             "Microphone produced near-silence. Device='{capture_device}' peak={peak:.4} rms={rms:.4}. \
-             Windows default is often Bluetooth Hands-Free, Communications, or Stereo Mix — pick a real mic in Settings → Audio."
+             Check input mute/volume and choose a working microphone in Settings → Audio."
         );
         let _ = ctx.asr_handle.cancel_stream(session_id).await;
     }
@@ -1110,7 +1129,7 @@ async fn finish_stop(
         log::warn!("ASR warning surfaced to the user: {warning}");
     }
     log::info!(
-        "Dictation finished: {} chars of transcript, held {:.1}s",
+        "Session {session_id}: recognition finished: {} chars of transcript, held {:.1}s",
         raw_transcript.chars().count(),
         ctx.latency_timer
             .read()
@@ -1146,7 +1165,7 @@ async fn finish_stop(
                 pasted = tokio::task::spawn_blocking(move || {
                     ensure_session_authority(&delivery_ctx, session_id, None)
                         .map_err(|error| error.message)?;
-                    TextInjector::deliver_configured(
+                    TextInjector::deliver_with_shortcut(
                         &text_for_paste,
                         &crate::settings::OutputAction::Paste,
                         hwnd,
@@ -1154,6 +1173,7 @@ async fn finish_stop(
                         &settings.send_key,
                         0,
                         &settings.inject_method,
+                        &settings.paste_shortcut,
                     )
                     .map(|outcome| outcome.pasted)
                 })
@@ -1287,7 +1307,7 @@ async fn finish_stop(
         // a current-thread runtime, so the stop path was only ever safe on
         // Tauri's multi-threaded executor.
         let backend_for_task = compute_backend.clone();
-        let ensure_result = tokio::task::spawn_blocking(move || {
+        let ensure_task = tokio::task::spawn_blocking(move || {
             runtime.ensure(
                 &flow_model,
                 &backend_for_task,
@@ -1295,9 +1315,26 @@ async fn finish_stop(
                 vram_reserve_mb,
                 context_size,
             )
-        })
-        .await
-        .unwrap_or_else(|err| Err(format!("refinement runtime task failed: {err}")));
+        });
+        // Bound the wait by the rewrite deadline rather than ensure()'s own
+        // 30s health window: a cold llama-server start must not hold the
+        // dictation past the point where deterministic output should have
+        // shipped. The spawned task keeps running after the timeout, so the
+        // server finishes warming in the background and the next dictation
+        // hits a ready runtime instead of starting cold again.
+        let ensure_budget = if deadline_ms > 0 {
+            Duration::from_millis(deadline_ms)
+        } else {
+            Duration::from_secs(30)
+        };
+        let ensure_result = match tokio::time::timeout(ensure_budget, ensure_task).await {
+            Ok(joined) => joined
+                .unwrap_or_else(|err| Err(format!("refinement runtime task failed: {err}"))),
+            Err(_) => {
+                log::info!("Refinement runtime still warming; using deterministic output");
+                Err("refinement runtime is still starting".into())
+            }
+        };
         if ensure_result.is_ok() {
             // Client-side deadline, applied after ensure so a relaunch with a
             // fresh client does not lose it.
@@ -1402,7 +1439,11 @@ async fn finish_stop(
     };
     if !settings.refinement.keep_warm {
         let runtime = ctx.flow_runtime.clone();
-        let _ = tokio::task::spawn_blocking(move || runtime.shutdown()).await;
+        // Detached, never awaited on the delivery path: shutdown() queues
+        // behind the operation lock a timed-out ensure() still holds, so
+        // awaiting it would stall the transcript for the full cold-start
+        // window the deadline just escaped.
+        let _shutdown = tokio::task::spawn_blocking(move || runtime.shutdown());
     }
     let smart_transcript = processed.smart;
     let mut final_transcript = processed.final_text;
@@ -1479,16 +1520,38 @@ async fn finish_stop(
         ) {
             wait_to_deliver(ctx, session_id, phone_token, settings.paste_delay_ms).await?;
         }
-        let insertion = TextInjector::deliver_configured(
-            &final_transcript,
-            action,
-            *ctx.dictation_target_hwnd.read(),
-            settings.clipboard_restore_enabled,
-            send_key,
-            0,
-            &settings.inject_method,
-        );
+        let text = final_transcript.clone();
+        let output = action.clone();
+        let target = *ctx.dictation_target_hwnd.read();
+        let restore = settings.clipboard_restore_enabled;
+        let inject_method = settings.inject_method.clone();
+        let paste_shortcut = settings.paste_shortcut.clone();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _delivery_cancel = crate::injection::cancellation::CancelOnDrop(Arc::clone(&cancelled));
+        let send_key = send_key.to_owned();
+        let insertion = tokio::task::spawn_blocking(move || {
+            crate::injection::cancellation::with(cancelled, || {
+                TextInjector::deliver_with_shortcut(
+                    &text,
+                    &output,
+                    target,
+                    restore,
+                    &send_key,
+                    0,
+                    &inject_method,
+                    &paste_shortcut,
+                )
+            })
+        })
+        .await
+        .unwrap_or_else(|error| Err(error.to_string()));
         let (outcome, insertion_error) = recover_insertion(insertion);
+        log::info!(
+            "Session {session_id}: delivery dispatched={} manual_copy={} error={}",
+            outcome.pasted,
+            outcome.fallback_copy,
+            insertion_error.is_some()
+        );
         ctx.latency_timer.write().injection_finished_at = Some(Instant::now());
         injected = outcome.pasted;
         if outcome.pasted
@@ -1579,7 +1642,7 @@ async fn finish_stop(
     // precision choices on the next load. Attribute fallback to its actual rung.
     if metrics.audio_duration_ms > 0 && metrics.rtf > 0.0 && !raw_transcript.trim().is_empty() {
         let engine = ctx.asr_handle.engine_status();
-        if let Some((model, _, _)) = ctx.last_asr_load.read().clone() {
+        if let Some((_sel, model, _, _)) = ctx.last_asr_load.read().clone() {
             if let Some((device, precision)) = crate::profile::Device::parse(&engine.device)
                 .zip(crate::profile::Precision::parse(&engine.precision))
             {
@@ -2731,6 +2794,9 @@ mod tests {
         let settings = crate::settings::AppSettings {
             cleanup_level: "smart".into(),
             processing_mode: "smart_flow".into(),
+            // Fresh defaults are LLM-free now; the rewriter path needs an
+            // explicit tier.
+            intelligence_tier: "smart_flow".into(),
             ..Default::default()
         };
         let out = postprocess_transcript(

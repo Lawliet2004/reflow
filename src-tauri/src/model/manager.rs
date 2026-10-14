@@ -73,6 +73,11 @@ pub fn spec_for(id: &str) -> &'static ModelSpec {
     MODELS.iter().find(|m| m.id == id).unwrap_or(&MODELS[0])
 }
 
+/// Written by the Python install path after checksum verification — the
+/// authoritative completeness marker for models (Qwen) whose ancillary files
+/// are downloaded by glob rather than by pinned name.
+const INSTALL_RECEIPT_NAME: &str = "reflow-install.json";
+
 pub struct ModelManager {
     models_dir: PathBuf,
 }
@@ -126,12 +131,44 @@ impl ModelManager {
                     .auxiliary_files
                     .iter()
                     .all(|f| dir.join(f.filename).is_file())
+        } else if let Some(manifest) =
+            crate::profile::manifest::asr_manifest(id).filter(|m| m.id == id)
+        {
+            // Qwen snapshots download tokenizer/processor files by glob —
+            // there is no pinned name list — so completeness is proven by the
+            // install receipt the sidecar writes after checksum verification.
+            // Directories that predate receipts (or came from Import) keep
+            // the manifest-files-and-size check.
+            if dir.join(INSTALL_RECEIPT_NAME).is_file() {
+                return true;
+            }
+            let all_files = manifest
+                .auxiliary_files
+                .iter()
+                .map(|f| f.filename)
+                .chain(std::iter::once(manifest.filename));
+            all_files.clone().all(|f| {
+                dir.join(f)
+                    .metadata()
+                    .map(|meta| meta.len() > 0)
+                    .unwrap_or(false)
+            }) && dir.join("config.json").is_file()
+                && Self::get_dir_size(&dir).unwrap_or(0) >= manifest.download_bytes
         } else {
             weights_present(&dir)
         }
     }
 
-    pub fn get_status(&self, engine: &EngineStatus, active_id: &str) -> ModelStatus {
+    /// `resolved_id` is what the resolver would actually load for the
+    /// current settings (`ctx.last_asr_load` at call time): selection is a
+    /// ceiling — a legitimate downgrade (1.7B picked, 0.6B resolved) must not
+    /// read as stale, but an engine holding anything *else* is.
+    pub fn get_status(
+        &self,
+        engine: &EngineStatus,
+        active_id: &str,
+        resolved_id: Option<&str>,
+    ) -> ModelStatus {
         let spec = spec_for(active_id);
         let model_dir = self.get_model_dir(spec.id);
         let installed = self.is_installed(spec.id);
@@ -143,6 +180,14 @@ impl ModelManager {
         let downloading = engine.is_downloading;
         let backend_loading =
             engine.is_loading || engine.backend.to_ascii_lowercase().contains("loading");
+        // The engine still holds the previously selected model: reporting it
+        // as `loaded` under the new selection's name is exactly how a stale
+        // engine got labelled ready. Unknown id (older sidecar) is treated as
+        // matching rather than assumed stale.
+        let stale_engine = engine.loaded
+            && engine.model_id.as_deref().is_some_and(|loaded_id| {
+                loaded_id != active_id && resolved_id != Some(loaded_id)
+            });
         let (gpu_name, _) = crate::platform::PlatformSys::detect_gpu();
         let gpu_available = !gpu_name.is_empty() && gpu_name != "CPU";
         // Only surface the `pip install` hint when there's actually a GPU to
@@ -155,7 +200,7 @@ impl ModelManager {
 
         ModelStatus {
             installed,
-            loaded: engine.loaded && !backend_loading,
+            loaded: engine.loaded && !backend_loading && !stale_engine,
             version: spec.label.into(),
             name: spec.repo.to_string(),
             size_bytes,
@@ -181,6 +226,7 @@ impl ModelManager {
             torch_cuda_version: engine.torch_cuda_version.clone(),
             asr_gpu_hint,
             asr_selection_notice: None,
+            failure_kind: engine.failure_kind.clone(),
         }
     }
 
@@ -249,7 +295,7 @@ mod tests {
             is_loading: false,
             ..Default::default()
         };
-        let status = mgr.get_status(&engine, "1.7b");
+        let status = mgr.get_status(&engine, "1.7b", None);
         assert!(!status.loaded);
         assert!(status.is_loading);
         assert_eq!(status.name, "Qwen/Qwen3-ASR-1.7B-hf");
@@ -280,5 +326,89 @@ mod tests {
         manager.remove_model("0.6b").unwrap();
         assert!(!model_dir.exists());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn qwen_install_requires_manifest_completeness() {
+        let dir =
+            std::env::temp_dir().join(format!("reflow_model_complete_{}", uuid::Uuid::new_v4()));
+        let manager = ModelManager::new(dir.clone());
+        let model_dir = manager.get_model_dir("0.6b");
+        fs::create_dir_all(&model_dir).unwrap();
+        fs::write(model_dir.join("config.json"), "{}").unwrap();
+
+        // config.json alone, and config + truncated weights, are partial.
+        assert!(!manager.is_installed("0.6b"));
+        let weights = model_dir.join("model.safetensors");
+        fs::write(&weights, b"partial").unwrap();
+        assert!(!manager.is_installed("0.6b"));
+
+        // A sparse file at the manifest's expected bytes completes the install.
+        let expected = crate::profile::asr_manifest("0.6b").unwrap().download_bytes;
+        fs::File::create(&weights).unwrap().set_len(expected).unwrap();
+        assert!(manager.is_installed("0.6b"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_loaded_engine_under_another_label_is_not_ready() {
+        let dir =
+            std::env::temp_dir().join(format!("reflow_model_stale_{}", uuid::Uuid::new_v4()));
+        let manager = ModelManager::new(dir.clone());
+        let engine = EngineStatus {
+            loaded: true,
+            backend: "Qwen3-ASR 0.6B · CPU FP32".into(),
+            model_id: Some("0.6b".into()),
+            ..Default::default()
+        };
+        let status = manager.get_status(&engine, "1.7b", None);
+        assert!(!status.loaded, "the resident 0.6B must not read as a ready 1.7B");
+        assert!(!status.is_loading, "no reload is in flight");
+        assert_eq!(status.version, "1.7B");
+
+        // Engines that do not report an id (older sidecars) still count as
+        // matching — unknown is not stale.
+        let engine = EngineStatus {
+            loaded: true,
+            backend: "Qwen3-ASR 1.7B · CPU FP32".into(),
+            ..Default::default()
+        };
+        assert!(manager.get_status(&engine, "1.7b", None).loaded);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_resolver_downgrade_counts_as_loaded() {
+        let dir =
+            std::env::temp_dir().join(format!("reflow_model_down_{}", uuid::Uuid::new_v4()));
+        let manager = ModelManager::new(dir.clone());
+        // Selected 1.7B, resolver downgraded to 0.6B, engine loaded 0.6B —
+        // that is the resolved target, not staleness.
+        let engine = EngineStatus {
+            loaded: true,
+            backend: "Qwen3-ASR 0.6B · CPU FP32".into(),
+            model_id: Some("0.6b".into()),
+            ..Default::default()
+        };
+        let status = manager.get_status(&engine, "1.7b", Some("0.6b"));
+        assert!(status.loaded, "the resolved model must count as ready");
+        // A resolved id is only evidence while it was resolved for the
+        // *current* selection: the callers pass `None` when last_asr_load
+        // belongs to a different (older or newer) selection, and then the
+        // engine's model must not be credited to the active one.
+        let previous_selection_resolved = manager.get_status(&engine, "1.7b", None);
+        assert!(
+            !previous_selection_resolved.loaded,
+            "a resolution made for another selection must not bless this engine"
+        );
+        // An engine holding a third, unrelated model is still stale.
+        let engine = EngineStatus {
+            loaded: true,
+            backend: "Phonon-2".into(),
+            model_id: Some("phonon-2".into()),
+            ..Default::default()
+        };
+        assert!(!manager.get_status(&engine, "1.7b", Some("0.6b")).loaded);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

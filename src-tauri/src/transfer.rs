@@ -42,6 +42,7 @@ const PORTABLE_KEYS: &[&str] = &[
     "waveform_style",
     "reduce_motion",
     "ui_font_scale",
+    "ui_zoom",
     "accent_custom",
     "surface_tone",
     "reading_font",

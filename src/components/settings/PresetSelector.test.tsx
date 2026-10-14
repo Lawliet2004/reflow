@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PresetSelector } from "./PresetSelector";
 
 vi.mock("../../services/tauriApi", () => ({
+  isTauri: () => false,
   tauriApi: {
     getRuntimePlan: vi.fn().mockResolvedValue({
       preset: "auto",

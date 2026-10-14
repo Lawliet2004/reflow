@@ -3,6 +3,7 @@ import { tauriApi } from "../../services/tauriApi";
 import { Capabilities, Preset, RuntimePlan } from "../../types";
 import { Badge } from "../ui/Badge";
 import { cn } from "../../utils/cn";
+import { useViewVisibility } from "../../hooks/useViewVisibility";
 import { Zap, Cpu, Sparkles, Sliders, ShieldCheck } from "lucide-react";
 
 interface PresetSelectorProps {
@@ -70,10 +71,12 @@ export function PresetSelector({
   capabilities,
   className,
 }: PresetSelectorProps) {
+  const visible = useViewVisibility();
   const [profilePreview, setProfilePreview] = useState<RuntimePlan | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (!visible) return;
     let active = true;
     queueMicrotask(() => {
       if (active) setLoading(true);
@@ -96,7 +99,7 @@ export function PresetSelector({
       active = false;
       clearInterval(timer);
     };
-  }, [selectedPreset, capabilities]);
+  }, [selectedPreset, capabilities, visible]);
 
   const handleKeyDown = (e: React.KeyboardEvent, index: number) => {
     const total = PRESET_OPTIONS.length;
@@ -171,7 +174,7 @@ export function PresetSelector({
         })}
       </div>
 
-      {profilePreview ? (
+      {profilePreview && (
         <div aria-live="polite" className="text-xs space-y-3">
           <div className="flex items-center justify-between font-medium text-ink-2">
             <span>Current hardware plan</span>
@@ -223,7 +226,7 @@ export function PresetSelector({
             </ul>
           )}
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

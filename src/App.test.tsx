@@ -4,6 +4,20 @@ import { App } from "./App";
 import { api } from "./services/tauriApi";
 import * as bridge from "./services/tauriApi";
 
+it("clears a shortcut setup warning when the desktop confirms assignment", async () => {
+  const listeners = new Map<string, (value: any) => void>();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    listeners.set(event, handler);
+    return () => {};
+  });
+  render(<App />);
+  await screen.findByRole("heading", { name: /Speak freely/ });
+  await act(async () => listeners.get("hotkey:error")?.("Waiting for desktop shortcut approval"));
+  expect(screen.getByText("Waiting for desktop shortcut approval")).toBeInTheDocument();
+  await act(async () => listeners.get("hotkey:ready")?.("Ctrl+Shift+Space"));
+  expect(screen.queryByText("Waiting for desktop shortcut approval")).not.toBeInTheDocument();
+});
+
 it.each(["app", "model"])(
   "keeps a newer %s event when its startup snapshot arrives late",
   async (source) => {
@@ -283,4 +297,26 @@ it("collapses the sidebar and remembers the choice", async () => {
     "false",
   );
   localStorage.removeItem("reflow.sidebar-collapsed");
+});
+
+it("reopens setup from the not-ready card and remembers 'Set up later'", async () => {
+  localStorage.removeItem("reflow.onboarding.completed");
+  const status = await api.getModelStatus();
+  vi.spyOn(api, "getModelStatus").mockResolvedValue({
+    ...status,
+    installed: false,
+    loaded: false,
+    is_loading: false,
+  });
+  render(<App />);
+  // isTauri() is false in tests, so the wizard cannot auto-open here — but the
+  // same not-ready card carries the manual "Finish setup" action.
+  fireEvent.click(await screen.findByRole("button", { name: "Finish setup" }));
+  expect(await screen.findByText("A few things. Then just speak.")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Set up later" }));
+  expect(localStorage.getItem("reflow.onboarding.completed")).toBe("1");
+  expect(screen.queryByText("A few things. Then just speak.")).not.toBeInTheDocument();
+  localStorage.removeItem("reflow.onboarding.completed");
 });

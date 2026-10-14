@@ -3,8 +3,15 @@ import { AppSettings, ApiStatus } from "../../types";
 import { api } from "../../services/tauriApi";
 import { Section, Row, Toggle, qrSrc } from "./ui";
 import { Check, Copy, RefreshCw, Smartphone } from "lucide-react";
+import { useViewVisibility } from "../../hooks/useViewVisibility";
 
 type PairView = "qr" | "code" | "link";
+
+const PAIR_VIEWS: { id: PairView; label: string }[] = [
+  { id: "qr", label: "QR" },
+  { id: "code", label: "Code" },
+  { id: "link", label: "Link" },
+];
 
 interface Props {
   settings: AppSettings;
@@ -12,6 +19,7 @@ interface Props {
 }
 
 export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
+  const visible = useViewVisibility();
   const [apiStatus, setApiStatus] = useState<ApiStatus | null>(null);
   const [copiedPair, setCopiedPair] = useState<"code" | "uri" | null>(null);
   const [view, setView] = useState<PairView>("qr");
@@ -21,6 +29,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
   const statusEpoch = useRef(0);
 
   useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
     let pending = false;
     const tick = () => {
@@ -49,7 +58,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [settings.api_enabled, settings.api_bind, settings.api_port]);
+  }, [settings.api_enabled, settings.api_bind, settings.api_port, visible]);
 
   const rotate = async () => {
     statusEpoch.current += 1;
@@ -114,7 +123,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
 
   const copyPair = async (kind: "code" | "uri", value: string) => {
     try {
-      await navigator.clipboard.writeText(value);
+      await api.copyText(value);
       setCopiedPair(kind);
     } catch {
       setError("Could not copy the pairing information. Please try again.");
@@ -178,17 +187,17 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
       {settings.api_enabled && apiStatus && (
         <div className="rounded-xl border border-line bg-surface-2 p-4 space-y-3">
           <div className="flex items-center gap-1.5 self-start">
-            {(["qr", "code", "link"] as PairView[]).map((v) => (
+            {PAIR_VIEWS.map(({ id, label }) => (
               <button
-                key={v}
-                onClick={() => setView(v)}
+                key={id}
+                onClick={() => setView(id)}
                 className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors cursor-pointer ${
-                  view === v
+                  view === id
                     ? "bg-accent-soft text-accent border border-accent-border"
                     : "bg-surface text-muted border border-line hover:text-ink hover:bg-base-2"
                 }`}
               >
-                {v === "qr" ? "QR" : v === "code" ? "Code" : "Link"}
+                {label}
               </button>
             ))}
           </div>

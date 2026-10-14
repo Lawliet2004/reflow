@@ -1,6 +1,6 @@
 //! Clipboard access used by injection. Windows preserves complete supported
 //! HGLOBAL payloads, rather than reducing images or rich text to plain text.
-const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg(any(windows, test))]
@@ -283,6 +283,10 @@ mod portable {
 
     #[derive(Clone)]
     pub(crate) enum ClipboardSnapshot {
+        #[cfg(target_os = "linux")]
+        Wayland(super::super::wayland_clipboard::Snapshot),
+        #[cfg(not(windows))]
+        Empty,
         Text(String),
         Image {
             width: usize,
@@ -290,20 +294,143 @@ mod portable {
             bytes: Vec<u8>,
         },
     }
+    // Linux serves clipboard requests from the last owning application.
+    // Keep an owner alive after a short operation drops its access guard,
+    // including after a paste failure leaves the transcript for manual paste.
+    #[cfg(target_os = "linux")]
+    static CLIPBOARD: std::sync::OnceLock<parking_lot::Mutex<Option<Clipboard>>> =
+        std::sync::OnceLock::new();
+    #[cfg(target_os = "linux")]
+    pub(crate) struct ClipboardAccess(parking_lot::MappedMutexGuard<'static, Clipboard>);
+    #[cfg(not(target_os = "linux"))]
     pub(crate) struct ClipboardAccess(Clipboard);
+
+    #[cfg(target_os = "linux")]
+    fn wayland_clipboard_is_empty(
+        offered: Result<std::collections::HashSet<String>, wl_clipboard_rs::paste::Error>,
+    ) -> bool {
+        // NoMimeType can mean files, rich text, or another unsupported format.
+        // Only an absent selection establishes that nothing will be erased.
+        matches!(offered, Err(wl_clipboard_rs::paste::Error::ClipboardEmpty))
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn requires_richer_snapshot(mimes: &std::collections::HashSet<String>) -> bool {
+        let mut text = false;
+        let mut image = false;
+        for mime in mimes {
+            if mime == "text/plain"
+                || mime.starts_with("text/plain;")
+                || matches!(mime.as_str(), "UTF8_STRING" | "STRING" | "TEXT")
+            {
+                text = true;
+            } else if matches!(
+                mime.as_str(),
+                "image/png" | "image/jpeg" | "image/bmp" | "image/tiff"
+            ) {
+                image = true;
+            } else if !matches!(
+                mime.as_str(),
+                "TARGETS" | "MULTIPLE" | "TIMESTAMP" | "SAVE_TARGETS"
+            ) {
+                // HTML, files, app-specific payloads and privacy hints cannot
+                // be reconstructed by arboard's text/image snapshots.
+                return true;
+            }
+        }
+        // Restoring only the image would discard an independent text payload.
+        text && image
+    }
+
+    /// `true` only when the general pasteboard advertises no types at all.
+    /// Anything else — files, rich text, app-specific payloads — must be
+    /// treated as preservable-or-unsafe, never as empty.
+    #[cfg(target_os = "macos")]
+    fn pasteboard_is_empty() -> bool {
+        unsafe {
+            let pb: *mut objc::runtime::Object =
+                objc::msg_send![objc::class!(NSPasteboard), generalPasteboard];
+            if pb.is_null() {
+                return false;
+            }
+            let types: *mut objc::runtime::Object = objc::msg_send![pb, types];
+            if types.is_null() {
+                return true;
+            }
+            let count: usize = objc::msg_send![types, count];
+            count == 0
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn clipboard_is_empty() -> bool {
+        // Match arboard's backend preference even in a mixed X11/Wayland
+        // environment; an empty X11 selection says nothing about Wayland.
+        if super::super::wayland_clipboard::supported() {
+            use wl_clipboard_rs::paste::{get_mime_types, ClipboardType, Seat};
+            return wayland_clipboard_is_empty(get_mime_types(
+                ClipboardType::Regular,
+                Seat::Unspecified,
+            ));
+        }
+        use x11rb::protocol::xproto::ConnectionExt;
+        let selection_owner = || -> Option<u32> {
+            let (connection, _) = x11rb::connect(None).ok()?;
+            let selection = connection
+                .intern_atom(false, b"CLIPBOARD")
+                .ok()?
+                .reply()
+                .ok()?
+                .atom;
+            let owner = connection
+                .get_selection_owner(selection)
+                .ok()?
+                .reply()
+                .ok()?
+                .owner;
+            Some(owner)
+        };
+        selection_owner() == Some(x11rb::NONE)
+    }
+
     impl ClipboardAccess {
         pub(crate) fn open() -> Result<Self, String> {
-            Clipboard::new()
-                .map(Self)
-                .map_err(|e| format!("Could not open clipboard: {e}"))
+            #[cfg(target_os = "linux")]
+            {
+                let mut owner = CLIPBOARD
+                    .get_or_init(|| parking_lot::Mutex::new(None))
+                    .lock();
+                if owner.is_none() {
+                    *owner = Some(
+                        Clipboard::new().map_err(|e| format!("Could not open clipboard: {e}"))?,
+                    );
+                }
+                Ok(Self(parking_lot::MutexGuard::map(owner, |owner| {
+                    owner.as_mut().expect("clipboard initialized above")
+                })))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Clipboard::new()
+                    .map(Self)
+                    .map_err(|e| format!("Could not open clipboard: {e}"))
+            }
         }
         pub(crate) fn sequence(&self) -> Option<u32> {
+            #[cfg(target_os = "linux")]
+            if super::super::wayland_clipboard::supported() {
+                return super::super::wayland_clipboard::sequence();
+            }
             None
         }
         pub(crate) fn text(&mut self) -> Option<String> {
             self.0.get_text().ok()
         }
         pub(crate) fn snapshot(&mut self) -> Result<ClipboardSnapshot, String> {
+            #[cfg(target_os = "linux")]
+            if super::super::wayland_clipboard::supported() {
+                return super::super::wayland_clipboard::snapshot().map(ClipboardSnapshot::Wayland);
+            }
             if let Ok(image) = self.0.get_image() {
                 if image.bytes.len() > super::MAX_SNAPSHOT_BYTES {
                     return Err("Clipboard image exceeds the 64 MiB restoration limit. Clipboard unchanged.".into());
@@ -322,20 +449,37 @@ mod portable {
                     "Clipboard text exceeds the 64 MiB restoration limit. Clipboard unchanged."
                         .into(),
                 ),
-                // The portable API cannot distinguish an empty clipboard
-                // from HTML/files/custom formats. Refuse rather than erase
-                // content it cannot preserve.
+                // An absent selection on Linux is proved through X11/Wayland
+                // directly; on macOS only a truly empty general pasteboard may
+                // be cleared on restore — a files/rich-only copy has types but
+                // no text, and ContentNotAvailable must not destroy it.
+                #[cfg(target_os = "linux")]
+                Err(arboard::Error::ContentNotAvailable) if clipboard_is_empty() => Ok(ClipboardSnapshot::Empty),
+                #[cfg(target_os = "macos")]
+                Err(arboard::Error::ContentNotAvailable) if pasteboard_is_empty() => Ok(ClipboardSnapshot::Empty),
+                // Unsupported formats must still be left unchanged. Linux's
+                // empty selection is checked separately from a missing MIME.
                 Err(arboard::Error::ContentNotAvailable) => Err("Clipboard content cannot be preserved on this platform. Clipboard unchanged. Disable clipboard restoration to replace it.".into()),
                 Err(err) => Err(format!("Could not preserve clipboard: {err}")),
             }
         }
         pub(crate) fn set_text(&mut self, text: &str) -> Result<(), String> {
+            #[cfg(target_os = "linux")]
+            if super::super::wayland_clipboard::supported() {
+                return super::super::wayland_clipboard::set_text(text);
+            }
             self.0
                 .set_text(text)
                 .map_err(|e| format!("Could not write clipboard: {e}"))
         }
         pub(crate) fn restore(&mut self, snapshot: &ClipboardSnapshot) -> Result<(), String> {
             match snapshot {
+                #[cfg(target_os = "linux")]
+                ClipboardSnapshot::Wayland(snapshot) => {
+                    return super::super::wayland_clipboard::restore(snapshot)
+                }
+                #[cfg(not(windows))]
+                ClipboardSnapshot::Empty => self.0.clear(),
                 ClipboardSnapshot::Text(text) => self.0.set_text(text),
                 ClipboardSnapshot::Image {
                     width,
@@ -350,13 +494,129 @@ mod portable {
             .map_err(|e| format!("Could not restore clipboard: {e}"))
         }
     }
+
+    #[cfg(all(test, target_os = "linux"))]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn plain_text_and_images_can_be_restored_without_rich_payloads() {
+            for mimes in [
+                vec!["text/plain", "text/plain;charset=utf-8", "UTF8_STRING"],
+                vec!["image/png", "image/jpeg"],
+            ] {
+                assert!(!requires_richer_snapshot(
+                    &mimes.into_iter().map(String::from).collect()
+                ));
+            }
+        }
+
+        #[test]
+        fn readable_plain_text_does_not_authorize_discarding_other_formats() {
+            for extra in [
+                "text/html",
+                "text/uri-list",
+                "application/rtf",
+                "application/x-kde-passwordManagerHint",
+                "image/png",
+            ] {
+                assert!(requires_richer_snapshot(&std::collections::HashSet::from(
+                    ["text/plain".into(), extra.into()]
+                )));
+            }
+        }
+
+        #[test]
+        fn empty_wayland_selection_is_distinct_from_unsupported_or_unreadable_content() {
+            use wl_clipboard_rs::paste::Error;
+            assert!(wayland_clipboard_is_empty(Err(Error::ClipboardEmpty)));
+            assert!(!wayland_clipboard_is_empty(Err(Error::NoMimeType)));
+            assert!(!wayland_clipboard_is_empty(Err(Error::NoSeats)));
+            assert!(!wayland_clipboard_is_empty(Err(Error::MissingProtocol {
+                name: "data-control",
+                version: 1
+            })));
+            assert!(!wayland_clipboard_is_empty(Ok(
+                std::collections::HashSet::from(["text/uri-list".into()])
+            )));
+        }
+    }
 }
 #[cfg(not(windows))]
 pub(super) use portable::{ClipboardAccess, ClipboardSnapshot};
 
+// Live tests run in a short-lived process. Restoring with arboard alone would
+// leave that process owning the previous content until it exits. Hand the
+// restored text to KDE's persistent clipboard manager before the test ends.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn live_test_snapshot() -> Option<ClipboardSnapshot> {
+    let manager = std::process::Command::new("qdbus6")
+        .args(["org.kde.klipper", "/klipper", "getClipboardContents"])
+        .output()
+        .ok()?;
+    if !manager.status.success() {
+        return None;
+    }
+    let mut access = ClipboardAccess::open().ok()?;
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        let mimes = wl_clipboard_rs::paste::get_mime_types(
+            wl_clipboard_rs::paste::ClipboardType::Regular,
+            wl_clipboard_rs::paste::Seat::Unspecified,
+        )
+        .ok()?;
+        if portable::requires_richer_snapshot(&mimes) {
+            return None;
+        }
+    }
+    access.text().map(ClipboardSnapshot::Text)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn restore_live_test_snapshot(snapshot: &ClipboardSnapshot) {
+    let ClipboardSnapshot::Text(text) = snapshot else {
+        unreachable!("live tests require a text snapshot");
+    };
+    let result = std::process::Command::new("qdbus6")
+        .args(["org.kde.klipper", "/klipper", "setClipboardContents"])
+        .arg(text)
+        .output()
+        .expect("restore previous clipboard with the persistent KDE manager");
+    assert!(
+        result.status.success(),
+        "persistent clipboard restoration failed"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires live KDE with a text clipboard; restores it through the persistent manager"]
+    fn linux_clipboard_remains_available_after_access_is_dropped() {
+        let Some(previous) = live_test_snapshot() else {
+            eprintln!(
+                "skipping: a persistent KDE clipboard manager and text clipboard are required"
+            );
+            return;
+        };
+        let mut clipboard = ClipboardAccess::open().expect("open desktop clipboard");
+        let marker = format!("Reflow clipboard ownership check {}", uuid::Uuid::new_v4());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            clipboard.set_text(&marker).unwrap();
+            drop(clipboard);
+            // A separate reader models a paste target after injection has
+            // released its operation guard, including the manual fallback.
+            let mut reader = arboard::Clipboard::new().unwrap();
+            assert_eq!(reader.get_text().unwrap(), marker);
+        }));
+        restore_live_test_snapshot(&previous);
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
+        }
+    }
+
     #[test]
     fn text_image_html_and_files_are_copyable_memory_formats() {
         let formats = [13, 8, 17, 15, 0xc000, 0xc001];

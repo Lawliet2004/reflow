@@ -158,6 +158,7 @@ export type HudTheme = "dark" | "light" | "auto";
  */
 export interface AsrSettings {
   runtime: "python" | "native";
+  python_path?: string | null;
   /** Manifest id, e.g. `"0.6b"`. */
   model: string;
   device: "auto" | "cpu" | "cuda";
@@ -208,6 +209,7 @@ export interface AppSettings {
   hud_contrast?: "standard" | "high";
   paste_delay_ms?: number;
   inject_method?: "paste" | "type";
+  paste_shortcut?: "auto" | "ctrl_v" | "ctrl_shift_v";
   append_space?: boolean;
   capitalize_first?: boolean;
   meeting_mode?: boolean;
@@ -253,6 +255,8 @@ export interface AppSettings {
   waveform_style: WaveformStyle;
   reduce_motion: boolean;
   ui_font_scale: UIFontScale;
+  /** Whole-window zoom, percent. `100` = the text size preset unscaled. */
+  ui_zoom?: number;
   /** `#rrggbb`, used when {@link AppSettings.accent_color} is `"custom"`. */
   accent_custom?: string;
   surface_tone?: SurfaceTone;
@@ -298,7 +302,7 @@ export interface Hotkeys {
   command: string | null;
   assistant: string | null;
   note: string | null;
-  cancel: "Escape" | null;
+  cancel: string | null;
 }
 export interface Snippet {
   id: string;
@@ -333,7 +337,7 @@ export function defaultModes(): Mode[] {
     language: null,
     dictation_mode: "normal",
     cleanup_level: "light",
-    intelligence_tier: "smart_flow",
+    intelligence_tier: "raw_verbatim",
     style: "neutral",
     custom_instructions: "",
     context: { selected_text: false, clipboard: false, window_title: false },
@@ -359,6 +363,8 @@ export function defaultModes(): Mode[] {
 
 export interface AudioDevice {
   is_monitor?: boolean;
+  /** False for sources that exist but cannot record (unplugged jack). */
+  is_available?: boolean;
   id: string;
   name: string;
   is_default: boolean;
@@ -766,6 +772,24 @@ export interface PlatformInfo {
   injection_notes: string;
 }
 
+export interface DesktopIntegrationStatus {
+  /** Whether this desktop supports editing the actual global key in Reflow. */
+  shortcut_editable?: boolean;
+  assigned_shortcuts: Record<string, string>;
+  session: string;
+  shortcut: {
+    state: "pending" | "ready" | "unassigned" | "unavailable";
+    assigned_trigger: string | null;
+    message: string | null;
+  };
+  keyboard: {
+    state: "not_required" | "not_requested" | "pending" | "ready" | "denied" | "unavailable";
+    message: string | null;
+  };
+  hud_supported: boolean;
+  foreground_app_available: boolean;
+}
+
 export interface InjectionFeedback {
   pasted: boolean;
   fallback_copy: boolean;
@@ -797,6 +821,9 @@ export interface ModelStatus {
   /** Pre-formatted `pip install` command shown when a GPU is present
    *  but the sidecar's torch is CPU-only. */
   asr_gpu_hint?: string | null;
+  /** Machine-readable last load failure — e.g. "python_missing",
+   *  "missing_dependency", "crash". Drives first-run remediation UI. */
+  failure_kind?: string | null;
   /**
    * Why the running ASR model differs from the one selected in Settings.
    *
@@ -958,6 +985,7 @@ export function processingModeForCleanup(level: CleanupLevel): ProcessingMode {
 
 export const DEFAULT_ASR_SETTINGS: AsrSettings = {
   runtime: "python",
+  python_path: null,
   model: "0.6b",
   device: "auto",
   precision: "auto",
@@ -1009,6 +1037,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     power_policy: settings.power_policy ?? { unload_on_battery: false, battery_preset: null },
     paste_delay_ms: settings.paste_delay_ms ?? 30,
     inject_method: settings.inject_method ?? "paste",
+    paste_shortcut: settings.paste_shortcut ?? "auto",
     append_space: settings.append_space ?? false,
     capitalize_first: settings.capitalize_first ?? true,
     meeting_mode: settings.meeting_mode ?? false,
@@ -1049,6 +1078,17 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   };
 }
 
+/** `ui_zoom` bounds and keyboard/wheel step, in percent. */
+export const UI_ZOOM_MIN = 80;
+export const UI_ZOOM_MAX = 160;
+export const UI_ZOOM_STEP = 10;
+export const UI_ZOOM_DEFAULT = 100;
+
+export function clampUiZoom(zoom: number): number {
+  if (!Number.isFinite(zoom)) return UI_ZOOM_DEFAULT;
+  return Math.min(UI_ZOOM_MAX, Math.max(UI_ZOOM_MIN, Math.round(zoom)));
+}
+
 /** Every setting the Appearance page owns, at its default. Also the reset target. */
 export const APPEARANCE_DEFAULTS = {
   app_theme: "system" as AppTheme,
@@ -1059,6 +1099,7 @@ export const APPEARANCE_DEFAULTS = {
   reading_font: "serif" as ReadingFont,
   heading_font: "serif" as HeadingFont,
   ui_font_scale: "normal" as UIFontScale,
+  ui_zoom: UI_ZOOM_DEFAULT,
   ui_density: "comfortable" as UIDensity,
   corner_style: "soft" as CornerStyle,
   reduce_motion: false,
@@ -1113,4 +1154,43 @@ export interface UsageStats {
     minutes_spoken: number;
   }[];
   per_day: { date: string; words: number; dictations: number; minutes_spoken: number }[];
+}
+
+/** Receipt written by a completed managed speech-runtime install. */
+export interface PythonRuntimeReceipt {
+  pbs_tag: string;
+  python_version: string;
+  torch_variant: "cu130" | "cpu" | "default" | string;
+  created_at: string;
+}
+
+export interface PythonRuntimeStatus {
+  managed_installed: boolean;
+  receipt: PythonRuntimeReceipt | null;
+  /** REFLOW_PYTHON or a saved interpreter path overrides managed setup. */
+  overridden: boolean;
+  setting_up: boolean;
+  python_available: boolean;
+  size_bytes: number;
+  /** "cu130" | "cpu" | "default" | "none" — "none" means no torch wheel for
+   * this platform (Intel macOS): only the Zipformer speech path is set up. */
+  torch_variant: string;
+}
+
+export type PythonSetupPhase =
+  | "downloading"
+  | "extracting"
+  | "creating_env"
+  | "installing_torch"
+  | "installing_packages"
+  | "verifying"
+  | "complete"
+  | "error"
+  | "cancelled";
+
+export interface PythonSetupProgress {
+  phase: PythonSetupPhase;
+  progress_pct?: number;
+  detail?: string;
+  error?: string;
 }

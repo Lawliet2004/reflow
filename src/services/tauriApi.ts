@@ -36,6 +36,8 @@ import {
   FlowStatus,
   DownloadedModel,
   PlatformInfo,
+  PythonRuntimeStatus,
+  DesktopIntegrationStatus,
   ApiStatus,
   CalibrationStatus,
   normalizeSettings,
@@ -142,6 +144,21 @@ export function emptyLatencyPercentiles(): LatencyPercentiles {
   };
 }
 
+/** Browser-dev fallback: nothing installed or running, smart_flow selected. */
+export function emptyFlowStatus(): FlowStatus {
+  return {
+    active_tier: "smart_flow",
+    active_model: "qwen3.5-0.8b",
+    ready: false,
+    installed: false,
+    runtime_installed: false,
+    backend: "none",
+    is_loading: false,
+    is_downloading: false,
+    download_progress_pct: 0,
+  };
+}
+
 // Check if running inside Tauri
 export const isTauri = (): boolean => {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -208,6 +225,7 @@ const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   waveform_style: "bars",
   reduce_motion: false,
   ui_font_scale: "normal",
+  ui_zoom: 100,
   developer_mode: false,
   cleanup_level: "medium",
   intelligence_tier: "smart_flow",
@@ -261,7 +279,7 @@ export const api = {
   getAudioDevices: () =>
     safeInvoke<AudioDevice[]>("get_audio_devices", undefined, [
       {
-        id: "default",
+        id: "preview-mic",
         name: "Default Microphone (Realtek(R) Audio)",
         is_default: true,
         sample_rate: 48000,
@@ -270,6 +288,14 @@ export const api = {
     ]),
 
   setAudioDevice: (deviceId: string) => safeInvoke<void>("set_audio_device", { deviceId }),
+
+  /**
+   * The microphone dictation is capturing from right now, or — while idle —
+   * the device the next recording would open. The resolved name can differ
+   * from the configured selection when the default endpoint is unusable.
+   */
+  getActiveMicrophone: () =>
+    safeInvoke<string>("get_active_microphone", undefined, "Default Microphone (Realtek(R) Audio)"),
 
   // Recording Control
   startRecording: (intent?: SessionIntent, modeId?: string) =>
@@ -282,6 +308,10 @@ export const api = {
   cancelRecording: () => safeInvoke<void>("cancel_recording"),
 
   // Manual Text Injection & Testing
+  copyText: async (text: string) => {
+    if (isTauri()) return safeInvoke<void>("copy_text", { text });
+    await navigator.clipboard.writeText(text);
+  },
   injectText: async (text: string) => {
     if (isTauri()) return safeInvoke<boolean>("inject_text", { text });
     await navigator.clipboard.writeText(text);
@@ -413,6 +443,20 @@ export const api = {
 
   reloadModel: () => safeInvoke<void>("reload_model"),
 
+  getPythonRuntimeStatus: () =>
+    safeInvoke<PythonRuntimeStatus>("get_python_runtime_status", undefined, {
+      managed_installed: false,
+      receipt: null,
+      overridden: false,
+      setting_up: false,
+      python_available: true,
+      size_bytes: 0,
+      torch_variant: "cpu",
+    }),
+  setupPythonRuntime: () => safeInvoke<void>("setup_python_runtime"),
+  cancelPythonRuntimeSetup: () => safeInvoke<void>("cancel_python_runtime_setup"),
+  removePythonRuntime: () => safeInvoke<number>("remove_python_runtime", undefined, 0),
+
   // Metrics & Developer Diagnostics
   getLatencyMetrics: () =>
     safeInvoke<LatencyMetrics>("get_latency_metrics", undefined, emptyLatencyMetrics()),
@@ -445,6 +489,8 @@ export const api = {
 
   getCapabilities: () =>
     safeInvoke<Capabilities>("get_capabilities", undefined, emptyCapabilities()),
+  recommendedAsrModel: () =>
+    safeInvoke<string>("recommended_asr_model", undefined, "0.6b"),
 
   /**
    * Force a fresh hardware probe. Call this before showing a load decision;
@@ -491,6 +537,24 @@ export const api = {
       hotkey_error: null,
       injection_notes: "Web preview cannot inject text.",
     }),
+  getDesktopIntegrationStatus: () =>
+    safeInvoke<DesktopIntegrationStatus>("get_desktop_integration_status", undefined, {
+      session: "web",
+      assigned_shortcuts: {},
+      shortcut: {
+        state: "unavailable",
+        assigned_trigger: null,
+        message: "Global shortcuts require the desktop app.",
+      },
+      keyboard: { state: "not_required", message: null },
+      hud_supported: false,
+      foreground_app_available: false,
+    }),
+  requestKeyboardAccess: () => safeInvoke<void>("request_keyboard_access"),
+  retryDesktopShortcuts: () => safeInvoke<void>("retry_desktop_shortcuts"),
+  configureGlobalShortcuts: () => safeInvoke<void>("configure_global_shortcuts"),
+  setDesktopShortcut: (action: string, shortcut: string | null) =>
+    safeInvoke<DesktopIntegrationStatus>("set_desktop_shortcut", { action, shortcut }),
 
   getApiStatus: () =>
     safeInvoke<ApiStatus>("get_api_status", undefined, {
@@ -527,18 +591,7 @@ export const api = {
     id: string,
     permissions: { stream: boolean; history: boolean; injection: boolean },
   ) => safeInvoke<boolean>("set_api_device_permissions", { id, permissions }, true),
-  getFlowStatus: () =>
-    safeInvoke<FlowStatus>("get_flow_status", undefined, {
-      active_tier: "smart_flow",
-      active_model: "qwen3.5-0.8b",
-      ready: false,
-      installed: false,
-      runtime_installed: false,
-      backend: "none",
-      is_loading: false,
-      is_downloading: false,
-      download_progress_pct: 0,
-    }),
+  getFlowStatus: () => safeInvoke<FlowStatus>("get_flow_status", undefined, emptyFlowStatus()),
   previewCleanup: (
     text: string,
     tier: AppSettings["intelligence_tier"] = "smart_flow",
@@ -566,17 +619,7 @@ export const api = {
       },
     ),
   getIntelligenceStatus: () =>
-    safeInvoke<FlowStatus>("get_intelligence_status", undefined, {
-      active_tier: "smart_flow",
-      active_model: "qwen3.5-0.8b",
-      ready: false,
-      installed: false,
-      runtime_installed: false,
-      backend: "none",
-      is_loading: false,
-      is_downloading: false,
-      download_progress_pct: 0,
-    }),
+    safeInvoke<FlowStatus>("get_intelligence_status", undefined, emptyFlowStatus()),
   getIntelligenceTiers: () =>
     safeInvoke<IntelligenceTierState[]>("get_intelligence_tiers", undefined, []),
   installIntelligenceModel: (tier: AppSettings["intelligence_tier"]) =>

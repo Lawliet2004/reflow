@@ -31,7 +31,10 @@ impl LinuxAdapter {
         if let Some(win) = sway_active_window() {
             return Some(win);
         }
-        kwin_active_window()
+        // KDE's queryWindowInfo is an interactive window picker, not a
+        // foreground-window query. Never launch it during dictation. KDE
+        // Wayland does not expose focused app details through this API.
+        None
     }
 
     fn x11_active_window() -> Option<(String, String)> {
@@ -129,7 +132,6 @@ impl PlatformAdapter for LinuxAdapter {
                 .or_else(Self::compositor_active_window)
                 .unwrap_or_else(|| ("Unknown".into(), "unknown".into())),
             DisplaySession::Wayland => Self::compositor_active_window()
-                .or_else(Self::x11_active_window)
                 .unwrap_or_else(|| ("Unknown".into(), "unknown".into())),
             _ => ("Unknown".into(), "unknown".into()),
         }
@@ -137,6 +139,25 @@ impl PlatformAdapter for LinuxAdapter {
 
     fn simulate_paste(process: &str) -> Result<(), String> {
         let shift = linux_terminal_process(process);
+        match Self::detect_session() {
+            DisplaySession::Wayland => {
+                return super::linux_input_portal::chord(true, shift, 'v' as i32)
+            }
+            // wtype/ydotool are Wayland tools; on X11 the proven fallback is
+            // xdotool with cleared modifiers.
+            DisplaySession::X11 => {
+                if simulate_paste_with_enigo(true, shift, 'v').is_ok() {
+                    return Ok(());
+                }
+                if xdotool_paste(shift).is_ok() {
+                    return Ok(());
+                }
+                return Err(
+                    "Could not simulate paste (enigo/xdotool). Text is on the clipboard.".into(),
+                );
+            }
+            _ => {}
+        }
         if simulate_paste_with_enigo(true, shift, 'v').is_ok() {
             return Ok(());
         }
@@ -163,26 +184,29 @@ impl PlatformAdapter for LinuxAdapter {
 
     fn set_launch_at_startup(enabled: bool) -> Result<(), String> {
         let autostart_dir = dirs::config_dir()
-            .unwrap_or_else(|| Path::new(".").to_path_buf())
+            .ok_or_else(|| "Could not locate your Linux configuration directory".to_owned())?
             .join("autostart");
         let desktop_path = autostart_dir.join("reflow.desktop");
 
         if !enabled {
-            let _ = std::fs::remove_file(&desktop_path);
-            return Ok(());
+            return match std::fs::remove_file(&desktop_path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("Failed to disable autostart: {error}")),
+            };
         }
 
         std::fs::create_dir_all(&autostart_dir)
             .map_err(|e| format!("Failed to create autostart directory: {e}"))?;
 
-        let exe = std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))?;
-        let exec = exe.display().to_string().replace('"', "\\\"");
+        let exe = super::linux_desktop::current_launcher_executable()?;
+        let exec = super::linux_desktop::desktop_exec(&exe)?;
         let contents = format!(
             "[Desktop Entry]\n\
              Type=Application\n\
              Name=Reflow\n\
              Comment=Local dictation\n\
-             Exec=\"{exec}\"\n\
+             Exec={exec}\n\
              Terminal=false\n\
              Categories=Utility;AudioVideo;\n\
              X-GNOME-Autostart-enabled=true\n\
@@ -194,63 +218,46 @@ impl PlatformAdapter for LinuxAdapter {
 }
 
 fn command_json(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
+    super::process::output(
+        program,
+        args,
+        std::time::Duration::from_millis(300),
+        4 * 1024 * 1024,
+    )
+    .ok()
 }
 
 fn hyprland_active_window() -> Option<(String, String)> {
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
     let json = command_json("hyprctl", &["activewindow", "-j"])?;
     parse_hyprctl_active_window(&json)
 }
 
 fn sway_active_window() -> Option<(String, String)> {
+    std::env::var_os("SWAYSOCK")?;
     let json = command_json("swaymsg", &["-t", "get_tree"])?;
     parse_sway_focused(&json)
 }
 
-fn kwin_active_window() -> Option<(String, String)> {
-    let output = std::process::Command::new("qdbus")
-        .args(["org.kde.KWin", "/KWin", "org.kde.KWin.queryWindowInfo"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut title = "Unknown".to_string();
-    let mut process = "unknown".to_string();
-    for line in text.lines() {
-        if let Some(value) = line.strip_prefix("caption: ") {
-            title = value.trim().to_string();
-        }
-        if let Some(value) = line.strip_prefix("resourceClass: ") {
-            process = value.trim().to_string();
-        }
-    }
-    Some((title, process))
+fn xdotool_paste(shift: bool) -> Result<(), String> {
+    let chord = if shift { "ctrl+shift+v" } else { "ctrl+v" };
+    super::process::output(
+        "xdotool",
+        &["key", "--clearmodifiers", chord],
+        std::time::Duration::from_millis(500),
+        1024,
+    )?;
+    Ok(())
 }
 
 fn wtype_paste(shift: bool) -> Result<(), String> {
-    let mut cmd = std::process::Command::new("wtype");
-    if shift {
-        cmd.args([
-            "-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl",
-        ]);
+    let args: &[&str] = if shift {
+        &["-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"]
     } else {
-        cmd.args(["-M", "ctrl", "v", "-m", "ctrl"]);
-    }
-    let status = cmd.status().map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("wtype failed".into())
-    }
+        &["-M", "ctrl", "v", "-m", "ctrl"]
+    };
+    super::process::output("wtype", args, std::time::Duration::from_millis(500), 1024)?;
+    Ok(())
 }
 
 fn ydotool_paste(shift: bool) -> Result<(), String> {
@@ -259,13 +266,5 @@ fn ydotool_paste(shift: bool) -> Result<(), String> {
     } else {
         &["key", "29:1", "47:1", "47:0", "29:0"]
     };
-    let status = std::process::Command::new("ydotool")
-        .args(args)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("ydotool failed".into())
-    }
+    super::process::output("ydotool", args, std::time::Duration::from_millis(500), 1024).map(|_| ())
 }

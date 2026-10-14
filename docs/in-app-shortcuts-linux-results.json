@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-14T05:46:43.218984+00:00",
+  "baseline": "/tmp/reflow-shortcut-in-app-baseline-20261014",
+  "status": "implemented and built; active development instance includes final changes",
+  "feature": "KDE Wayland shortcut capture and native application inside Reflow",
+  "desktop_persistence": "KDE owns and persists actual keys; Reflow saved hotkeys remain portal preferred hints",
+  "conflict_policy": "Reject keys used by other actions; read back actual assignment; preserve previous key on conflict",
+  "native_protocol_test": {
+    "private_bus": "passed",
+    "private_home": "passed",
+    "service": "isolated KF6 kglobalacceld, offscreen, own PID verified",
+    "result": "assignment, clear, conflicting action rejection, unknown action refusal and cleanup passed",
+    "log": "/tmp/reflow-shortcut-private-test-final.log"
+  },
+  "frontend_tests": {
+    "passed": 252,
+    "files": 47,
+    "lint": "passed",
+    "format": "passed",
+    "typescript": "passed",
+    "log": "/tmp/reflow-shortcut-frontend-check.log",
+    "parallel_run": "One existing Notes pagination/delete test failed under parallel compile/test load. Full unchanged suite passed all 252 tests with maxWorkers=2; no timeout increase or Notes changes.",
+    "verified_run_log": "/tmp/reflow-shortcut-frontend-tests-verified.log",
+    "verified_result": "252 passed, 47 files"
+  },
+  "incident": {
+    "description": "Initial test encoded a QKeySequence with one entry instead of the four expected by the installed KDE decoder. KWin aborted and automatically restarted. Reflow was restarted. No user key assignment was changed by the failed read probe.",
+    "corrective_action": "Every outgoing key sequence now contains exactly four entries; all further protocol tests use an isolated session bus and configuration directory, guarded from running on the real desktop.",
+    "log": "/tmp/reflow-shortcut-kde-test-failure.log"
+  },
+  "delegated_review": {
+    "model": "swe-2-max",
+    "result": "No response after more than ten minutes; stopped. Primary-agent review and isolated protocol testing used.",
+    "log": "/tmp/reflow-swe-in-app-shortcut-review.log"
+  },
+  "remaining": [
+    "User confirmation of in-app editing experience and visible insertion",
+    "Original smoothness acceptance and log cleanup after confirmation"
+  ],
+  "logs": "retained pending user confirmation",
+  "rust_tests": {
+    "passed": 866,
+    "failed": 0,
+    "ignored": 19,
+    "log": "/tmp/reflow-shortcut-rust-check.log"
+  },
+  "clippy": "passed with warnings denied",
+  "release_build": {
+    "result": "passed",
+    "log": "/tmp/reflow-shortcut-release-build-final.log"
+  },
+  "runtime_log": "/tmp/reflow-shortcut-final-run.log",
+  "session_health": "Direct assignment requires an approved, connected portal session; disconnects during assignment require reconnection.",
+  "native_observations": {
+    "saved_binding": "Ctrl+Space",
+    "key_sequence": [67108896, 0, 0, 0],
+    "configuration": "~/.config/kglobalshortcutsrc, com.reflow.app/dictate",
+    "dictation_after_change": {
+      "audio_seconds": 3.712,
+      "recognized_characters": 25,
+      "delivery_dispatched": true,
+      "manual_copy": false,
+      "release_to_insertion_dispatch_ms": 967,
+      "visible_insertion": "not independently confirmed"
+    },
+    "current_process": "target/debug/reflow from user-started tauri dev",
+    "optimized_build": "src-tauri/target/release/reflow, final build passed",
+    "logs": "/tmp/reflow-shortcut-updated-run.log"
+  }
+}

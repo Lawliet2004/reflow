@@ -20,6 +20,8 @@ pub mod injection;
 pub mod model;
 pub mod network_policy;
 pub mod overlay;
+#[cfg(target_os = "linux")]
+pub mod overlay_layer;
 pub mod pairing;
 pub mod platform;
 pub mod profile;
@@ -61,16 +63,23 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
+                let _ = window.emit("window:visibility", true);
                 let _ = window.set_focus();
             }
         }))
         .on_window_event(|window, event| {
             // Closing the main window hides it to the tray so dictation
             // (global hotkey) keeps working; Quit lives in the tray menu.
+            if matches!(event, WindowEvent::Focused(_) | WindowEvent::Resized(_)) {
+                let visible =
+                    window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+                let _ = window.emit("window:visibility", visible);
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
+                    let _ = window.emit("window:visibility", false);
                 }
             }
         })
@@ -89,6 +98,13 @@ pub fn run() {
         )
         .manage(context.clone())
         .setup(move |app| {
+            crate::platform::desktop::configure(app.handle().clone());
+            #[cfg(target_os = "linux")]
+            crate::platform::configure_input_portal(app.handle().clone());
+            #[cfg(target_os = "linux")]
+            if crate::platform::session() == crate::platform::DisplaySession::Wayland {
+                crate::platform::linux_input_portal::restore_access();
+            }
             if let Some(notice) = context.settings_store.recovery_notice() {
                 log::warn!("{notice}");
             }
@@ -103,6 +119,11 @@ pub fn run() {
                     );
                     builder.build()?;
                 }
+            }
+
+            #[cfg(target_os = "linux")]
+            if crate::platform::session() == crate::platform::DisplaySession::Wayland {
+                crate::overlay_layer::init(app.handle());
             }
 
             // The app can remain in the tray for days. Expire audio there too.
@@ -129,8 +150,26 @@ pub fn run() {
             if let Ok(resource_dir) = app.path().resource_dir() {
                 let _ = asr_handle.set_resource_dir_blocking(resource_dir);
             }
-            if let Err(err) = asr_handle.initialize_blocking() {
-                log::warn!("ASR initialize failed: {err}");
+            {
+                // Enqueue Initialize on the ASR actor's FIFO channel
+                // synchronously: the CUDA probe and model-load tasks spawned
+                // below queue *after* it, so a racing probe can never
+                // initialize the sidecar first. The reply is awaited
+                // off-thread only for logging, keeping setup non-blocking.
+                let (init_tx, init_rx) = std::sync::mpsc::channel();
+                if let Err(err) = asr_handle.try_send_command(
+                    crate::asr::AsrCommand::Initialize {
+                        reply: crate::asr::actor::Reply::Sync(init_tx),
+                    },
+                ) {
+                    log::warn!("Could not queue ASR initialization: {err}");
+                } else {
+                    tauri::async_runtime::spawn_blocking(move || match init_rx.recv() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => log::warn!("ASR initialize failed: {err}"),
+                        Err(err) => log::warn!("ASR initialize reply was dropped: {err}"),
+                    });
+                }
             }
 
             // Install the refinement-runtime recovery hook here, where an
@@ -139,8 +178,16 @@ pub fn run() {
             {
                 let app_recovery = app.handle().clone();
                 let ctx_recovery = context.clone();
+                // A missing refinement runtime fails every dictation until it
+                // is installed; recover once per reason per run rather than
+                // relaunching the installer on each session.
+                let attempted =
+                    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
                 *context.runtime_recovery.write() = Some(std::sync::Arc::new(
                     move |request: crate::context::RuntimeRecoveryRequest| {
+                        if !attempted.lock().unwrap().insert(request.reason.clone()) {
+                            return;
+                        }
                         crate::rewrite::auto_install_if_missing(
                             &app_recovery,
                             &ctx_recovery,
@@ -334,6 +381,8 @@ pub fn run() {
 
             bind_dory_ui(app.handle().clone(), context.bus.clone(), context.clone());
             idle_policies::start(app.handle().clone(), context.clone());
+            #[cfg(target_os = "linux")]
+            crate::platform::suspend::start(app.handle().clone(), context.clone());
 
             if initial_settings.api_enabled {
                 let ctx_api = context.clone();
@@ -372,9 +421,20 @@ pub fn run() {
                 MenuItem::with_id(app, "history", "Open History", true, None::<&str>)?;
             let item_settings =
                 MenuItem::with_id(app, "settings", "Open Settings", true, None::<&str>)?;
-            let item_offline =
-                MenuItem::with_id(app, "offline", "Toggle airplane mode", true, None::<&str>)?;
+            let item_offline = MenuItem::with_id(
+                app,
+                "offline",
+                if initial_settings.offline_mode {
+                    "Airplane mode: On — turn off"
+                } else {
+                    "Airplane mode: Off — turn on"
+                },
+                true,
+                None::<&str>,
+            )?;
             let item_note = MenuItem::with_id(app, "note", "New note", true, None::<&str>)?;
+            // The model status watcher retitles this as loads/downloads land.
+            *app.state::<AppContext>().tray_status_item.write() = Some(item_status.clone());
             let item_quit = MenuItem::with_id(app, "quit", "Quit Reflow", true, None::<&str>)?;
 
             tray_menu.append(&item_status)?;
@@ -422,12 +482,45 @@ pub fn run() {
                             Err(err) => log::error!("Could not toggle polishing: {err}"),
                         }
                     }
-                    "history" | "settings" => {
+                    "offline" => {
+                        // Same path update_settings takes: persist, apply the
+                        // network policy, then publish so every panel refreshes.
+                        let ctx = app_handle.state::<AppContext>();
+                        let mut next = ctx.settings_store.get();
+                        next.offline_mode = !next.offline_mode;
+                        match ctx.settings_store.update(next) {
+                            Ok(updated) => {
+                                if let Err(error) = crate::network_policy::configure(
+                                    updated.offline_mode,
+                                    &crate::platform::PlatformSys::get_app_dir(),
+                                ) {
+                                    log::error!("Could not apply airplane mode: {error}");
+                                }
+                                let _ = app_handle.emit("settings:changed", &updated);
+                                let _ = item_offline.set_text(if updated.offline_mode {
+                                    "Airplane mode: On — turn off"
+                                } else {
+                                    "Airplane mode: Off — turn on"
+                                });
+                            }
+                            Err(error) => {
+                                log::error!("Could not toggle airplane mode: {error}");
+                            }
+                        }
+                    }
+                    "history" | "settings" | "note" => {
                         if let Some(window) = app_handle.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.unminimize();
+                            let _ = window.emit("window:visibility", true);
                             let _ = window.set_focus();
                         }
+                        let target = match event.id.as_ref() {
+                            "history" => "history",
+                            "note" => "notes",
+                            _ => "settings",
+                        };
+                        let _ = app_handle.emit("ui:navigate", target);
                     }
                     "quit" => {
                         app_handle.exit(0);
@@ -444,6 +537,8 @@ pub fn run() {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.emit("window:visibility", true);
                             let _ = window.set_focus();
                         }
                     }
@@ -463,6 +558,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::copy_text,
             api::automation::get_automation_token_status,
             api::automation::create_automation_token,
             api::automation::revoke_automation_token,
@@ -488,6 +584,7 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::get_audio_devices,
+            commands::get_active_microphone,
             commands::set_audio_device,
             commands::get_current_audio_level,
             commands::get_asr_progress,
@@ -522,6 +619,10 @@ pub fn run() {
             commands::save_custom_replacement,
             commands::delete_custom_replacement,
             commands::get_model_status,
+            asr::python_setup::get_python_runtime_status,
+            asr::python_setup::setup_python_runtime,
+            asr::python_setup::cancel_python_runtime_setup,
+            asr::python_setup::remove_python_runtime,
             commands::install_model,
             commands::remove_model,
             commands::get_downloaded_models,
@@ -533,6 +634,7 @@ pub fn run() {
             commands::run_system_benchmark,
             commands::get_system_metrics,
             commands::get_capabilities,
+            commands::recommended_asr_model,
             commands::refresh_capabilities,
             commands::get_model_manifests,
             commands::preview_profile,
@@ -540,6 +642,11 @@ pub fn run() {
             commands::open_logs_folder,
             commands::get_diagnostics_report,
             commands::get_platform_info,
+            commands::configure_global_shortcuts,
+            commands::set_desktop_shortcut,
+            commands::get_desktop_integration_status,
+            commands::request_keyboard_access,
+            commands::retry_desktop_shortcuts,
             commands::get_api_status,
             commands::rotate_pairing_code,
             commands::quit_app,
@@ -563,8 +670,31 @@ pub fn run() {
             commands::set_polish_enabled,
             commands::preview_tier_cleanup,
         ])
-        .run(tauri_context)
-        .expect("Error while running Reflow desktop application");
+        .build(tauri_context)
+        .expect("Error while building Reflow desktop application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                #[cfg(target_os = "linux")]
+                {
+                    crate::platform::linux_input_portal::shutdown();
+                    crate::hotkey::portal::clear();
+                }
+                let ctx = app.state::<AppContext>();
+                if let Some(cancel) = ctx.session_cancel.read().as_ref() {
+                    cancel.send_replace(true);
+                }
+                crate::asr::python_setup::teardown_on_exit();
+                ctx.audio_engine.write().stop_capture();
+                crate::platform::media::restore();
+                ctx.flow_runtime.shutdown_on_exit();
+                if let Err(error) = ctx
+                    .asr_handle
+                    .shutdown_blocking(std::time::Duration::from_secs(3))
+                {
+                    log::warn!("Speech shutdown: {error}");
+                }
+            }
+        });
 }
 
 fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContext) {
@@ -599,6 +729,25 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     }
                     previous_state = state;
                     let _ = app.emit("app:state-changed", state);
+                    // Session-scoped cancel binding (Escape on macOS/X11): it
+                    // is deliberately not a permanent global grab, so it is
+                    // armed only while a session is recording.
+                    #[cfg(not(windows))]
+                    if state == AppStateEnum::Recording {
+                        commands::arm_session_cancel(&app);
+                    } else {
+                        commands::disarm_session_cancel(&app);
+                    }
+                    if !matches!(
+                        state,
+                        AppStateEnum::Recording
+                            | AppStateEnum::Processing
+                            | AppStateEnum::Injecting
+                    ) {
+                        // Binding/model changes saved mid-session land now.
+                        commands::rebind_hotkeys_if_pending(&app);
+                        commands::kick_pending_asr_reload(&app, &ctx);
+                    }
                     match state {
                         AppStateEnum::Recording => {
                             let settings = ctx.settings_store.get();

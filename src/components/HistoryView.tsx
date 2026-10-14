@@ -19,7 +19,7 @@ import {
   Sparkles,
   Download,
 } from "lucide-react";
-import { HistoryEntry } from "../types";
+import { HistoryEntry, HistoryQuery } from "../types";
 import { api } from "../services/tauriApi";
 import { createEventScope } from "../services/eventScope";
 import { hasAiEdit, historyCleaned, historyOriginal } from "../historyDisplay";
@@ -149,6 +149,19 @@ export const HistoryView: React.FC = () => {
     return () => clearTimeout(timer);
   }, [entries, now]);
 
+  /** Filters shared by the list query and the export, so they cannot diverge. */
+  const currentFilters = useCallback(
+    (): HistoryQuery => ({
+      query: query.trim(),
+      kind: kind || undefined,
+      pinned_only: pinnedOnly,
+      application_process: app || undefined,
+      tag: tag || undefined,
+      ...historyDateRange(dayFilter),
+    }),
+    [query, kind, pinnedOnly, app, tag, dayFilter],
+  );
+
   useEffect(() => {
     const id = ++requestId.current;
     const t = setTimeout(async () => {
@@ -156,12 +169,7 @@ export const HistoryView: React.FC = () => {
       setError(null);
       try {
         const result = await api.queryHistory({
-          query: query.trim(),
-          kind: kind || undefined,
-          pinned_only: pinnedOnly,
-          application_process: app || undefined,
-          tag: tag || undefined,
-          ...historyDateRange(dayFilter),
+          ...currentFilters(),
           limit: 50,
           offset: page * 50,
         });
@@ -180,7 +188,7 @@ export const HistoryView: React.FC = () => {
       clearTimeout(t);
       requestId.current += 1;
     };
-  }, [query, page, dayFilter, kind, pinnedOnly, app, tag, revision]);
+  }, [currentFilters, page, revision]);
 
   useEffect(() => {
     if (!copiedId) return;
@@ -252,7 +260,7 @@ export const HistoryView: React.FC = () => {
 
   const copy = async (entry: HistoryEntry) => {
     try {
-      await navigator.clipboard.writeText(displayText(entry));
+      await api.copyText(displayText(entry));
       setCopiedId(entry.id);
     } catch {
       setError("Could not copy. Select the transcript and copy it manually.");
@@ -283,16 +291,7 @@ export const HistoryView: React.FC = () => {
     setError(null);
     setExportPath(null);
     try {
-      setExportPath(
-        await api.exportHistory({
-          query: query.trim(),
-          kind: kind || undefined,
-          pinned_only: pinnedOnly,
-          application_process: app || undefined,
-          tag: tag || undefined,
-          ...historyDateRange(dayFilter),
-        }),
-      );
+      setExportPath(await api.exportHistory(currentFilters()));
     } catch (error) {
       setError(`Could not export history: ${String(error)}`);
     } finally {
@@ -495,7 +494,7 @@ export const HistoryView: React.FC = () => {
               className="btn btn-secondary"
               onClick={async () => {
                 try {
-                  await navigator.clipboard.writeText(summary.text);
+                  await api.copyText(summary.text);
                 } catch (e) {
                   setError(String(e));
                 }

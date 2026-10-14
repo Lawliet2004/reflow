@@ -1,0 +1,256 @@
+{
+  "scope": "Installed models only; loading and untimed warmup are separate from warm final decoding. LLM timings are isolated; coexistence and insertion require native verification.",
+  "languages": ["en"],
+  "data_dir": "/home/papan/.local/share/reflow",
+  "asr": [
+    {
+      "runtime": "python",
+      "model": "zipformer-20m",
+      "requested_device": "cpu",
+      "requested_precision": "int8",
+      "load_wall_seconds": 5.643383556001936,
+      "device": "cpu",
+      "precision": "int8",
+      "vram_mb": 0.0,
+      "spill_detected": false,
+      "runs": [
+        {
+          "language": "en",
+          "repetition": 0,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.1569490028196014,
+          "rtf": 0.0010802941891048456,
+          "recognition_ms": 158.27000200079056,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 1,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.009489003394265,
+          "rtf": 0.0010580360759840399,
+          "recognition_ms": 161.37398700084304,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 2,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.548410998424515,
+          "rtf": 0.0011393827922150212,
+          "recognition_ms": 164.64992800320033,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 3,
+          "audio_seconds": 6.625,
+          "decode_ms": 8.388564005144872,
+          "rtf": 0.001266198340399226,
+          "recognition_ms": 166.92983100074343,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 4,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.603696001751814,
+          "rtf": 0.0011477276983776323,
+          "recognition_ms": 172.6413290016353,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 5,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.320058000914287,
+          "rtf": 0.0011049144152323453,
+          "recognition_ms": 163.51735100033693,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 6,
+          "audio_seconds": 6.625,
+          "decode_ms": 9.918894997099414,
+          "rtf": 0.0014971916976753833,
+          "recognition_ms": 177.92095900222193,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 7,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.8546420045313425,
+          "rtf": 0.0011856063403066178,
+          "recognition_ms": 174.9470599970664,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 8,
+          "audio_seconds": 6.625,
+          "decode_ms": 6.975766002142336,
+          "rtf": 0.0010529458116441263,
+          "recognition_ms": 174.23024100571638,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 9,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.042742996418383,
+          "rtf": 0.0010630555466291899,
+          "recognition_ms": 165.17196800123202,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 10,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.786042006046046,
+          "rtf": 0.00117525162355412,
+          "recognition_ms": 163.3495630012476,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 11,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.476404003682546,
+          "rtf": 0.0011285138118766107,
+          "recognition_ms": 172.17410299781477,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 12,
+          "audio_seconds": 6.625,
+          "decode_ms": 16.87723700160859,
+          "rtf": 0.0025475074719409196,
+          "recognition_ms": 181.64086099568522,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 13,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.429215002048295,
+          "rtf": 0.001121390943705403,
+          "recognition_ms": 174.66095800045878,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 14,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.4098779950872995,
+          "rtf": 0.0011184721502018565,
+          "recognition_ms": 167.11511200264795,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 15,
+          "audio_seconds": 6.625,
+          "decode_ms": 8.704363004653715,
+          "rtf": 0.0013138661139099946,
+          "recognition_ms": 173.81710799963912,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 16,
+          "audio_seconds": 6.625,
+          "decode_ms": 9.758760999829974,
+          "rtf": 0.0014730205282762225,
+          "recognition_ms": 185.87014900549548,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 17,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.7833460018155165,
+          "rtf": 0.0011748446795193232,
+          "recognition_ms": 177.07633700047154,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 18,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.437539999955334,
+          "rtf": 0.0011226475471630692,
+          "recognition_ms": 195.63546299468726,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        },
+        {
+          "language": "en",
+          "repetition": 19,
+          "audio_seconds": 6.625,
+          "decode_ms": 7.240407001518179,
+          "rtf": 0.0010928916228706686,
+          "recognition_ms": 167.48035400087247,
+          "wer": 0.05555555555555555,
+          "cer": 0.034482758620689655,
+          "warning": null
+        }
+      ],
+      "per_language": {
+        "en": {
+          "median_recognition_ms": 172.40771599972504,
+          "p95_recognition_ms": 185.87014900549548,
+          "warm_runs": 20,
+          "median_decode_ms": 7.512407501053531,
+          "p95_decode_ms": 9.918894997099414,
+          "mean_wer": 0.05555555555555555,
+          "mean_cer": 0.034482758620689655
+        }
+      },
+      "median_decode_ms": 7.512407501053531,
+      "p95_decode_ms": 9.918894997099414,
+      "median_rtf": 0.001133948302045816,
+      "repeats": 20
+    }
+  ],
+  "llm": []
+}

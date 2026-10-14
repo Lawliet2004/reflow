@@ -42,7 +42,15 @@ impl Default for Hotkeys {
             ),
             assistant: None,
             note: None,
-            cancel: Some("Escape".into()),
+            // Escape is a global grab that swallows the key for every app.
+            // Only Windows' low-level hook can observe-and-pass-through, so
+            // the idle grab is confined to Windows; elsewhere the cancel
+            // binding is session-scoped (see apply_hotkeys).
+            cancel: if cfg!(windows) {
+                Some("Escape".into())
+            } else {
+                None
+            },
         }
     }
 }
@@ -94,7 +102,9 @@ impl Default for Mode {
             language: None,
             dictation_mode: "normal".into(),
             cleanup_level: "light".into(),
-            intelligence_tier: "smart_flow".into(),
+            // Deterministic-only until the user picks an LLM tier, mirroring
+            // the fresh-install AppSettings default.
+            intelligence_tier: "raw_verbatim".into(),
             style: "neutral".into(),
             custom_instructions: String::new(),
             context: ModeContext::default(),
@@ -167,6 +177,12 @@ impl AppSettings {
         {
             return Err("Invalid duration or sound volume".into());
         }
+        if !matches!(
+            self.paste_shortcut.as_str(),
+            "auto" | "ctrl_v" | "ctrl_shift_v"
+        ) {
+            return Err("Unknown paste shortcut".into());
+        }
         if !matches!(self.inject_method.as_str(), "paste" | "type")
             || !matches!(self.hud_contrast.as_str(), "standard" | "high")
         {
@@ -222,14 +238,7 @@ impl AppSettings {
                 return Err("Snippets need unique IDs, a trigger of 1–60 characters and an expansion up to 4000 characters".into());
             }
         }
-        if self
-            .hotkeys
-            .cancel
-            .as_deref()
-            .is_some_and(|s| s != "Escape")
-        {
-            return Err("The cancel hotkey must be Escape".into());
-        }
+        crate::hotkey::registry::HotkeyRegistry::from_settings(self)?;
         if !matches!(
             self.send_key.as_str(),
             "enter" | "shift_enter" | "ctrl_enter"
@@ -328,6 +337,19 @@ mod tests {
         s.modes[1].enabled = false;
         assert_eq!(s.resolve_mode("chat.exe").id, "dictation");
     }
+    #[test]
+    fn fresh_cancel_binding_is_escape_only_where_the_hook_is_transparent() {
+        let cancel = Hotkeys::default().cancel;
+        if cfg!(windows) {
+            assert_eq!(cancel.as_deref(), Some("Escape"));
+        } else {
+            assert!(
+                cancel.is_none(),
+                "a global Escape grab on non-Windows swallows the key everywhere"
+            );
+        }
+    }
+
     #[test]
     fn spoken_trigger_requires_a_boundary() {
         let mut s = AppSettings::default();

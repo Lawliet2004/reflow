@@ -192,7 +192,7 @@ pub async fn repaste_last(ctx: State<'_, AppContext>) -> Result<bool, String> {
     let settings = ctx.settings_store.get();
     let hwnd = crate::platform::foreground_hwnd();
     tokio::task::spawn_blocking(move || {
-        crate::injection::TextInjector::deliver_configured(
+        crate::injection::TextInjector::deliver_with_shortcut(
             &entry.final_transcript,
             &crate::settings::OutputAction::Paste,
             hwnd,
@@ -200,6 +200,7 @@ pub async fn repaste_last(ctx: State<'_, AppContext>) -> Result<bool, String> {
             &settings.send_key,
             settings.paste_delay_ms,
             &settings.inject_method,
+            &settings.paste_shortcut,
         )
         .map(|outcome| outcome.pasted)
     })

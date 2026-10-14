@@ -6,12 +6,18 @@ import {
   OverlayPosition,
   StreamingTranscriptPayload,
   SurfaceTone,
+  UI_ZOOM_DEFAULT,
+  UI_ZOOM_MAX,
+  UI_ZOOM_MIN,
+  UI_ZOOM_STEP,
+  clampUiZoom,
   pickAppearance,
 } from "../../types";
 import { Section, Row, Toggle } from "./ui";
 import { Overlay } from "../Overlay";
+import { useViewVisibility } from "../../hooks/useViewVisibility";
 import { contrastRatio, getResolvedTheme } from "../../utils/theme";
-import { Check, Mic, Monitor, Palette, Pipette, RotateCcw, Type } from "lucide-react";
+import { Check, Mic, Minus, Monitor, Palette, Pipette, Plus, RotateCcw, Type } from "lucide-react";
 
 interface Props {
   settings: AppSettings;
@@ -268,6 +274,39 @@ export const AppearancePage: React.FC<Props> = ({ settings, onUpdateSettings }) 
               { value: "large", label: "Larger" },
             ]}
           />
+        </Row>
+
+        <Row
+          label="Zoom"
+          hint="Magnifies the whole window on top of the text size. Ctrl+= zooms in, Ctrl+- zooms out, Ctrl+0 resets — or hold Ctrl and scroll."
+        >
+          <div className="segmented-control zoom-stepper" role="group" aria-label="Zoom level">
+            <button
+              type="button"
+              aria-label="Zoom out"
+              disabled={a.ui_zoom <= UI_ZOOM_MIN}
+              onClick={() => change("ui_zoom", clampUiZoom(a.ui_zoom - UI_ZOOM_STEP))}
+            >
+              <Minus aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="zoom-value"
+              aria-label="Reset zoom to 100%"
+              title="Reset to 100% (Ctrl+0)"
+              onClick={() => change("ui_zoom", UI_ZOOM_DEFAULT)}
+            >
+              {a.ui_zoom}%
+            </button>
+            <button
+              type="button"
+              aria-label="Zoom in"
+              disabled={a.ui_zoom >= UI_ZOOM_MAX}
+              onClick={() => change("ui_zoom", clampUiZoom(a.ui_zoom + UI_ZOOM_STEP))}
+            >
+              <Plus aria-hidden />
+            </button>
+          </div>
         </Row>
 
         <Row label="Density" hint="Spacing around sections, rows and lists.">
@@ -579,16 +618,29 @@ const PillSection: React.FC<{ settings: AppSettings; a: A; change: Change }> = (
   a,
   change,
 }) => {
+  const visible = useViewVisibility();
   const [phase, setPhase] = useState<AppState>("RECORDING");
   const [level, setLevel] = useState(0.2);
   const listening = phase === "RECORDING";
 
   // A gentle stand-in voice so the visualizer can be judged. Holds still with reduce motion.
   useEffect(() => {
-    if (!listening || a.reduce_motion) return;
-    const timer = setInterval(() => setLevel(0.08 + Math.random() * 0.26), 140);
-    return () => clearInterval(timer);
-  }, [listening, a.reduce_motion]);
+    if (!listening || a.reduce_motion || !visible) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const update = () => {
+      if (timer) clearInterval(timer);
+      timer = reduced.matches
+        ? undefined
+        : setInterval(() => setLevel(0.08 + Math.random() * 0.26), 140);
+    };
+    update();
+    reduced.addEventListener("change", update);
+    return () => {
+      if (timer) clearInterval(timer);
+      reduced.removeEventListener("change", update);
+    };
+  }, [listening, a.reduce_motion, visible]);
 
   const posIndex = Math.max(
     0,

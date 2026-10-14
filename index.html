@@ -28,6 +28,8 @@
       (function () {
         try {
           var root = document.documentElement;
+          if (location.search.indexOf("window=overlay") !== -1)
+            root.classList.add("overlay-window");
           var s = JSON.parse(localStorage.getItem("reflow_appearance") || "{}");
           var t = s.theme || "system";
           var isDark =

@@ -31,6 +31,14 @@ fn clipboard_chain() -> &'static parking_lot::Mutex<RestoreChain<ClipboardSnapsh
     CLIPBOARD_CHAIN.get_or_init(|| parking_lot::Mutex::new(RestoreChain::default()))
 }
 
+fn require_clipboard_ownership(chain: &mut RestoreChain<ClipboardSnapshot>) {
+    // Wayland has no global selection sequence. Our temporary offer marker
+    // must be readable; identical text cannot prove that it still belongs to us.
+    if cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        chain.require_sequence();
+    }
+}
+
 fn bounded_restore_error(message: &str) -> String {
     message.chars().take(2_048).collect()
 }
@@ -163,13 +171,44 @@ impl TextInjector {
         delay_ms: u64,
         method: &str,
     ) -> Result<InjectionOutcome, String> {
+        Self::deliver_with_shortcut(
+            text,
+            action,
+            target_hwnd,
+            restore,
+            send_key,
+            delay_ms,
+            method,
+            "auto",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn deliver_with_shortcut(
+        text: &str,
+        action: &crate::settings::OutputAction,
+        target_hwnd: isize,
+        restore: bool,
+        send_key: &str,
+        delay_ms: u64,
+        method: &str,
+        paste_shortcut: &str,
+    ) -> Result<InjectionOutcome, String> {
+        super::cancellation::check()?;
         use crate::settings::OutputAction;
         use std::io::Write;
         if matches!(action, OutputAction::Paste | OutputAction::PasteEnter) {
-            let mut outcome =
-                Self::inject_configured(text, restore, target_hwnd, delay_ms, method)?;
+            let mut outcome = Self::inject_with_shortcut(
+                text,
+                restore,
+                target_hwnd,
+                delay_ms,
+                method,
+                paste_shortcut,
+            )?;
             if matches!(action, OutputAction::PasteEnter) && outcome.pasted && !text.is_empty() {
                 thread::sleep(Duration::from_millis(120));
+                super::cancellation::check()?;
                 // Never send Enter to a window that stole focus after the paste.
                 if (target_hwnd != 0 && platform::foreground_hwnd() != target_hwnd)
                     || platform::send_key(send_key).is_err()
@@ -267,27 +306,65 @@ impl TextInjector {
         delay_ms: u64,
         method: &str,
     ) -> Result<InjectionOutcome, String> {
+        Self::inject_with_shortcut(
+            text,
+            restore_clipboard,
+            target_hwnd,
+            delay_ms,
+            method,
+            "auto",
+        )
+    }
+
+    pub fn inject_with_shortcut(
+        text: &str,
+        restore_clipboard: bool,
+        target_hwnd: isize,
+        delay_ms: u64,
+        method: &str,
+        paste_shortcut: &str,
+    ) -> Result<InjectionOutcome, String> {
+        super::cancellation::check()?;
+        if !matches!(paste_shortcut, "auto" | "ctrl_v" | "ctrl_shift_v") {
+            return Err("Unknown paste shortcut".into());
+        }
         if delay_ms > 2000 || !matches!(method, "paste" | "type") {
             return Err("Invalid paste delay or insertion method".into());
         }
         let (app_title, process_name) = platform::active_window();
-        if method == "type" && !text.is_empty() {
+        let typing_failed = if method == "type" && !text.is_empty() {
             thread::sleep(Duration::from_millis(delay_ms));
-            if target_hwnd != 0
+            let result = if target_hwnd != 0
                 && !platform::focus_hwnd_and_confirm(target_hwnd, FOCUS_CONFIRM_TIMEOUT)
             {
-                return Err("Could not focus the target window for typing".into());
+                Err("Could not focus the target window for typing".into())
+            } else {
+                platform::type_text(text)
+            };
+            match result {
+                Ok(()) => {
+                    return Ok(InjectionOutcome {
+                        app_title,
+                        process_name,
+                        pasted: true,
+                        fallback_copy: false,
+                        paste_chord: String::new(),
+                    });
+                }
+                Err(error) => {
+                    log::warn!("Typing failed ({error}); copying the transcript for manual paste");
+                    true
+                }
             }
-            platform::type_text(text)?;
-            return Ok(InjectionOutcome {
-                app_title,
-                process_name,
-                pasted: true,
-                fallback_copy: false,
-                paste_chord: String::new(),
-            });
+        } else {
+            false
+        };
+        let paste_chord = match paste_shortcut {
+            "ctrl_v" => "Ctrl+V",
+            "ctrl_shift_v" => "Ctrl+Shift+V",
+            _ => paste_chord_label(&process_name, platform::session()),
         }
-        let paste_chord = paste_chord_label(&process_name, platform::session()).to_string();
+        .to_string();
 
         if text.is_empty() {
             return Ok(InjectionOutcome {
@@ -312,6 +389,7 @@ impl TextInjector {
         } else {
             None
         };
+        super::cancellation::check()?;
         if let Err(err) = clipboard.set_text(text) {
             // Native APIs can fail after EmptyClipboard. Keep the original
             // snapshot even when the initial transcript write only completed
@@ -323,6 +401,7 @@ impl TextInjector {
                 let mut chain = clipboard_chain().lock();
                 chain.mark_injected(previous, String::new(), sequence, generation);
                 chain.note_failed_restore(generation, current_text, sequence);
+                require_clipboard_ownership(&mut chain);
                 record_restore_error(&err);
             }
             return Err(err);
@@ -330,17 +409,26 @@ impl TextInjector {
         let sequence = clipboard.sequence();
         let generation = INJECTION_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(previous) = previous {
-            clipboard_chain().lock().mark_injected(
-                previous,
-                text.to_string(),
-                sequence,
-                generation,
-            );
+            let mut chain = clipboard_chain().lock();
+            chain.mark_injected(previous, text.to_string(), sequence, generation);
+            require_clipboard_ownership(&mut chain);
         } else {
             clipboard_chain().lock().discard();
         }
         // Paste targets must be able to open the clipboard before the chord.
         drop(clipboard);
+
+        if typing_failed {
+            // Keep the original for an explicit retry after manual paste.
+            // No automatic restore is scheduled on a fallback path.
+            return Ok(InjectionOutcome {
+                app_title,
+                process_name,
+                pasted: false,
+                fallback_copy: true,
+                paste_chord,
+            });
+        }
 
         thread::sleep(Duration::from_millis(delay_ms));
 
@@ -350,7 +438,6 @@ impl TextInjector {
         // sends Ctrl+V to whatever happened to be focused instead.
         if target_hwnd != 0 && !platform::focus_hwnd_and_confirm(target_hwnd, FOCUS_CONFIRM_TIMEOUT)
         {
-            clipboard_chain().lock().discard();
             log::warn!(
                 "Could not bring target window {target_hwnd} to the foreground; \
                  leaving the transcript on the clipboard for {paste_chord}"
@@ -364,7 +451,8 @@ impl TextInjector {
             });
         }
 
-        match platform::simulate_paste(&process_name) {
+        super::cancellation::check()?;
+        match platform::simulate_paste_configured(&process_name, paste_shortcut) {
             Ok(()) => {
                 // Give the target a moment to act on the keystroke before
                 // checking where it landed.
@@ -376,7 +464,6 @@ impl TextInjector {
                 let foreground_now = platform::foreground_hwnd();
                 let delivered = target_hwnd == 0 || foreground_now == target_hwnd;
                 if !delivered {
-                    clipboard_chain().lock().discard();
                     log::warn!(
                         "Foreground changed during paste (target_hwnd={target_hwnd}, now={foreground_now}); transcript is left on the clipboard for {paste_chord}"
                     );
@@ -412,7 +499,6 @@ impl TextInjector {
                 })
             }
             Err(err) => {
-                clipboard_chain().lock().discard();
                 log::warn!(
                     "Paste simulation failed ({err}); leaving transcript on the clipboard for {paste_chord}"
                 );
@@ -487,6 +573,32 @@ fn run_output_command(template: &str, text: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::platform::{linux_terminal_process, paste_chord_label, DisplaySession};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires live KDE with a text clipboard; restores it through the persistent manager"]
+    fn typing_focus_failure_keeps_transcript_for_manual_paste() {
+        let Some(previous) = crate::injection::clipboard::live_test_snapshot() else {
+            eprintln!(
+                "skipping: a persistent KDE clipboard manager and text clipboard are required"
+            );
+            return;
+        };
+        let marker = format!("Reflow typing fallback check {}", uuid::Uuid::new_v4());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Linux has no HWND focus API, so this forces a typing failure
+            // before any keystroke is sent to the user's focused application.
+            let outcome = TextInjector::inject_configured(&marker, true, 1, 0, "type").unwrap();
+            assert!(!outcome.pasted);
+            assert!(outcome.fallback_copy);
+            thread::sleep(CLIPBOARD_RESTORE_DELAY + Duration::from_millis(150));
+            assert_eq!(clipboard_text().unwrap().as_deref(), Some(marker.as_str()));
+        }));
+        crate::injection::clipboard::restore_live_test_snapshot(&previous);
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
+        }
+    }
 
     #[test]
     fn selection_change_requires_new_nonempty_clipboard() {

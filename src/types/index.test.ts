@@ -67,6 +67,7 @@ describe("normalizeSettings", () => {
 
     expect(normalized.asr).toEqual({
       runtime: "python",
+      python_path: null,
       model: "1.7b",
       device: DEFAULT_ASR_SETTINGS.device,
       precision: DEFAULT_ASR_SETTINGS.precision,

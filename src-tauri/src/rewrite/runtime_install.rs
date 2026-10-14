@@ -478,13 +478,29 @@ fn run_install_worker(
         return Err(format!("Could not create bin dir: {err}"));
     }
 
-    // Stage 1: download the archive into a temp file.
-    let temp_archive =
-        PlatformSys::get_logs_dir().join(format!("llama-runtime-{}.partial", std::process::id()));
-    let final_archive = PlatformSys::get_logs_dir().join(format!(
+    // Stage 1: download the archive into a temp file. The partial name is
+    // stable so a restarted install resumes the same file; a per-pid name
+    // used to strand a new partial on every attempt.
+    let download_dir = PlatformSys::get_cache_dir();
+    if let Err(err) = std::fs::create_dir_all(&download_dir) {
+        return Err(format!("Could not create download cache dir: {err}"));
+    }
+    remove_stale_partials(&download_dir);
+    remove_stale_partials(&PlatformSys::get_logs_dir());
+    let temp_archive = download_dir.join(format!(
+        "llama-runtime-{}.partial",
+        sanitize_for_filename(&spec.asset_name)
+    ));
+    let final_archive = download_dir.join(format!(
         "llama-runtime-{}",
         sanitize_for_filename(&spec.asset_name)
     ));
+
+    let resume_bytes = std::fs::metadata(&temp_archive).map(|m| m.len()).unwrap_or(0);
+    crate::network_policy::check_disk_space(
+        &download_dir,
+        spec.approx_bytes.saturating_sub(resume_bytes),
+    )?;
 
     let url = std::env::var(ENV_OVERRIDE_URL)
         .ok()
@@ -562,7 +578,7 @@ const DOWNLOAD_ATTEMPTS: u32 = 3;
 ///
 /// Only connect/send failures are retried. An HTTP response — even an error
 /// status — is returned to the caller, which knows how to interpret it.
-fn send_with_retry(
+pub(crate) fn send_with_retry(
     client: &reqwest::blocking::Client,
     url: &str,
     resume_from: u64,
@@ -1193,6 +1209,32 @@ fn make_executable(path: &Path) -> Result<(), String> {
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) -> Result<(), String> {
     Ok(())
+}
+
+/// Remove `llama-runtime-*.partial` files older than a day — leftovers from
+/// crashed installs are stale enough that deleting them can't disturb an
+/// in-flight download.
+fn remove_stale_partials(dir: &Path) {
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    let now = std::time::SystemTime::now();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("llama-runtime-") && name.ends_with(".partial")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|modified| now.duration_since(modified).unwrap_or_default() > MAX_AGE)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn sanitize_for_filename(s: &str) -> String {

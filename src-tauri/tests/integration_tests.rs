@@ -153,11 +153,11 @@ fn test_default_settings_are_tray_first() {
     assert!(!s.developer_mode);
     assert_eq!(s.style, "faithful");
     assert!(!s.auto_style_from_app);
-    // The default tier performs LLM refinement, so the default cleanup level
-    // has to be one that does not short-circuit Stage 2.
+    // The default tier is deterministic-only — no LLM is installed — while
+    // the raw stored level stays "medium" and clamps to light at resolve time.
     assert_eq!(s.cleanup_level, "medium");
-    assert_eq!(s.resolved_cleanup_level(), "medium");
-    assert!(s.resolve_intent().run_llm);
+    assert_eq!(s.resolved_cleanup_level(), "light");
+    assert!(!s.resolve_intent().run_llm);
 }
 
 #[test]

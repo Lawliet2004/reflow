@@ -23,6 +23,25 @@ it("offers all 30 supported speech languages and saves explicit selection", asyn
   expect(save).toHaveBeenLastCalledWith({ language: "auto", auto_detect_language: true });
 });
 
+it("shows which microphone the system default resolves to", async () => {
+  vi.spyOn(api, "getActiveMicrophone").mockResolvedValue("USB microphone");
+  await audioPage();
+  expect(await screen.findByText("Currently using: USB microphone")).toBeInTheDocument();
+});
+
+it("hides the resolved-name line when the selection fails to resolve", async () => {
+  vi.spyOn(api, "getActiveMicrophone").mockRejectedValue(new Error("unavailable"));
+  const settings = await api.getSettings();
+  render(
+    <AudioPage
+      settings={{ ...settings, microphone_device_id: "usb-mic" }}
+      onUpdateSettings={vi.fn()}
+    />,
+  );
+  await waitFor(() => expect(api.getActiveMicrophone).toHaveBeenCalled());
+  expect(screen.queryByText(/Currently using:/)).not.toBeInTheDocument();
+});
+
 it("shows microphone enumeration errors with a retry action", async () => {
   const devices = vi
     .spyOn(api, "getAudioDevices")

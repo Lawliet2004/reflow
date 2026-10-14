@@ -46,6 +46,14 @@ impl PlatformSys {
     }
 
     pub fn get_app_dir() -> PathBuf {
+        // Same escape hatch as --portable, for tests and tooling that need
+        // app data redirected to a scratch directory without a relocatable
+        // executable.
+        if let Some(directory) =
+            std::env::var_os("REFLOW_APP_DIR").filter(|path| !path.is_empty())
+        {
+            return PathBuf::from(directory);
+        }
         if let Some(directory) = APP_DIR_OVERRIDE.get() {
             return directory.clone();
         }
@@ -68,6 +76,10 @@ impl PlatformSys {
 
     pub fn get_logs_dir() -> PathBuf {
         Self::get_app_dir().join("logs")
+    }
+
+    pub fn get_cache_dir() -> PathBuf {
+        Self::get_app_dir().join("cache")
     }
 
     /// Legacy shim: GPU name plus **total** VRAM.

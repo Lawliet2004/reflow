@@ -499,6 +499,11 @@ impl FlowRuntime {
         self.shutdown_inner();
     }
 
+    /// Exit can happen while ensure() is warming a model under operation.
+    pub fn shutdown_on_exit(&self) {
+        self.stop_child();
+    }
+
     fn shutdown_inner(&self) {
         self.stop_child();
         *self.client.write() = FlowClient::new_missing();
@@ -845,6 +850,8 @@ impl FlowRuntime {
             const CREATE_NO_WINDOW: u32 = 0x08000000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
+        #[cfg(target_os = "linux")]
+        crate::platform::process::own_child(&mut cmd);
         let mut child = cmd
             .spawn()
             .map_err(|e| FlowLaunchFailure::SpawnFailed(e.to_string()))?;
@@ -1318,6 +1325,8 @@ mod tests {
             cmd.args(["-c", "exit 0"]);
             cmd
         };
+        #[cfg(target_os = "linux")]
+        crate::platform::process::own_child(&mut cmd);
         let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::null())

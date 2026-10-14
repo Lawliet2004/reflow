@@ -439,7 +439,14 @@ async fn inject(
         ));
     }
     let outcome = blocking_job(&ctx, move || {
-        TextInjector::inject(&body.text, settings.clipboard_restore_enabled, 0)
+        TextInjector::inject_with_shortcut(
+            &body.text,
+            settings.clipboard_restore_enabled,
+            0,
+            settings.paste_delay_ms,
+            &settings.inject_method,
+            &settings.paste_shortcut,
+        )
     })
     .await?;
     Ok(Json(json!({
@@ -502,9 +509,19 @@ async fn dictate(
             Json(json!({"message":"Text exceeds the insertion limit."})),
         ));
     }
-    let restore = ctx.settings_store.get().clipboard_restore_enabled;
+    let settings = ctx.settings_store.get();
     let target = crate::platform::foreground_hwnd();
-    let outcome = blocking_job(&ctx, move || TextInjector::inject(&text, restore, target)).await?;
+    let outcome = blocking_job(&ctx, move || {
+        TextInjector::inject_with_shortcut(
+            &text,
+            settings.clipboard_restore_enabled,
+            target,
+            settings.paste_delay_ms,
+            &settings.inject_method,
+            &settings.paste_shortcut,
+        )
+    })
+    .await?;
     Ok(Json(
         json!({"pasted":outcome.pasted, "fallback_copy":outcome.fallback_copy, "paste_chord":outcome.paste_chord}),
     ))

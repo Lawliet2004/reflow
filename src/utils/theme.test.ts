@@ -16,6 +16,7 @@ describe("Theme system", () => {
       accent_custom: "#123456",
       reduce_motion: true,
       ui_font_scale: "roomy",
+      ui_zoom: 130,
       surface_tone: "cool",
       reading_font: "mono",
       ui_density: "compact",
@@ -28,6 +29,7 @@ describe("Theme system", () => {
     expect(root.dataset.accent).toBe("custom");
     expect(root.style.getPropertyValue("--accent-custom")).toBe("#123456");
     expect(root.dataset.fontScale).toBe("roomy");
+    expect(root.dataset.zoom).toBe("130");
     expect(root.dataset.tone).toBe("cool");
     expect(root.dataset.readingFont).toBe("mono");
     expect(root.dataset.density).toBe("compact");

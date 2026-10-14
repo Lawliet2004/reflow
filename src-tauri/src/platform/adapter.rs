@@ -38,9 +38,9 @@ impl DisplaySession {
             Self::Windows => "Native clipboard paste via SendInput (Ctrl+V).",
             Self::X11 => "X11 clipboard paste. Terminals use Ctrl+Shift+V.",
             Self::Wayland => {
-                "Wayland cannot always inject keys. Reflow tries enigo, then wtype, then ydotool. If paste fails, text stays on the clipboard — press the paste shortcut."
+                "Allow Reflow keyboard access in the desktop dialog for automatic paste on Wayland. Until permission is granted, transcripts stay on the clipboard for manual paste."
             }
-            Self::Macos => "macOS text injection is not implemented in this build. Text is copied to the clipboard.",
+            Self::Macos => "macOS pastes with ⌘V. Reflow needs Accessibility access (System Settings → Privacy & Security → Accessibility).",
             Self::Unknown => "Display session could not be detected. Paste may require a manual clipboard shortcut.",
         }
     }
@@ -218,18 +218,33 @@ pub fn paste_chord_label(process: &str, session: DisplaySession) -> &'static str
         DisplaySession::X11 | DisplaySession::Wayland if linux_terminal_process(process) => {
             "Ctrl+Shift+V"
         }
+        DisplaySession::Macos => "⌘V",
         _ => "Ctrl+V",
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_keyboard_settings(session: DisplaySession) -> enigo::Settings {
+    let mut settings = enigo::Settings::default();
+    if session == DisplaySession::Wayland {
+        // Enigo 0.3 otherwise opens both connections and treats an X11 event
+        // as success even when the focused application is a native Wayland
+        // client. It has no backend-disable flag; an invalid explicit display
+        // prevents X11 fallback without changing this process's environment.
+        settings.x11_display = Some("reflow-native-wayland-only".into());
+    }
+    settings
 }
 
 #[cfg(target_os = "linux")]
 pub fn simulate_paste_with_enigo(ctrl: bool, shift: bool, key: char) -> Result<(), String> {
     use enigo::{
         Direction::{Click, Press, Release},
-        Enigo, Key, Keyboard, Settings,
+        Enigo, Key, Keyboard,
     };
 
-    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    let mut enigo =
+        Enigo::new(&linux_keyboard_settings(super::session())).map_err(|e| e.to_string())?;
     if ctrl {
         enigo.key(Key::Control, Press).map_err(|e| e.to_string())?;
     }
@@ -275,5 +290,17 @@ mod tests {
         normalized
             .parse::<tauri_plugin_global_shortcut::Shortcut>()
             .expect("the macOS default must parse as a global shortcut");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wayland_keyboard_does_not_silently_connect_to_xwayland() {
+        let settings = linux_keyboard_settings(DisplaySession::Wayland);
+        assert!(x11rb::connect(settings.x11_display.as_deref()).is_err());
+        assert_eq!(settings.wayland_display, None);
+        assert_eq!(
+            linux_keyboard_settings(DisplaySession::X11).x11_display,
+            None
+        );
     }
 }

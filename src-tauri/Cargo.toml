@@ -1,6 +1,6 @@
 [package]
 name = "reflow"
-version = "0.4.0"
+version = "0.5.0"
 description = "Local Wispr Flow-Style Desktop Dictation Application"
 authors = ["Reflow Team"]
 edition = "2021"
@@ -36,7 +36,7 @@ cpal = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-arboard = "3.4"
+arboard = { version = "3.4", features = ["wayland-data-control"] }
 enigo = { version = "0.3", default-features = true, features = ["x11rb", "wayland"] }
 regex = "1.10"
 log = "0.4"
@@ -88,8 +88,17 @@ windows = { version = "0.58", features = [
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_UI_Controls_Dialogs"
+    "Win32_UI_Controls_Dialogs",
+    "Win32_Security"
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 x11rb = "0.13"
+wl-clipboard-rs = "0.9"
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
+gtk = "0.18"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"

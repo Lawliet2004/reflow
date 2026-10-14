@@ -1,6 +1,7 @@
 pub mod backtrack;
 pub mod cleaner;
 pub mod context;
+pub(crate) mod literals;
 pub mod normalizers;
 pub mod punctuation;
 pub mod replacements;

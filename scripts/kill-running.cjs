@@ -11,9 +11,16 @@ function allowedExecutablePaths(root, platform) {
   );
 }
 
+function normalizeExecutablePath(value, platform) {
+  // Linux keeps an executing inode alive after Cargo replaces the binary and
+  // marks its /proc/<pid>/exe link with this kernel suffix.
+  const executable = platform === "linux" ? value.replace(/ \(deleted\)$/, "") : value;
+  const resolved = path.resolve(executable);
+  return platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
 function selectOwnedProcesses(processes, root, platform, ownPid = process.pid) {
-  const normalize = (value) =>
-    platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+  const normalize = (value) => normalizeExecutablePath(value, platform);
   const allowed = new Set(allowedExecutablePaths(root, platform).map(normalize));
   return processes.filter(
     ({ pid, executable }) =>
@@ -45,7 +52,12 @@ function listProcesses(platform) {
       .filter((entry) => /^[0-9]+$/.test(entry))
       .flatMap((entry) => {
         try {
-          return [{ pid: Number(entry), executable: fs.readlinkSync(`/proc/${entry}/exe`) }];
+          return [
+            {
+              pid: Number(entry),
+              executable: normalizeExecutablePath(fs.readlinkSync(`/proc/${entry}/exe`), platform),
+            },
+          ];
         } catch {
           return [];
         }
@@ -72,7 +84,10 @@ function stopOwnedInstances({
   for (const candidate of selectOwnedProcesses(inventory(platform), root, platform)) {
     // Recheck identity immediately before signaling to reduce process-exit/PID-reuse races.
     const stillOwned = selectOwnedProcesses(inventory(platform), root, platform).some(
-      (current) => current.pid === candidate.pid && current.executable === candidate.executable,
+      (current) =>
+        current.pid === candidate.pid &&
+        normalizeExecutablePath(current.executable, platform) ===
+          normalizeExecutablePath(candidate.executable, platform),
     );
     if (!stillOwned) continue;
     try {

@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { tauriApi as api } from "../../services/tauriApi";
 import { LatencyReport, SystemMetrics } from "../../types";
+import { useViewVisibility } from "../../hooks/useViewVisibility";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { cn } from "../../utils/cn";
 import { Activity, Clock, HardDrive, RefreshCw, RotateCcw } from "lucide-react";
 
 export function DiagnosticsWaterfall({ className }: { className?: string }) {
+  const visible = useViewVisibility();
   const [report, setReport] = useState<LatencyReport | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(false);
@@ -30,6 +32,7 @@ export function DiagnosticsWaterfall({ className }: { className?: string }) {
   };
 
   useEffect(() => {
+    if (!visible) return;
     let alive = true;
     queueMicrotask(() => {
       if (alive) fetchDiagnostics();
@@ -39,16 +42,43 @@ export function DiagnosticsWaterfall({ className }: { className?: string }) {
       alive = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [visible]);
 
   const last = report?.last;
   const p = report?.percentiles;
   const totalReleaseMs = last ? Math.max(1, last.release_to_inserted_ms) : 1;
 
-  const asrPct = last ? Math.min(100, (last.speech_end_to_final_ms / totalReleaseMs) * 100) : 0;
-  const formatPct = last ? Math.min(100, (last.formatting_ms / totalReleaseMs) * 100) : 0;
-  const llmPct = last ? Math.min(100, (last.rewrite_ms / totalReleaseMs) * 100) : 0;
-  const injectPct = last ? Math.min(100, (last.final_to_injection_ms / totalReleaseMs) * 100) : 0;
+  const phasePct = (ms: number) => (last ? Math.min(100, (ms / totalReleaseMs) * 100) : 0);
+  const phases = [
+    {
+      id: "asr",
+      title: "ASR Inference",
+      legend: "ASR",
+      color: "bg-accent",
+      ms: last?.speech_end_to_final_ms ?? 0,
+    },
+    {
+      id: "format",
+      title: "Formatting",
+      legend: "Format",
+      color: "bg-teal-500",
+      ms: last?.formatting_ms ?? 0,
+    },
+    {
+      id: "llm",
+      title: "LLM Rewrite",
+      legend: "LLM",
+      color: "bg-indigo-500",
+      ms: last?.rewrite_ms ?? 0,
+    },
+    {
+      id: "inject",
+      title: "Injection",
+      legend: "Inject",
+      color: "bg-success",
+      ms: last?.final_to_injection_ms ?? 0,
+    },
+  ].map((phase) => ({ ...phase, pct: phasePct(phase.ms) }));
 
   return (
     <div className={cn("space-y-6", className)}>
@@ -87,58 +117,28 @@ export function DiagnosticsWaterfall({ className }: { className?: string }) {
 
         {/* Phase Bar */}
         <div className="h-4 w-full bg-base-2 rounded-full overflow-hidden flex">
-          {asrPct > 0 ? (
-            <div
-              style={{ width: `${asrPct}%` }}
-              className="bg-accent h-full transition-all duration-300"
-              title={`ASR Inference: ${last?.speech_end_to_final_ms}ms`}
-            />
-          ) : null}
-          {formatPct > 0 ? (
-            <div
-              style={{ width: `${formatPct}%` }}
-              className="bg-teal-500 h-full transition-all duration-300"
-              title={`Formatting: ${last?.formatting_ms}ms`}
-            />
-          ) : null}
-          {llmPct > 0 ? (
-            <div
-              style={{ width: `${llmPct}%` }}
-              className="bg-indigo-500 h-full transition-all duration-300"
-              title={`LLM Rewrite: ${last?.rewrite_ms}ms`}
-            />
-          ) : null}
-          {injectPct > 0 ? (
-            <div
-              style={{ width: `${injectPct}%` }}
-              className="bg-success h-full transition-all duration-300"
-              title={`Injection: ${last?.final_to_injection_ms}ms`}
-            />
-          ) : null}
+          {phases.map(
+            (phase) =>
+              phase.pct > 0 && (
+                <div
+                  key={phase.id}
+                  style={{ width: `${phase.pct}%` }}
+                  className={`${phase.color} h-full transition-all duration-300`}
+                  title={`${phase.title}: ${phase.ms}ms`}
+                />
+              ),
+          )}
         </div>
 
         {/* Phase legend */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs pt-1">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-accent" />
-            <span className="text-muted">ASR:</span>
-            <span className="font-semibold text-ink">{last?.speech_end_to_final_ms ?? 0}ms</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-teal-500" />
-            <span className="text-muted">Format:</span>
-            <span className="font-semibold text-ink">{last?.formatting_ms ?? 0}ms</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
-            <span className="text-muted">LLM:</span>
-            <span className="font-semibold text-ink">{last?.rewrite_ms ?? 0}ms</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-success" />
-            <span className="text-muted">Inject:</span>
-            <span className="font-semibold text-ink">{last?.final_to_injection_ms ?? 0}ms</span>
-          </div>
+          {phases.map((phase) => (
+            <div key={phase.id} className="flex items-center gap-1.5">
+              <span className={`w-2.5 h-2.5 rounded-full ${phase.color}`} />
+              <span className="text-muted">{phase.legend}:</span>
+              <span className="font-semibold text-ink">{phase.ms}ms</span>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -171,7 +171,7 @@ export function DiagnosticsWaterfall({ className }: { className?: string }) {
       </div>
 
       {/* Memory Pressure Breakdown */}
-      {metrics ? (
+      {metrics && (
         <div className="p-4 rounded-xl bg-surface border border-line space-y-3">
           <div className="flex items-center gap-2 text-xs font-semibold text-ink">
             <HardDrive className="w-4 h-4 text-success" />
@@ -198,7 +198,7 @@ export function DiagnosticsWaterfall({ className }: { className?: string }) {
             </div>
           </div>
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

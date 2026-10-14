@@ -79,6 +79,8 @@ export const PAGES: { id: string; label: string; description: string; keywords: 
       "serif",
       "scale",
       "size",
+      "zoom",
+      "magnify",
       "density",
       "corner",
       "radius",

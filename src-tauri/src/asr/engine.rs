@@ -71,6 +71,11 @@ pub struct EngineStatus {
     /// Machine-readable failure classification. See [`LoadFailureKind`].
     #[serde(default)]
     pub failure_kind: Option<String>,
+    /// Manifest id of the model the engine actually has resident, echoed back
+    /// by the sidecar. `None` means the engine does not know — the caller
+    /// treats unknown as matching rather than assume staleness.
+    #[serde(default)]
+    pub model_id: Option<String>,
     /// Precision the model actually loaded with, not the one requested.
     #[serde(default)]
     pub precision: String,

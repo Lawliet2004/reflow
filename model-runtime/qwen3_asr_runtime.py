@@ -23,6 +23,7 @@ import hashlib
 import base64
 import os
 import queue
+import shutil
 import struct
 import subprocess
 import threading
@@ -34,6 +35,12 @@ import numpy as np
 # journaled HTTP transport below. No background SDK connection is permitted.
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_DISABLE_XET"] = "1"
+# The Hub passes these per-request timeouts, overriding our client's timeout.
+# Its 10s defaults can fail before a model CDN has started serving weights.
+# Set defaults before transformers/fermion import huggingface_hub; keep explicit
+# user values intact.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 _NETWORK_GUARD_READY = False
 _NETWORK_GUARD_LOCK = threading.Lock()
 _NETWORK_JOURNAL_LOCK = threading.Lock()
@@ -166,10 +173,31 @@ def install_network_guard():
                 response.stream = JournalAsyncStream(response.stream, host)
                 return response
 
-        # trust_env=False prevents SDK proxy mounts from bypassing the transport.
+        def proxy_mounts(transport_cls):
+            """Honor HTTP(S)_PROXY/ALL_PROXY/NO_PROXY without losing the guard.
+
+            httpx only applies env proxies when trust_env is on, but proxy
+            mounts built that way would use plain transports and bypass the
+            pinned-host check and journal. Build the same mount map manually
+            with journaled transports: None entries (NO_PROXY bypasses) fall
+            back to the default journaled transport, proxy entries keep the
+            guard because check_download_request still sees the final URL.
+            """
+            get_proxies = getattr(httpx._utils, "get_environment_proxies", None)
+            if get_proxies is None:
+                return {}
+            return {
+                pattern: None if proxy is None else transport_cls(proxy=proxy)
+                for pattern, proxy in get_proxies().items()
+            }
+
+        # trust_env stays off for the client: proxy mounts are built above so
+        # the journaled transport always sees the destination URL.
         set_client_factory(lambda: httpx.Client(transport=JournalTransport(),
+            mounts=proxy_mounts(JournalTransport),
             follow_redirects=True, timeout=60.0, trust_env=False))
         set_async_client_factory(lambda: httpx.AsyncClient(transport=JournalAsyncTransport(),
+            mounts=proxy_mounts(JournalAsyncTransport),
             follow_redirects=True, timeout=60.0, trust_env=False))
         _NETWORK_GUARD_READY = True
 
@@ -450,6 +478,10 @@ class RuntimeState:
         self.device = "none"
         self.backend = "not loaded"
         self.model_dir = ""
+        # The manifest id of the model currently resident, echoed in `status`
+        # so the app can tell a stale engine (still holding the previously
+        # selected model) from the model it actually asked for.
+        self.model_id = None
         self.vram_mb = 0.0
         # Precision label the current model actually loaded with ("bf16",
         # "int8", "int4", "cpu"), not the one that was requested.
@@ -487,6 +519,7 @@ class RuntimeState:
         self.stream_lock = threading.Lock()
         self.stream_captured_bytes = 0
         self.stream_active = False
+        self.stream_error = None
         self.unprocessed = 0              # bytes appended since last partial run
         self.partial_text = ""
         self.detected_language = ""
@@ -507,13 +540,16 @@ def append_stream_audio(audio):
     model = _MODEL
     if getattr(model, "model_id", None) == "zipformer-20m":
         with STATE.stream_lock:
-            if not STATE.stream_active:
+            if not STATE.stream_active or STATE.stream_error:
                 return
             STATE.stream_captured_bytes += len(audio)
         try:
             STATE.partial_text = model.accept_pcm16(audio)
         except Exception as e:
             log_err(f"Zipformer streaming decode failed: {e}")
+            with STATE.stream_lock:
+                STATE.stream_error = f"Streaming recognition failed; incomplete text was discarded. {e}"
+                STATE.partial_text = ""
         return
     with STATE.stream_lock:
         if not STATE.stream_active:
@@ -534,6 +570,7 @@ def clear_stream_audio():
             pass
     with STATE.stream_lock:
         STATE.stream_active = False
+        STATE.stream_error = None
         STATE.stream_audio = bytearray()
         STATE.stream_captured_bytes = 0
         STATE.unprocessed = 0
@@ -1424,6 +1461,10 @@ def load_model_blocking(
                 STATE.load_error = None
                 STATE.load_failure_kind = None
                 STATE.model_dir = model_dir
+                STATE.model_id = (
+                    model_id if model_id is not None
+                    else ("1.7b" if "1.7" in model_dir else "0.6b")
+                )
                 STATE.load_seconds = time.time() - t0
                 log_err(f"Model ready on {target} ({label}) in {STATE.load_seconds:.1f}s")
                 return {
@@ -1472,6 +1513,7 @@ def load_phonon_blocking(model_dir, requested_device, precision):
         STATE.precision = _MODEL.precision
         STATE.backend = f"Phonon-2 · {device.upper()} {_MODEL.precision} · {_MODEL.runtime}"
         STATE.model_dir = model_dir
+        STATE.model_id = "phonon-2"
         STATE.vram_mb = _torch().cuda.memory_reserved() / (1024 * 1024) if device == "cuda" else 0.0
         STATE.loaded = True
         STATE.load_error = None
@@ -1508,6 +1550,7 @@ def load_zipformer_blocking(model_dir, requested_device, precision):
         STATE.precision = _MODEL.precision
         STATE.backend = f"Zipformer 20M · CPU {_MODEL.precision} · {_MODEL.runtime}"
         STATE.model_dir = model_dir
+        STATE.model_id = "zipformer-20m"
         STATE.vram_mb = 0.0
         STATE.loaded = True
         STATE.load_error = None
@@ -1559,11 +1602,16 @@ def _unload_model_blocking():
         if _MODEL is not None:
             del _MODEL
             _MODEL = None
+    STATE.model_id = None
     try:
         import gc
         gc.collect()
-        import torch
-        torch.cuda.empty_cache()
+        # Never cold-import torch in the teardown path: zipformer/phonon
+        # installs may not have it, and on Windows a blocking import on the
+        # model-loader thread wedges the stdin pump.
+        torch = sys.modules.get("torch")
+        if torch is not None and getattr(torch, "cuda", None) is not None:
+            torch.cuda.empty_cache()
     except Exception:
         pass
 
@@ -1763,66 +1811,107 @@ def _load_thread_alive() -> bool:
 # demonstrably not blocked in the reader) makes the model-loader thread's
 # later imports pure sys.modules cache hits, so no module init ever runs on
 # a worker during a load.
-_warm_imports_done = False
+_warmed_groups = set()
 _warm_imports_lock = threading.Lock()
 
 
-def _warm_imports():
-    """Pre-import the load path's native extensions on the main thread."""
-    global _warm_imports_done, _CUDA_INFO
-    if _warm_imports_done:
-        return
+def _warm_groups(model_id=None, model_dir=None, device=None):
+    """Which import groups the requested load actually needs.
+
+    The full set pays torch + transformers (~9-60s cold) even for models that
+    never touch them: Zipformer 20M runs entirely on sherpa-onnx, and
+    Phonon-2's CPU engine only needs the fermion runtime. Scoping the warm-up
+    is what lets the small CPU models start quickly.
+    """
+    if model_id == "zipformer-20m" or (
+        model_dir and os.path.isfile(os.path.join(model_dir, "tokens.txt"))
+    ):
+        return {"sherpa"}
+    if model_id == "phonon-2" or (
+        model_dir
+        and os.path.isfile(os.path.join(model_dir, "phonon-2.bps.tar.zst"))
+    ):
+        # Only the fp32 CUDA graph rides on transformers/torch; the CPU engine
+        # is pure fermion/numpy.
+        if (device or "").strip().lower() in ("cpu",):
+            return {"phonon"}
+        return {"phonon", "torch", "transformers"}
+    if model_id is None and model_dir is None:
+        # probe_cuda: only the torch import and the capability snapshot.
+        return {"torch"}
+    return {"torch", "transformers", "torchao", "sherpa"}
+
+
+def _warm_imports(model_id=None, model_dir=None, device=None):
+    """Pre-import the requested load's native extensions on the main thread."""
+    global _CUDA_INFO
+    groups = _warm_groups(model_id, model_dir, device)
     with _warm_imports_lock:
-        if _warm_imports_done:
+        pending = groups - _warmed_groups
+        if not pending:
             return
         started = time.time()
-        log_err("Warming imports on the main thread...")
-        import torch  # noqa: F401
-
-        from transformers import (  # noqa: F401
-            AutoModelForMultimodalLM,
-            AutoProcessor,
-            TorchAoConfig,
-        )
+        log_err(f"Warming imports on the main thread ({', '.join(sorted(pending))})...")
+        if "torch" in pending:
+            try:
+                import torch  # noqa: F401
+            except Exception:
+                # A missing/broken torch must not wedge the warm-up — the
+                # snapshot below still runs and publishes a settled
+                # "unavailable" answer so the Rust probe wait ends promptly.
+                pass
+        if "transformers" in pending:
+            try:
+                from transformers import (  # noqa: F401
+                    AutoModelForMultimodalLM,
+                    AutoProcessor,
+                    TorchAoConfig,
+                )
+            except Exception:
+                pass
         # The optional engine imports native libraries on this same main thread.
-        try:
-            from phonon_runtime import require_dependencies
-            require_dependencies()
-            from fermion._speech import engine_phonon2_cpu  # noqa: F401
-            from transformers import ParakeetForTDT, ParakeetTDTConfig  # noqa: F401
-        except (ImportError, RuntimeError):
-            pass
+        if "phonon" in pending:
+            try:
+                from phonon_runtime import require_dependencies
+                require_dependencies()
+                from fermion._speech import engine_phonon2_cpu  # noqa: F401
+                from transformers import ParakeetForTDT, ParakeetTDTConfig  # noqa: F401
+            except (ImportError, RuntimeError):
+                pass
         # sherpa-onnx loads onnxruntime's native libraries; same init hazard.
-        try:
-            import sherpa_onnx  # noqa: F401
-        except (ImportError, RuntimeError):
-            pass
-        try:
-            from torchao.quantization import (  # noqa: F401
-                Int4WeightOnlyConfig,
-                Int8WeightOnlyConfig,
-            )
-        except Exception:
-            pass
-        _warm_imports_done = True
+        if "sherpa" in pending:
+            try:
+                import sherpa_onnx  # noqa: F401
+            except (ImportError, RuntimeError):
+                pass
+        if "torchao" in pending:
+            try:
+                from torchao.quantization import (  # noqa: F401
+                    Int4WeightOnlyConfig,
+                    Int8WeightOnlyConfig,
+                )
+            except Exception:
+                pass
+        _warmed_groups.update(pending)
         log_err(f"Warm imports complete in {time.time() - started:.1f}s")
         # The CUDA capability snapshot used to be computed on its own
         # background thread, but that put a torch import on a worker thread -
         # the same native-init-under-contention hazard this warmup exists to
         # remove. Compute it here instead; `status` serves it from the cache
         # and reports probe_pending until this runs.
-        try:
-            computed = _compute_cuda_runtime_info()
-        except Exception as e:  # pragma: no cover - defensive
-            log_err(f"CUDA probe failed: {e}")
-            computed = dict(_CUDA_INFO_PENDING, probe_pending=False)
-        with _CUDA_INFO_LOCK:
-            _CUDA_INFO = computed
-        log_err(
-            "CUDA probe: available={} torch_cuda={}".format(
-                computed.get("cuda_available"), computed.get("torch_cuda_version")
+        if "torch" in pending:
+            try:
+                computed = _compute_cuda_runtime_info()
+            except Exception as e:  # pragma: no cover - defensive
+                log_err(f"CUDA probe failed: {e}")
+                computed = dict(_CUDA_INFO_PENDING, probe_pending=False)
+            with _CUDA_INFO_LOCK:
+                _CUDA_INFO = computed
+            log_err(
+                "CUDA probe: available={} torch_cuda={}".format(
+                    computed.get("cuda_available"), computed.get("torch_cuda_version")
+                )
             )
-        )
 
 
 def start_load(model_dir: str, device: str, precision: str = "auto", model_id=None, expected_bytes=None):
@@ -1858,6 +1947,12 @@ def verify_weight_files(model_dir: str, weight_files):
         path = os.path.realpath(os.path.join(root, filename))
         if os.path.commonpath([root, path]) != root:
             raise ValueError("Weight filename escapes model directory")
+        if not os.path.isfile(path):
+            raise RuntimeError(
+                f"Download is incomplete: required weight file {filename} is missing. "
+                "Partial downloads and cached metadata were preserved. Check your "
+                "connection and retry Download in Model settings."
+            )
         digest = hashlib.sha256()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -1866,6 +1961,45 @@ def verify_weight_files(model_dir: str, weight_files):
         if actual != weight["sha256"].lower():
             os.remove(path)
             raise ValueError(f"SHA-256 mismatch for {filename}: expected {weight['sha256']}, got {actual}; bad file deleted")
+
+
+def is_transient_download_error(error):
+    """Retry typed connection failures, never policy, HTTP or integrity errors."""
+    import httpx
+    import socket
+    import ssl
+    transient = False
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, (RuntimeError, ValueError, httpx.HTTPStatusError, ssl.SSLError)):
+            return False
+        if isinstance(error, socket.gaierror):
+            if error.errno != socket.EAI_AGAIN:
+                return False
+            transient = True
+        elif isinstance(error, (httpx.TimeoutException, httpx.NetworkError,
+                              httpx.RemoteProtocolError, TimeoutError, ConnectionError)):
+            transient = True
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    return transient
+
+
+def download_snapshot_with_retry(repo, **options):
+    """Resume the same pinned snapshot after at most two transient retries."""
+    from huggingface_hub import snapshot_download
+    for attempt in range(3):
+        # Re-read the policy before every attempt. Retries must not reconnect
+        # after the user enables Airplane mode while a download is failing.
+        require_network_online()
+        try:
+            return snapshot_download(repo, **options)
+        except Exception as error:
+            if attempt == 2 or not is_transient_download_error(error):
+                raise
+            log_err(f"Temporary download connection failure ({type(error).__name__}); "
+                    f"retrying ({attempt + 2}/3)...")
+            time.sleep(2 ** attempt)
 
 
 def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None, revision=None, weight_files=None, device="auto"):
@@ -1883,6 +2017,15 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
         return {"status": "error", "error": str(error)}
     if not revision or len(revision) != 40 or not weight_files:
         return {"status": "error", "error": "Pinned revision and weight checksums are required"}
+    try:
+        anchor = model_dir if os.path.isdir(model_dir) else (os.path.dirname(model_dir) or ".")
+        needed = int(expected_bytes_for(model_dir, model_id, expected_bytes) * 1.1)
+        free = shutil.disk_usage(anchor).free
+        if free < needed:
+            return {"status": "error",
+                    "error": f"Not enough disk space: need {needed / 1e9:.1f} GB, {free / 1e9:.1f} GB free"}
+    except OSError:
+        pass  # An unreadable mount table must not block the download outright.
     STATE.download_model_id = model_id
     STATE.download_expected_bytes = expected_bytes
     def run():
@@ -1891,9 +2034,7 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
             STATE.download_error = None
             os.makedirs(model_dir, exist_ok=True)
             log_err(f"Downloading {repo} weights to {model_dir}")
-            from huggingface_hub import snapshot_download
-
-            snapshot_download(
+            download_snapshot_with_retry(
                 repo,
                 revision=revision,
                 local_dir=model_dir,
@@ -1917,6 +2058,21 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
                 ],
             )
             verify_weight_files(model_dir, weight_files)
+            # Mark a *complete* install: weight bytes pass their checksums, but
+            # tokenizer/processor metadata is globbed (tokenizer*, *.json …)
+            # rather than pinned, so only this receipt proves the whole tree
+            # arrived. Reflow's installed-check treats receipts as
+            # authoritative for non-legacy directories.
+            try:
+                with open(
+                    os.path.join(model_dir, "reflow-install.json"), "w"
+                ) as receipt:
+                    json.dump(
+                        {"model_id": model_id, "verified_at": time.time()},
+                        receipt,
+                    )
+            except Exception as e:
+                log_err(f"Could not write install receipt: {e}")
             STATE.is_downloading = False
             log_err("Model download complete and verified")
             # auto-load right after install, honoring the precision the user
@@ -1952,6 +2108,9 @@ def handle(msg: dict) -> dict:
             "device": STATE.device,
             "backend": STATE.backend,
             "model_dir": STATE.model_dir,
+            # Manifest id of the resident model, so the app can distinguish
+            # "old model still loaded" from the selection it asked for.
+            "model_id": STATE.model_id,
             "vram_mb": round(STATE.vram_mb, 1),
             "is_downloading": STATE.is_downloading,
             "is_loading": loading,
@@ -2017,6 +2176,8 @@ def handle(msg: dict) -> dict:
 
     if cmd == "get_partial":
         # Fast lane for streaming engines. Buffered engines just report "".
+        if STATE.stream_error:
+            return {"status": "error", "error": STATE.stream_error, "text": ""}
         return {"status": "ok", "text": STATE.partial_text}
 
     if cmd == "start_stream":
@@ -2037,18 +2198,22 @@ def handle(msg: dict) -> dict:
             STATE.vocabulary_prompt = f"Vocabulary: {terms}."
         else:
             STATE.vocabulary_prompt = None
-        lang = msg.get("language", "auto")
         STATE.stream_language = LANG_NAMES.get(lang) if lang and lang != "auto" else None
         if getattr(_MODEL, "model_id", None) == "zipformer-20m":
             try:
                 _MODEL.start_stream()
             except Exception as e:
+                clear_stream_audio()
+                STATE.vocabulary_prompt = None
+                STATE.stream_language = None
                 return {"status": "error", "error": str(e)}
         return {"status": "ok", "streaming": True}
 
     if cmd == "push_audio_b64":
         audio = base64.b64decode(msg.get("audio_b64", ""))
         append_stream_audio(audio)
+        if STATE.stream_error:
+            return {"status": "error", "error": STATE.stream_error, "text": ""}
         return {"status": "ok", "text": None}
 
     if cmd == "stop_stream":
@@ -2060,6 +2225,7 @@ def handle(msg: dict) -> dict:
                 log_err(f"stop_stream audio_b64 decode failed: {e}")
         with STATE.stream_lock:
             STATE.stream_active = False
+            stream_error = STATE.stream_error
             audio = bytes(STATE.stream_audio)
             captured_bytes = STATE.stream_captured_bytes
             STATE.stream_audio = bytearray()
@@ -2067,6 +2233,8 @@ def handle(msg: dict) -> dict:
             # Everything was already decoded incrementally; finish only drains
             # the tail. No retained buffer, so the audio is never re-read here.
             try:
+                if stream_error:
+                    return {"status": "error", "error": stream_error, "text": ""}
                 text = _MODEL.finish_stream()
                 STATE.detected_language = "en"
                 log_err(f"final transcript ({len(text)} chars, lang=en)")
@@ -2610,9 +2778,9 @@ def main():
     log_err(f"Qwen3-ASR sidecar started (pid {os.getpid()}). Listening on stdin...")
     threading.Thread(target=_command_worker, name="cmd-worker", daemon=True).start()
 
-    def warm_imports_safe():
+    def warm_imports_safe(model_id=None, model_dir=None, device=None):
         try:
-            _warm_imports()
+            _warm_imports(model_id, model_dir, device)
         except Exception as e:
             # Let the loader surface the real import error through the normal
             # load-failure path rather than killing the reader loop here.
@@ -2710,14 +2878,18 @@ def main():
                     STATE.load_error = None
                     STATE.backend = "loading…"
                     _respond(msg, {"status": "loading"})
-                    warm_imports_safe()
+                    warm_imports_safe(
+                        msg.get("model_id"), msg.get("model_dir"), msg.get("device")
+                    )
                     _cmd_queue.put(dict(msg, _ack_early=True))
                 elif cmd == "install_model":
                     _cmd_queue.put(msg)
                     # The install downloads for minutes before it auto-loads;
                     # warming after enqueue finishes long before the auto-load
                     # needs the modules, and keeps the install ack instant.
-                    warm_imports_safe()
+                    warm_imports_safe(
+                        msg.get("model_id"), msg.get("model_dir"), msg.get("device")
+                    )
                 else:
                     _cmd_queue.put(msg)
 

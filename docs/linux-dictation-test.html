@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reflow isolated dictation test</title>
+  <style>
+    body {
+      font:
+        18px system-ui,
+        sans-serif;
+      max-width: 800px;
+      margin: 48px auto;
+      padding: 16px;
+    }
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 240px;
+      font: inherit;
+      padding: 16px;
+    }
+    :focus-visible {
+      outline: 3px solid #6953d8;
+      outline-offset: 4px;
+    }
+  </style>
+  <h1>Reflow isolated dictation test</h1>
+  <p>
+    This page runs offline, saves nothing, and sends nothing. Focus the blank field, hold your
+    configured shortcut, speak, and release. Check whether text appears here and focus stays in the
+    field.
+  </p>
+  <label for="dictation">Dictation target</label>
+  <textarea
+    id="dictation"
+    autofocus
+    spellcheck="false"
+    placeholder="Expected: This is a Reflow Linux test."
+  ></textarea>
+  <p>
+    If automatic delivery fails, copy the transcript from Reflow Home and paste manually. Keep a
+    separate blank editor document and Konsole test ready for the remaining checks.
+  </p>
+</html>

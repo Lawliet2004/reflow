@@ -58,6 +58,7 @@ fn auto_uses_small_asr_and_reserves_its_weights_before_llm() {
 fn fast_execution_skips_llm_without_persisting_preferences() {
     let settings = AppSettings {
         preset: "fast".into(),
+        intelligence_tier: "smart_flow".into(),
         ..Default::default()
     };
     let result = plan(
@@ -103,7 +104,10 @@ fn low_ram_suppresses_additional_llm_load_and_warm_residency() {
     let mut caps = hardware();
     caps.ram.available_mb = 1000.0;
     let result = plan(
-        &AppSettings::default(),
+        &AppSettings {
+            intelligence_tier: "smart_flow".into(),
+            ..Default::default()
+        },
         &caps,
         &|_| true,
         &no_measurements,
@@ -156,7 +160,10 @@ fn quantized_cpu_llm_is_not_budgeted_as_fp32_weights() {
     let mut caps = hardware();
     caps.ram.available_mb = 2500.0;
     let result = plan(
-        &AppSettings::default(),
+        &AppSettings {
+            intelligence_tier: "smart_flow".into(),
+            ..Default::default()
+        },
         &caps,
         &|_| true,
         &no_measurements,

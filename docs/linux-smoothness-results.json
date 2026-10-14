@@ -1,0 +1,125 @@
+{
+  "recorded_utc": "2026-10-14T05:10:47.779031+00:00",
+  "source_baseline": "/tmp/reflow-smoothness-baseline-20261013",
+  "changed_since_baseline": [
+    "src-tauri/src/capability/collect.rs",
+    "src-tauri/src/commands/mod.rs",
+    "src-tauri/src/hotkey/registry.rs",
+    "src-tauri/src/idle_policies.rs",
+    "src-tauri/src/settings/expansion.rs",
+    "src-tauri/tests/config_tests.rs",
+    "src/App.tsx",
+    "src/components/DesktopIntegrationPanel.tsx",
+    "src/components/DictateHome.tsx",
+    "src/components/Navigation.tsx",
+    "src/components/Onboarding.tsx",
+    "src/components/Overlay.tsx",
+    "src/components/Waveform.tsx",
+    "src/components/settings/GeneralPage.test.tsx",
+    "src/components/settings/GeneralPage.tsx",
+    "src/components/settings/ModelPage.tsx",
+    "src/hooks/useIntelligenceHub.test.tsx",
+    "src/hooks/useIntelligenceHub.ts",
+    "src/types/index.ts"
+  ],
+  "render_workload_before": {
+    "workload": "30 microphone level events while History is open",
+    "window_commits": 30,
+    "elapsed_ms": 114.3094709999998
+  },
+  "render_workload_after": {
+    "workload": "30 microphone level events while History is open",
+    "window_commits": 0,
+    "elapsed_ms": 0.7504829999998037
+  },
+  "render_scope": "React Profiler in jsdom, native branch mocked; not native frame rate or end-to-end latency",
+  "delegation": {
+    "cli": "Devin CLI",
+    "model": "swe-2-max",
+    "max_simultaneous_workers": 3,
+    "method": "Tool-free review/proposed patches, primary-agent review and application",
+    "completed_reports": [
+      "/tmp/reflow-swe-ui-focused.log",
+      "/tmp/reflow-swe-hardware-focused.log",
+      "/tmp/reflow-swe-shortcuts-ui-focused.log",
+      "/tmp/reflow-swe-final-review.log"
+    ],
+    "cancel_review": {
+      "status": "stopped after over seven minutes without output",
+      "log": "/tmp/reflow-swe-cancel-review.log",
+      "validation": "Primary-agent review and automated shortcut/persistence/desktop event regressions"
+    }
+  },
+  "command_handler_audit": {
+    "frontend_command_count": 103,
+    "registered_handler_count": 104,
+    "unmatched": []
+  },
+  "saved_choices": {
+    "speech": "Phonon-2, Python, auto device/precision",
+    "microphone": "pipewire:@auto",
+    "llm": "none/raw_verbatim"
+  },
+  "native_acceptance": {
+    "smooth_scrolling": "pending user test of optimized build",
+    "navigation": "pending user test of optimized build",
+    "shortcut_rebinding": "pending user test of optimized build",
+    "dictation": "prior build confirmed by user; updated build pending",
+    "internal_microphone": "OS Secure Boot driver key prerequisite remains; external headset previously confirmed"
+  },
+  "log_cleanup": "Deferred until explicit user confirmation that smoothness and functionality are satisfactory",
+  "validation": {
+    "frontend": {
+      "test_files": 47,
+      "tests_passed": 248,
+      "lint": "passed",
+      "format": "passed",
+      "typescript": "passed",
+      "log": "/tmp/reflow-smoothness-frontend-final.log"
+    },
+    "rust": {
+      "passed": 865,
+      "failed": 0,
+      "ignored": 18,
+      "log": "/tmp/reflow-smoothness-rust-final.log"
+    },
+    "clippy": {
+      "warnings_denied": true,
+      "result": "passed",
+      "log": "/tmp/reflow-smoothness-clippy-final.log"
+    },
+    "python": {
+      "selftest_checks_passed": 70,
+      "model_free_regressions_passed": 39,
+      "logs": [
+        "/tmp/reflow-smoothness-python-selftest.log",
+        "/tmp/reflow-smoothness-python-tests.log"
+      ]
+    },
+    "node": {
+      "passed": 19,
+      "platform_skips": 2,
+      "log": "/tmp/reflow-smoothness-node-tests.log"
+    },
+    "installed_phonon": {
+      "result": "passed",
+      "real_recognize_cancel_recovery_cycles": 30,
+      "log": "/tmp/reflow-smoothness-phonon-smoke.log"
+    },
+    "release": {
+      "result": "passed",
+      "log": "/tmp/reflow-smoothness-release-build-final.log",
+      "binary": "/home/papan/Desktop/Projects/reflow/src-tauri/target/release/reflow"
+    },
+    "working_tree_whitespace": "passed"
+  },
+  "new_regression_files": ["src/App.smoothness.test.tsx", "src/components/Waveform.test.tsx"],
+  "native_run_log": "/tmp/reflow-smoothness-release-run.log",
+  "native_runtime_observations": {
+    "release_pid": 235346,
+    "speech_model_loaded": "Phonon-2 CPU INT8 AVX2, confirmed in release startup log",
+    "desktop_assigned_dictation_shortcut": "Ctrl+Shift+Space",
+    "user_test": "pending",
+    "recorded_utc": "2026-10-14T05:15:06.799508+00:00"
+  }
+}

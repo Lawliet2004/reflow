@@ -14,6 +14,7 @@ import { BackendStage } from "./hud/stages";
 import { AssistantAnswer } from "./AssistantAnswer";
 import { Overlay } from "./Overlay";
 import { applyTheme } from "../utils/theme";
+import { useViewVisibility } from "../hooks/useViewVisibility";
 
 const EMPTY: StreamingTranscriptPayload = {
   committed_prefix: "",
@@ -25,7 +26,10 @@ const EMPTY: StreamingTranscriptPayload = {
 };
 
 export const OverlayApp: React.FC = () => {
+  // Own visibility even when the HUD uses only CSS waveform animation.
+  useViewVisibility();
   const [response, setResponse] = useState<string | null>(null);
+  const [exiting, setExiting] = useState(false);
   const [appState, setAppState] = useState<AppState>("READY");
   const [transcript, setTranscript] = useState<StreamingTranscriptPayload>(EMPTY);
   const [injection, setInjection] = useState<InjectionFeedback | null>(null);
@@ -60,11 +64,16 @@ export const OverlayApp: React.FC = () => {
           stateEvents++;
           setAppState(state);
           if (state === "RECORDING") {
+            setExiting(false);
             setResponse(null);
             setInjection(null);
             setTranscript(EMPTY);
             setBackendStage(null);
           }
+        }),
+        scope.listen<boolean>("hud:hide", setExiting),
+        scope.listen<boolean>("window:visibility", (visible) => {
+          if (visible) setExiting(false);
         }),
         scope.listen<{ kind: "start" | "stop" }>("hud:sound", ({ kind }) => {
           if (kind !== "start" && kind !== "stop") return;
@@ -127,6 +136,9 @@ export const OverlayApp: React.FC = () => {
       appState={appState}
       transcript={transcript}
       standalone
+      exiting={
+        exiting && appState !== "RECORDING" && appState !== "PROCESSING" && appState !== "INJECTING"
+      }
       extraMessage={injection?.message ?? null}
       backendStage={backendStage}
       hudTheme={settings?.overlay_theme ?? "dark"}
