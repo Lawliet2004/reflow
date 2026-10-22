@@ -7,6 +7,15 @@ import { Onboarding } from "./Onboarding";
 // exercise the download flow — those tests pick their model explicitly.
 beforeEach(() => {
   vi.spyOn(api, "recommendedAsrModel").mockResolvedValue("1.7b");
+  vi.spyOn(api, "getPythonRuntimeStatus").mockResolvedValue({
+    managed_installed: true,
+    receipt: null,
+    overridden: false,
+    setting_up: false,
+    python_available: true,
+    size_bytes: 0,
+    torch_variant: "cpu",
+  });
 });
 
 it.each([
@@ -56,7 +65,7 @@ it.each([
     "aria-pressed",
     "true",
   );
-  fireEvent.click(screen.getByRole("button", { name: "Download model" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
   await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(model.id));
   view.rerender(
     <Onboarding
@@ -93,7 +102,7 @@ it("shows background download failures and permits retrying the selected speech 
   const view = render(<Onboarding {...props} modelStatus={missing} />);
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Download model" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
   await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith("1.7b"));
   view.rerender(
     <Onboarding
@@ -111,7 +120,7 @@ it("shows background download failures and permits retrying the selected speech 
   expect(screen.getByRole("alert")).toHaveTextContent(
     "Downloads are restricted to pinned artifact hosts",
   );
-  fireEvent.click(screen.getByRole("button", { name: "Download model" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
   await waitFor(() => expect(install).toHaveBeenCalledTimes(2));
 });
 
@@ -131,8 +140,8 @@ it("asks for one-time download consent when airplane mode is on", async () => {
   );
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.queryByRole("button", { name: "Download model" })).not.toBeInTheDocument();
-  const allow = screen.getByRole("button", { name: "Allow downloads" });
+  expect(screen.queryByRole("button", { name: "Download and set up" })).not.toBeInTheDocument();
+  const allow = screen.getByRole("button", { name: "Allow downloads and set up" });
   fireEvent.click(allow);
   await waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith({ offline_mode: false }));
   await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(settings.asr.model));
@@ -152,8 +161,10 @@ it("shows the consent card instead of a raw error when a download is rejected as
   );
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Download model" }));
-  expect(await screen.findByRole("button", { name: "Allow downloads" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
+  expect(
+    await screen.findByRole("button", { name: "Allow downloads and set up" }),
+  ).toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
@@ -385,14 +396,169 @@ it("confirms a shortcut press during the hotkey step and cancels the probe sessi
   render(
     <Onboarding
       settings={settings}
-      modelStatus={status}
+      modelStatus={{ ...status, installed: true, loaded: true, is_loading: false }}
       onUpdateSettings={vi.fn()}
       onComplete={vi.fn()}
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.getByText(/Press your shortcut anywhere/)).toBeInTheDocument();
+  expect(screen.getByText(/Try your shortcut now/)).toBeInTheDocument();
   await act(async () => listeners.get("app:state-changed")?.("RECORDING"));
-  expect(screen.getByText(/Shortcut detected/)).toBeInTheDocument();
+  expect(screen.getByText(/Shortcut works/)).toBeInTheDocument();
   await waitFor(() => expect(cancel).toHaveBeenCalled());
+});
+
+it("sets up Python before downloading the selected model from one button", async () => {
+  const bridge = await import("../services/tauriApi");
+  const settings = { ...(await api.getSettings()), offline_mode: false };
+  const status = await api.getModelStatus();
+  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue({
+    managed_installed: false,
+    receipt: null,
+    overridden: false,
+    setting_up: false,
+    python_available: true,
+    size_bytes: 0,
+    torch_variant: "cpu",
+  });
+  let progress!: (value: import("../types").PythonSetupProgress) => void;
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    if (event === "python-runtime:setup-progress") progress = handler;
+    return () => {};
+  });
+  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
+  const install = vi.spyOn(api, "installModel").mockResolvedValue();
+  render(
+    <Onboarding
+      settings={settings}
+      modelStatus={{ ...status, installed: false, loaded: false }}
+      onUpdateSettings={vi.fn()}
+      onComplete={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
+  await waitFor(() => expect(setup).toHaveBeenCalledOnce());
+  expect(install).not.toHaveBeenCalled();
+  await act(async () => progress({ phase: "installing_packages" }));
+  expect(screen.getByText(/Installing speech packages/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Qwen3-ASR 0.6B/ })).toBeDisabled();
+  await act(async () => progress({ phase: "complete" }));
+  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(settings.asr.model));
+});
+
+it("offers retry after runtime setup fails and then continues to the model", async () => {
+  const bridge = await import("../services/tauriApi");
+  const settings = { ...(await api.getSettings()), offline_mode: false };
+  const status = await api.getModelStatus();
+  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue({
+    managed_installed: false,
+    receipt: null,
+    overridden: false,
+    setting_up: false,
+    python_available: false,
+    size_bytes: 0,
+    torch_variant: "cpu",
+  });
+  let progress!: (value: import("../types").PythonSetupProgress) => void;
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    if (event === "python-runtime:setup-progress") progress = handler;
+    return () => {};
+  });
+  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
+  const install = vi.spyOn(api, "installModel").mockResolvedValue();
+  render(
+    <Onboarding
+      settings={settings}
+      modelStatus={{ ...status, installed: false, loaded: false }}
+      onUpdateSettings={vi.fn()}
+      onComplete={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
+  await waitFor(() => expect(setup).toHaveBeenCalledOnce());
+  await act(async () => progress({ phase: "error", error: "Connection timed out" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("Connection timed out");
+  expect(install).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Retry setup" }));
+  await waitFor(() => expect(setup).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await act(async () => progress({ phase: "complete" }));
+  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(settings.asr.model));
+});
+
+it("reuses dependency-only setup when the earlier model error still says Python is missing", async () => {
+  const bridge = await import("../services/tauriApi");
+  const settings = { ...(await api.getSettings()), offline_mode: false };
+  const status = await api.getModelStatus();
+  vi.spyOn(api, "getSpeechSetupPlan").mockResolvedValue({
+    hardware: await api.getCapabilities(),
+    architecture: "x86_64",
+    cpu_has_avx2: true,
+    torch_variant: "cpu",
+    acceleration: "CPU",
+    explanation: "CPU speech is available.",
+    required_disk_bytes: 5e9,
+    available_disk_bytes: 40e9,
+    supported_models: ["0.6b", "1.7b", "phonon-2", "zipformer-20m"],
+    blocker: null,
+  });
+  const runtime = {
+    managed_installed: false,
+    receipt: null,
+    overridden: false,
+    setting_up: false,
+    python_available: false,
+    size_bytes: 0,
+    torch_variant: "cpu",
+  };
+  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue(runtime);
+  let progress!: (value: import("../types").PythonSetupProgress) => void;
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    if (event === "python-runtime:setup-progress") progress = handler;
+    return () => {};
+  });
+  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
+  const install = vi.spyOn(api, "installModel").mockResolvedValue();
+  render(
+    <Onboarding
+      settings={settings}
+      modelStatus={{ ...status, installed: false, loaded: false, failure_kind: "python_missing" }}
+      onUpdateSettings={vi.fn()}
+      onComplete={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  const dependencies = await screen.findByRole("button", { name: "Download all dependencies" });
+  await waitFor(() => expect(dependencies).toBeEnabled());
+  fireEvent.click(dependencies);
+  await waitFor(() => expect(setup).toHaveBeenCalledOnce());
+  expect(install).not.toHaveBeenCalled();
+  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue({ ...runtime, managed_installed: true });
+  await act(async () => progress({ phase: "complete" }));
+  expect(await screen.findByText(/Dependencies ready/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
+  await waitFor(() => expect(install).toHaveBeenCalledOnce());
+  expect(setup).toHaveBeenCalledOnce();
+});
+
+it("does not ask a fresh install to test recording before its speech model is ready", async () => {
+  const settings = await api.getSettings();
+  const status = await api.getModelStatus();
+  render(
+    <Onboarding
+      settings={settings}
+      modelStatus={{ ...status, loaded: false, installed: false }}
+      onUpdateSettings={vi.fn()}
+      onComplete={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  expect(screen.queryByText(/Try your shortcut/)).not.toBeInTheDocument();
+  expect(screen.getByText("You can change this later in Settings.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
 });

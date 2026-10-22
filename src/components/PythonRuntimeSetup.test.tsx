@@ -127,14 +127,28 @@ it("shows the installed receipt and offers removal", async () => {
   await waitFor(() => expect(removeCall).toHaveBeenCalledOnce());
 });
 
-it("renders nothing when a working interpreter is already configured", async () => {
+it("offers dependency setup even when system Python exists without a managed receipt", async () => {
   const { settings } = await props({ python_available: true });
-  const { container } = render(
+  render(
     <PythonRuntimeSetup
       settings={{ ...settings, offline_mode: false }}
       onUpdateSettings={vi.fn()}
     />,
   );
   await waitFor(() => expect(api.getPythonRuntimeStatus).toHaveBeenCalled());
-  expect(container).toBeEmptyDOMElement();
+  expect(await screen.findByRole("button", { name: "Set up speech runtime" })).toBeInTheDocument();
+});
+
+it("offers repair when a managed environment has missing speech dependencies", async () => {
+  const { settings } = await props({ managed_installed: true, python_available: true });
+  const status = await api.getModelStatus();
+  render(
+    <PythonRuntimeSetup
+      settings={{ ...settings, offline_mode: false }}
+      modelStatus={{ ...status, failure_kind: "missing_dependency" }}
+      onUpdateSettings={vi.fn()}
+    />,
+  );
+  expect(await screen.findByRole("button", { name: "Set up speech runtime" })).toBeInTheDocument();
+  expect(screen.queryByText(/Managed speech runtime installed/)).not.toBeInTheDocument();
 });

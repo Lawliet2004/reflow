@@ -618,6 +618,7 @@ pub fn run() {
             commands::delete_custom_replacement,
             commands::get_model_status,
             asr::python_setup::get_python_runtime_status,
+            asr::setup_plan::get_speech_setup_plan,
             asr::python_setup::setup_python_runtime,
             asr::python_setup::cancel_python_runtime_setup,
             asr::python_setup::remove_python_runtime,

@@ -37,6 +37,7 @@ import {
   DownloadedModel,
   PlatformInfo,
   PythonRuntimeStatus,
+  SpeechSetupPlan,
   DesktopIntegrationStatus,
   ApiStatus,
   CalibrationStatus,
@@ -453,6 +454,8 @@ export const api = {
       size_bytes: 0,
       torch_variant: "cpu",
     }),
+  getSpeechSetupPlan: () =>
+    safeInvoke<SpeechSetupPlan | null>("get_speech_setup_plan", undefined, null),
   setupPythonRuntime: () => safeInvoke<void>("setup_python_runtime"),
   cancelPythonRuntimeSetup: () => safeInvoke<void>("cancel_python_runtime_setup"),
   removePythonRuntime: () => safeInvoke<number>("remove_python_runtime", undefined, 0),

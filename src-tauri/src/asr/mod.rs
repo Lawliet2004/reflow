@@ -11,3 +11,5 @@ pub use actor::{AsrActor, AsrCommand, AsrHandle, DEFAULT_ASR_CHANNEL_CAPACITY};
 pub use engine::{ASREngine, EngineStatus, LoadFailureKind, PartialTranscript};
 pub use mock::MockASREngine;
 pub use sidecar::Qwen3AsrSidecar;
+
+pub mod setup_plan;

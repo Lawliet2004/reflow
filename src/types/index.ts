@@ -1194,3 +1194,17 @@ export interface PythonSetupProgress {
   detail?: string;
   error?: string;
 }
+
+/** Dependency selection before any large downloads; CPU names are reported, not age-ranked. */
+export interface SpeechSetupPlan {
+  hardware: Capabilities;
+  architecture: string;
+  cpu_has_avx2: boolean | null;
+  torch_variant: string;
+  acceleration: string;
+  explanation: string;
+  required_disk_bytes: number;
+  available_disk_bytes: number | null;
+  supported_models: string[];
+  blocker: string | null;
+}

@@ -50,7 +50,6 @@ fn probe_lock() -> &'static Mutex<()> {
 /// Facts that cannot change while the process runs, probed once.
 struct StaticProbes {
     vulkan: VulkanStatus,
-    driver_cuda_version: Option<String>,
     cpu_model: String,
     physical_cores: Option<usize>,
 }
@@ -70,7 +69,6 @@ fn static_probes() -> &'static StaticProbes {
             .unwrap_or_else(|| "Unknown CPU".into());
         StaticProbes {
             vulkan: probe_vulkan(),
-            driver_cuda_version: probe_driver_cuda_version(),
             cpu_model,
             physical_cores: sys.physical_core_count(),
         }
@@ -152,8 +150,13 @@ fn probe_now() -> Capabilities {
     let statics = static_probes();
     let gpus = probe_gpus();
     let nvidia_present = gpus.iter().any(|g| g.vendor == GpuVendor::Nvidia);
+    let driver_cuda_version = if nvidia_present {
+        probe_driver_cuda_version()
+    } else {
+        None
+    };
     let driver_present =
-        statics.driver_cuda_version.is_some() || gpus.iter().any(|g| g.driver_version.is_some());
+        driver_cuda_version.is_some() || gpus.iter().any(|g| g.driver_version.is_some());
     let torch = torch_cuda();
     let (cpu_load, ram) = probe_cpu_and_ram();
 
@@ -162,7 +165,7 @@ fn probe_now() -> Capabilities {
         cuda: CudaStatus {
             nvidia_gpu_present: nvidia_present,
             driver_present,
-            driver_cuda_version: statics.driver_cuda_version.clone(),
+            driver_cuda_version,
             torch_cuda_available: torch.available,
             torch_cuda_version: torch.version,
         },

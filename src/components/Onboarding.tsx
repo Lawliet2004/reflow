@@ -7,13 +7,16 @@ import {
   IntelligenceTierState,
   MicrophoneHealth,
   ModelStatus,
+  PythonSetupProgress,
+  SpeechSetupPlan,
   isModelReady,
 } from "../types";
 import { createEventScope } from "../services/eventScope";
 import { api } from "../services/tauriApi";
 import { DesktopIntegrationPanel } from "./DesktopIntegrationPanel";
-import { PythonRuntimeSetup } from "./PythonRuntimeSetup";
+import { prepareSpeechRuntime, SPEECH_SETUP_PHASE } from "../services/speechSetup";
 import { HotkeyPicker } from "./HotkeyPicker";
+import { SpeechDependencySetup } from "./SpeechDependencySetup";
 import { RecognitionCheck } from "./RecognitionCheck";
 import { SPEECH_MODEL_GUIDANCE } from "../writingTasks";
 import logoUrl from "../assets/logo.png";
@@ -38,9 +41,16 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   onUpdateSettings: persistSettings,
   onComplete,
 }) => {
+  const ready = isModelReady(modelStatus);
   const [step, setStep] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [dependenciesBusy, setDependenciesBusy] = useState(false);
+  const [runtimePrepared, setRuntimePrepared] = useState(false);
+  const [setupPlan, setSetupPlan] = useState<SpeechSetupPlan | null>(null);
+  const [runtimeProgress, setRuntimeProgress] = useState<PythonSetupProgress | null>(null);
+  const setupController = useRef<AbortController | null>(null);
+  useEffect(() => () => setupController.current?.abort(), []);
   const [downloadsBlocked, setDownloadsBlocked] = useState(false);
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [micTesting, setMicTesting] = useState(false);
@@ -65,8 +75,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   useEffect(() => {
     stepRef.current = step;
     if (step !== 1) probeArmedRef.current = false;
-    else if (!hotkeyHeard) probeArmedRef.current = true;
-  }, [step, hotkeyHeard]);
+    else probeArmedRef.current = !hotkeyHeard && ready;
+  }, [step, hotkeyHeard, ready]);
   const onUpdateSettings = async (changes: Partial<AppSettings>) => {
     if (
       changes.asr ||
@@ -88,7 +98,11 @@ export const Onboarding: React.FC<OnboardingProps> = ({
       }
       return true;
     } catch (failure) {
-      setError(`Settings could not be saved: ${String(failure)}`);
+      setError(
+        changes.hotkey
+          ? "Couldn’t save that shortcut. Try another combination."
+          : `Settings could not be saved: ${String(failure)}`,
+      );
       return false;
     } finally {
       setSaving(false);
@@ -98,7 +112,11 @@ export const Onboarding: React.FC<OnboardingProps> = ({
 
   const installed = Boolean(modelStatus?.installed);
   const downloading = Boolean(modelStatus?.is_downloading);
-  const ready = isModelReady(modelStatus);
+  const runtimeMissing =
+    !runtimePrepared &&
+    settings.asr.runtime === "python" &&
+    (modelStatus?.failure_kind === "python_missing" ||
+      modelStatus?.failure_kind === "missing_dependency");
 
   // Hardware-based model suggestion: the resolver recommends 0.6B whenever
   // the 1.7B manifest estimates don't fit, and the card gets the badge.
@@ -213,19 +231,57 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   };
 
   const downloadModel = async () => {
+    if (setupController.current || dependenciesBusy) return;
+    const controller = new AbortController();
+    setupController.current = controller;
     setError(null);
     setInstalling(true);
+    setRuntimeProgress(null);
     try {
-      await api.installModel(settings.asr.model);
+      if (settings.asr.runtime === "python") {
+        // Refresh immediately before downloading: the check shown earlier may
+        // predate a driver change or files consuming the remaining storage.
+        const [plan, status] = await Promise.all([
+          api.getSpeechSetupPlan(),
+          api.getPythonRuntimeStatus(),
+        ]);
+        controller.signal.throwIfAborted();
+        if (plan) {
+          if (plan.blocker && (!status.managed_installed || runtimeMissing))
+            throw new Error(plan.blocker);
+          if (!plan.supported_models.includes(settings.asr.model)) {
+            throw new Error(
+              "This computer supports Zipformer speech. Choose Zipformer below to continue.",
+            );
+          }
+        }
+        await prepareSpeechRuntime(
+          controller.signal,
+          setRuntimeProgress,
+          runtimePrepared ? null : modelStatus?.failure_kind,
+        );
+        setRuntimePrepared(true);
+      }
+      controller.signal.throwIfAborted();
+      setRuntimeProgress(null);
+      if (installed) await api.reloadModel();
+      else await api.installModel(settings.asr.model);
     } catch (e) {
-      console.error("Model install failed:", e);
+      if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError"))
+        return;
       if (String(e).includes("Offline mode is on")) {
         setDownloadsBlocked(true);
       } else {
-        setError(`Could not download the speech model: ${String(e)}`);
+        setError(
+          `Could not set up dictation: ${e instanceof Error ? e.message : String(e)}. You can retry setup below.`,
+        );
       }
     } finally {
-      setInstalling(false);
+      if (!controller.signal.aborted) {
+        setInstalling(false);
+        setRuntimeProgress(null);
+      }
+      setupController.current = null;
     }
   };
 
@@ -262,7 +318,11 @@ export const Onboarding: React.FC<OnboardingProps> = ({
     }
   };
 
-  const canContinue = !saving && (step < 2 || (ready && testedConfiguration === configuration));
+  const canContinue =
+    !saving &&
+    !dependenciesBusy &&
+    !installing &&
+    (step < 2 || (ready && testedConfiguration === configuration));
 
   const nativeRuntime = settings.asr.runtime === "native";
   const speechModels = [
@@ -304,7 +364,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
       )}
       <fieldset disabled={saving} className="min-w-0" aria-busy={saving}>
         {error && (
-          <p role="alert" className="text-sm text-danger mb-4">
+          <p role="alert" className="text-sm text-danger mb-4 break-words whitespace-pre-line">
             {error}
           </p>
         )}
@@ -479,16 +539,17 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 </div>
               )}
             />
-            <div className="rounded-xl border border-line bg-base-2 px-4 py-3">
+            <div aria-live="polite">
               {hotkeyHeard ? (
                 <p className="text-sm text-success font-medium flex items-center gap-1.5">
                   <Check className="w-4 h-4" aria-hidden />
-                  Shortcut detected — Reflow heard the press and cancelled the probe.
+                  Shortcut works. You’re ready to continue.
                 </p>
               ) : (
                 <p className="text-xs text-muted">
-                  Press your shortcut anywhere (try it in another app) — Reflow will confirm it
-                  heard you here. On Wayland the desktop may still be completing the shortcut setup.
+                  {ready
+                    ? "Try your shortcut now. We’ll confirm it works here."
+                    : "You can change this later in Settings."}
                 </p>
               )}
             </div>
@@ -502,21 +563,29 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 <Download className="w-4 h-4" />
               </div>
               <div>
-                <h2 className="text-base font-semibold text-ink">Download the speech model</h2>
+                <h2 className="text-base font-semibold text-ink">Set up dictation</h2>
                 <p className="text-xs text-muted">
-                  Reflow transcribes on this computer. The model is required before you can dictate.
+                  One setup installs the selected speech model and its runtime on this computer.
                 </p>
               </div>
             </div>
 
             {settings.asr.runtime === "python" && (
-              <PythonRuntimeSetup
+              <SpeechDependencySetup
                 settings={settings}
-                modelStatus={modelStatus}
+                failureKind={modelStatus?.failure_kind}
+                disabled={installing || downloading || Boolean(modelStatus?.is_loading)}
                 onUpdateSettings={onUpdateSettings}
+                onBusyChange={setDependenciesBusy}
+                onPlan={setSetupPlan}
+                onReady={() => setRuntimePrepared(true)}
               />
             )}
-
+            <h3 className="text-sm font-semibold text-ink">Choose a speech model</h3>
+            <p className="text-xs text-muted">
+              After dependencies are ready, download the model you want. The button below can also
+              complete both steps together.
+            </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {speechModels.map((m) => {
                 const active = settings.asr.model === m.id;
@@ -524,7 +593,14 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                   <button
                     key={m.id}
                     aria-pressed={active}
-                    disabled={installing || downloading || Boolean(modelStatus?.is_loading)}
+                    disabled={
+                      installing ||
+                      dependenciesBusy ||
+                      downloading ||
+                      Boolean(modelStatus?.is_loading) ||
+                      (settings.asr.runtime === "python" &&
+                        Boolean(setupPlan && !setupPlan.supported_models.includes(m.id)))
+                    }
                     onClick={() => {
                       userPickedModelRef.current = true;
                       onUpdateSettings({
@@ -560,9 +636,37 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               })}
             </div>
 
-            <p className="text-xs text-muted leading-relaxed">{SPEECH_MODEL_GUIDANCE}</p>
-
-            {installed || ready ? (
+            {settings.asr.runtime === "python" && !ready && (
+              <p className="text-xs text-muted leading-relaxed">
+                Setup automatically reuses installed dependencies. Model downloads are separate and
+                stay on this computer.
+              </p>
+            )}
+            {installing && runtimeProgress ? (
+              <div role="status" className="space-y-2">
+                <p className="text-sm text-accent flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden />
+                  {SPEECH_SETUP_PHASE[runtimeProgress.phase]}
+                  {typeof runtimeProgress.progress_pct === "number"
+                    ? ` · ${runtimeProgress.progress_pct}%`
+                    : "…"}
+                </p>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    api.cancelPythonRuntimeSetup().catch((failure) => {
+                      setError(`Could not cancel setup: ${String(failure)}`);
+                    });
+                  }}
+                >
+                  Cancel setup
+                </button>
+                {runtimeProgress.detail?.startsWith("Downloading a speech package:") && (
+                  <p className="text-xs text-muted tabular-nums">{runtimeProgress.detail}</p>
+                )}
+              </div>
+            ) : ready ||
+              (installed && !(runtimeMissing && (settings.offline_mode || downloadsBlocked))) ? (
               <div className="flex items-center gap-2 text-sm text-success font-medium">
                 <Check className="w-4 h-4" />
                 {ready ? "Speech model ready" : "Model installed — loading required"}
@@ -585,23 +689,24 @@ export const Onboarding: React.FC<OnboardingProps> = ({
             ) : settings.offline_mode || downloadsBlocked ? (
               <div className="rounded-xl border border-line bg-base-2 p-4 space-y-3">
                 <p className="text-sm font-medium text-ink-2">
-                  Reflow needs internet once to download the speech model.
+                  Reflow needs internet once to set up dictation.
                 </p>
                 <p className="text-xs text-muted leading-relaxed">
-                  Downloads only reach the pinned Hugging Face hosts. Transcription stays on this
-                  computer, and you can turn Airplane mode back on afterwards.
+                  This downloads the speech runtime and selected model from their configured
+                  sources. Transcription stays on this computer. You can turn Airplane mode back on
+                  afterwards.
                 </p>
                 <button
                   className="btn btn-primary w-full"
                   onClick={allowDownloads}
-                  disabled={installing || saving}
+                  disabled={installing || dependenciesBusy || saving}
                 >
                   {installing ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
                     <Download className="w-4 h-4" />
                   )}
-                  {installing ? "Starting download…" : "Allow downloads"}
+                  {installing ? "Setting up…" : "Allow downloads and set up"}
                 </button>
                 <div className="space-y-1.5">
                   <p className="text-2xs text-muted">
@@ -629,36 +734,47 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               <button
                 className="btn btn-primary w-full"
                 onClick={downloadModel}
-                disabled={installing}
+                disabled={installing || dependenciesBusy}
               >
                 {installing ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <Download className="w-4 h-4" />
                 )}
-                {installing ? "Starting download…" : "Download model"}
+                {installing ? "Setting up…" : error ? "Retry setup" : "Download and set up"}
               </button>
             )}
-            {!installing && !downloading && !ready && modelStatus?.error && (
+            {!installing && !downloading && !ready && !error && modelStatus?.error && (
               <p role="alert" className="text-sm text-danger">
-                Speech model error: {modelStatus.error}
+                {runtimeMissing
+                  ? "The speech runtime needs setup. Use the setup button to install its dependencies automatically."
+                  : `Speech model error: ${modelStatus.error}`}
               </p>
             )}
-            {installed && !ready && !modelStatus?.is_loading && (
-              <button
-                className="btn btn-secondary"
-                onClick={async () => {
-                  setError(null);
-                  try {
-                    await api.reloadModel();
-                  } catch (failure) {
-                    setError(`Could not load the speech model: ${String(failure)}`);
-                  }
-                }}
-              >
-                Load speech model
-              </button>
-            )}
+            {installed &&
+              !ready &&
+              !installing &&
+              !(runtimeMissing && (settings.offline_mode || downloadsBlocked)) &&
+              !modelStatus?.is_loading && (
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    if (settings.offline_mode && !runtimeMissing) {
+                      api.reloadModel().catch((failure) => {
+                        setError(`Could not load the speech model: ${String(failure)}`);
+                      });
+                    } else {
+                      void downloadModel();
+                    }
+                  }}
+                >
+                  Set up and load speech model
+                </button>
+              )}
+            <details className="text-xs text-muted">
+              <summary className="cursor-pointer">Help choosing a speech model</summary>
+              <p className="mt-2 leading-relaxed">{SPEECH_MODEL_GUIDANCE}</p>
+            </details>
             {ready && (
               <RecognitionCheck
                 key={configuration}
@@ -708,13 +824,17 @@ export const Onboarding: React.FC<OnboardingProps> = ({
           <div className="flex items-center gap-2">
             <button
               className="btn btn-ghost"
-              disabled={step === 0}
+              disabled={step === 0 || installing || dependenciesBusy}
               onClick={() => setStep((s) => Math.max(0, s - 1))}
             >
               Back
             </button>
             {step === STEPS.length - 1 && (
-              <button className="btn btn-ghost" onClick={onComplete}>
+              <button
+                className="btn btn-ghost"
+                disabled={installing || dependenciesBusy}
+                onClick={onComplete}
+              >
                 Set up later
               </button>
             )}

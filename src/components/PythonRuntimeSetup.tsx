@@ -95,7 +95,7 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
     !status.overridden &&
     (failureKind === "python_missing" ||
       failureKind === "missing_dependency" ||
-      (!status.managed_installed && !status.python_available));
+      !status.managed_installed);
   const inFlight = status.setting_up || (progress != null && IN_FLIGHT.has(progress.phase));
   const failed = progress?.phase === "error";
 
@@ -109,7 +109,7 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
   };
 
   const allowDownloads = async () => {
-    if (await onUpdateSettings({ offline_mode: false })) void startSetup();
+    if ((await onUpdateSettings({ offline_mode: false })) !== false) void startSetup();
   };
 
   const removeRuntime = async () => {
@@ -189,7 +189,7 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
     );
   }
 
-  if (status.managed_installed) {
+  if (status.managed_installed && !needsSetup) {
     return (
       <div className="rounded-xl border border-line bg-base-2 px-3 py-2.5 space-y-2">
         <p className="text-xs text-muted leading-snug">
@@ -238,7 +238,7 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
       <p className="text-xs text-muted leading-snug">
         {status.torch_variant === "none"
           ? "Downloads Python and the Zipformer speech packages (under 1 GB) into Reflow's folder. One time. Qwen and Phonon models need Apple Silicon on macOS — Zipformer 20M works on this Mac."
-          : "Downloads Python and the speech packages (about 2 GB, about 7 GB with an NVIDIA GPU) into Reflow's folder. One time."}
+          : "Downloads Python and the speech packages (allow 5.5 GB free storage, or 15.4 GB with compatible NVIDIA acceleration) into Reflow's folder. One time."}
       </p>
       <button type="button" className="btn btn-primary" onClick={startSetup}>
         <Download className="w-4 h-4" />

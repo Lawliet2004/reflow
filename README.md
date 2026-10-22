@@ -135,7 +135,15 @@ reflow/
 
 ### ASR runtime setup
 
-Python is the default and remains the fallback option. For development, create a virtual environment in the checkout and install the pinned requirements there. On Debian/Ubuntu, install `python3-venv` with apt first if the venv command is unavailable; system Python is managed by the operating system.
+For a new installation, open the app and follow **Microphone → Hotkey → Speech model**. The speech step checks the operating system, processor, memory, graphics and free storage. Click **Download all dependencies** to install Python, an isolated environment and speech libraries. Then choose and download a speech model. **Download and set up** also runs both steps together. Neither path needs a terminal or system Python.
+
+Compatible NVIDIA GPUs get matching CUDA libraries automatically: CUDA 13 for Turing or newer with a supporting driver, or CUDA 12.6 for supported older cards/drivers. Setup runs a GPU operation to verify acceleration. If compatibility cannot be established, it chooses CPU packages and explains why. AMD graphics are detected, but automatic AMD acceleration is not yet supported by the Python speech runtime; CPU dictation remains available. Intel Macs are offered Zipformer. Processor names and instruction support are reported directly rather than guessing a processor's age or promising performance.
+
+Allow roughly **5.5 GB** free storage for CPU dependencies or **15.4 GB** for NVIDIA dependencies, including download cache and temporary files; models need additional space. Setup shows its stage, supports cancellation and retry, upgrades its private package installer for resumable downloads, and reuses completed cached downloads. Airplane mode requires enabling downloads first. Your selected custom interpreter is preserved; clear it in Model settings to use the managed environment.
+
+Python is the default and remains the fallback option. On first launch, choose a speech model and click **Download and set up** (or **Allow downloads and set up** in Airplane mode). Reflow downloads a managed Python interpreter and speech packages, then downloads the selected model automatically. Progress and cancellation are available during runtime installation; a failed setup can be retried. The environment persists across app launches. This works for both development launches and packaged installations.
+
+For development, you can alternatively create a virtual environment in the checkout and install the pinned requirements there. On Debian/Ubuntu, install `python3-venv` with apt first if the venv command is unavailable; system Python is managed by the operating system.
 
 ```bash
 python3 -m venv .venv
@@ -175,7 +183,9 @@ Check [GitHub Releases](https://github.com/Lawliet2004/reflow/releases) for avai
 
 macOS installers are gated until native dictation, shortcuts and startup behavior have been verified. Windows installers are currently unsigned and may show an unverified-publisher warning.
 
-Installers include the Python runtime script, language metadata and pinned requirements file. The Python interpreter, its packages, speech models and experimental native runtime are installed separately; packaging does not make those dependencies available automatically.
+Installers include the compiled application, speech scripts, language metadata and pinned requirements file. Users do not need Node.js, npm or Rust. On first launch, **Download and set up** installs the managed Python speech runtime and selected model through the GUI; internet and several GB of disk space are needed once. Python and model weights are downloaded during setup rather than bundled in the installer. The experimental native runtime is a separate download.
+
+Cloning the source is a development workflow: Node.js, Rust and the platform build prerequisites are needed before the application can open. Run `npm install` and `npm run tauri dev`, then use the same GUI setup; manual `pip install` is optional.
 
 ```bash
 # 1. Install frontend dependencies
@@ -188,7 +198,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ### First run
 
-The first launch downloads nothing automatically. Set up Python as above, or select the experimental native runtime, then open **Settings → Model → Download model**. Files are stored in `%APPDATA%\reflow\models` on Windows. With Keep loaded enabled, an installed model loads at startup on the selected available backend. To regenerate the app icon set: `python scripts/generate_icons.py`. To verify the Python ASR pipeline headlessly: `python scripts/test_sidecar.py path/to/speech.wav` (expects an existing recording).
+The first launch downloads nothing until you choose **Download and set up** in onboarding. That button installs an isolated Python environment, speech dependencies, and the selected model; no system Python, terminal commands, or manual environment activation are needed. If setup is interrupted, use **Retry setup**. Advanced users can select an existing Python environment or the experimental native runtime in Settings. Files are stored in `%APPDATA%\reflow\models` on Windows. With Keep loaded enabled, an installed model loads at startup on the selected available backend. To regenerate the app icon set: `python scripts/generate_icons.py`. To verify the Python ASR pipeline headlessly: `python scripts/test_sidecar.py path/to/speech.wav` (expects an existing recording).
 
 ### Linux packages (Debian/Ubuntu)
 
