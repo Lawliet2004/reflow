@@ -5,3 +5,5 @@
 /model-runtime/managed_pip.py text eol=lf
 /model-runtime/licenses/*.LICENSE text eol=lf
 /model-runtime/licenses/*.json text eol=lf
+# Keep the embedded model prompt byte-identical on Windows and Unix.
+/src-tauri/src/rewrite/cleanup_prompt.txt text eol=lf
