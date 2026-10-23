@@ -78,6 +78,9 @@ fn accept(listener: &TcpListener) -> TcpStream {
     let mut connection = None;
     wait_until(|| match listener.accept() {
         Ok((stream, _)) => {
+            // Windows can inherit the listener's nonblocking mode. The fixture
+            // reads below use explicit timeouts on a blocking connection.
+            stream.set_nonblocking(false).unwrap();
             connection = Some(stream);
             true
         }
@@ -98,10 +101,13 @@ fn failed_policy_save_interrupts_a_busy_actor_and_closes_its_owned_connection() 
     handle.initialize_blocking().unwrap();
     let mut connection = accept(&listener);
     connection
-        .set_read_timeout(Some(Duration::from_millis(100)))
+        .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
     let mut byte = [0; 1];
     connection.read_exact(&mut byte).unwrap();
+    connection
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
     let session = handle.next_session_id();
     handle.start_stream_blocking(session, "en", &[]).unwrap();
     let stopping = handle.clone();
