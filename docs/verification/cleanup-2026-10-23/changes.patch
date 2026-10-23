@@ -1,0 +1,593 @@
+--- a/scripts/eval_cleanup.cjs
++++ b/scripts/eval_cleanup.cjs
+@@ -9,33 +9,40 @@
+ //   REFLOW_EVAL_MODEL=qwen3.5-2b REFLOW_EVAL_BACKEND=vulkan node scripts/eval_cleanup.cjs
+ //
+ // Exit code is 1 when the pass rate is below REFLOW_EVAL_MIN_PASS (default 1.0).
+-const { spawnSync } = require('node:child_process');
+-const path = require('node:path');
++const { spawnSync } = require("node:child_process");
++const path = require("node:path");
+ 
+-const manifest = path.join(__dirname, '..', 'src-tauri', 'Cargo.toml');
++const manifest = path.join(__dirname, "..", "src-tauri", "Cargo.toml");
+ const result = spawnSync(
+-  'cargo',
++  "cargo",
+   [
+-    'test',
+-    '--manifest-path',
++    "test",
++    "--manifest-path",
+     manifest,
+-    '--offline',
+-    '--test',
+-    'cleanup_eval_live',
+-    '--',
+-    '--ignored',
+-    '--nocapture',
+-    '--test-threads=1',
++    "--offline",
++    "--test",
++    "cleanup_eval_live",
++    "--",
++    "--ignored",
++    "--nocapture",
++    "--test-threads=1",
+   ],
+-  { encoding: 'utf8', env: process.env, maxBuffer: 64 * 1024 * 1024 },
++  { encoding: "utf8", env: process.env, maxBuffer: 64 * 1024 * 1024 },
+ );
+-const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+-const start = output.indexOf('\n[');
++const output = `${result.stdout || ""}\n${result.stderr || ""}`;
++const start = output.indexOf("\n[");
+ console.log(start >= 0 ? output.slice(start) : output);
+ 
+-const summary = output.match(/EVAL_SUMMARY passed=(\d+) total=(\d+) rewrite_ms_median=(\d+) rewrite_ms_mean=(\d+)/);
++if (result.error || result.status !== 0) {
++  console.error(result.error?.message || `Eval process exited with status ${result.status}.`);
++  process.exit(2);
++}
++
++const summary = output.match(
++  /EVAL_SUMMARY passed=(\d+) total=(\d+) rewrite_ms_median=(\d+) rewrite_ms_mean=(\d+)/,
++);
+ if (!summary) {
+-  console.error('The eval did not finish (model or runtime missing?). See output above.');
++  console.error("The eval did not finish (model or runtime missing?). See output above.");
+   process.exit(2);
+ }
+ const [, passed, total, median, mean] = summary.map(Number);
+@@ -43,5 +50,5 @@
+ console.log(
+   `\nPass rate ${passed}/${total} (${(rate * 100).toFixed(0)}%). Cleanup stage median ${median} ms, mean ${mean} ms.`,
+ );
+-const minimum = Number(process.env.REFLOW_EVAL_MIN_PASS ?? '1');
++const minimum = Number(process.env.REFLOW_EVAL_MIN_PASS ?? "1");
+ process.exit(rate >= minimum ? 0 : 1);
+--- a/src/components/LatencyWaterfall.test.tsx
++++ b/src/components/LatencyWaterfall.test.tsx
+@@ -180,3 +180,12 @@
+     `);
+   });
+ });
++
++it("shows a cleanup fallback reason without requiring it on older metrics", () => {
++  render(
++    <LatencyWaterfall
++      metrics={{ ...populatedMetrics(), rewrite_fallback_reason: "negation_dropped" }}
++    />,
++  );
++  expect(screen.getByText("negation_dropped")).toBeInTheDocument();
++});
+--- a/src/components/LatencyWaterfall.tsx
++++ b/src/components/LatencyWaterfall.tsx
+@@ -94,6 +94,11 @@
+           {metrics.dropped_audio_chunks ?? 0} · Failed transfers: {metrics.failed_audio_pushes ?? 0}{" "}
+           · Writing runtime:{" "}
+           {metrics.rewrite_ms ? (metrics.llm_was_warm ? "warm" : "cold start") : "not used"}
++        </p>
++      )}
++      {metrics.rewrite_fallback_reason && (
++        <p className="text-muted mb-3">
++          Cleanup fallback: <code>{metrics.rewrite_fallback_reason}</code>
+         </p>
+       )}
+       {metrics.llm_generation && (
+--- a/src/components/settings/DiagnosticsWaterfall.test.tsx
++++ b/src/components/settings/DiagnosticsWaterfall.test.tsx
+@@ -17,6 +17,7 @@
+         formatting_ms: 5,
+         rewrite_ms: 180,
+         rewrite_applied: true,
++        rewrite_fallback_reason: "word_ratio",
+         release_to_inserted_ms: 320,
+         total_duration_ms: 1500,
+         audio_duration_ms: 1200,
+@@ -81,6 +82,7 @@
+     expect(await screen.findByText("Live Latency & Diagnostics")).toBeInTheDocument();
+     expect(await screen.findByText(/Last Dictation Timeline/)).toBeInTheDocument();
+ 
++    expect(await screen.findByText("word_ratio")).toBeInTheDocument();
+     const resetBtn = screen.getByText("Reset History");
+     fireEvent.click(resetBtn);
+   });
+--- a/src/components/settings/DiagnosticsWaterfall.tsx
++++ b/src/components/settings/DiagnosticsWaterfall.tsx
+@@ -115,6 +115,12 @@
+           </Badge>
+         </div>
+ 
++        {last?.rewrite_fallback_reason && (
++          <p className="text-xs text-muted">
++            Cleanup fallback: <code>{last.rewrite_fallback_reason}</code>
++          </p>
++        )}
++
+         {/* Phase Bar */}
+         <div className="h-4 w-full bg-base-2 rounded-full overflow-hidden flex">
+           {phases.map(
+--- a/src/types/index.ts
++++ b/src/types/index.ts
+@@ -451,10 +451,12 @@
+   llm_startup_ms: number;
+   /** Deterministic Stage 1 only. */
+   formatting_ms: number;
+-  /** Stage 2 LLM only; 0 when no rewrite was dispatched. */
++  /** Stage 2 cleanup, including chunking and validation; 0 when skipped. */
+   rewrite_ms: number;
+   /** Whether the injected text actually came from the LLM. */
+   rewrite_applied: boolean;
++  /** Reason code only; absent on older diagnostics and successful cleanup. */
++  rewrite_fallback_reason?: string | null;
+   /** The headline number: key release to text in the target app. */
+   release_to_inserted_ms: number;
+   total_duration_ms: number;
+--- a/src-tauri/src/formatting/backtrack.rs
++++ b/src-tauri/src/formatting/backtrack.rs
+@@ -156,7 +156,18 @@
+                 .trim_matches(|ch: char| !ch.is_alphanumeric());
+             if !matches!(
+                 anchor.to_ascii_lowercase().as_str(),
+-                "i" | "we" | "you" | "he" | "she" | "they"
++                "i" | "we"
++                    | "you"
++                    | "he"
++                    | "she"
++                    | "they"
++                    | "send"
++                    | "give"
++                    | "bring"
++                    | "call"
++                    | "email"
++                    | "book"
++                    | "take"
+             ) {
+                 continue;
+             }
+@@ -681,3 +692,32 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod imperative_restart_tests {
++    use super::apply_backtrack;
++
++    #[test]
++    fn a_restarted_command_keeps_only_the_final_recipient() {
++        assert_eq!(
++            apply_backtrack("send it to Rahul no wait send it to Priya before five thirty pm"),
++            "send it to Priya before five thirty pm"
++        );
++        assert_eq!(
++            apply_backtrack("bring the red folder no sorry bring the blue folder"),
++            "bring the blue folder"
++        );
++    }
++
++    #[test]
++    fn an_ordinary_wait_request_does_not_discard_a_command() {
++        assert_eq!(
++            apply_backtrack("send it today no wait for me"),
++            "send it today no wait for me"
++        );
++        assert_eq!(
++            apply_backtrack("actually I think we should wait"),
++            "actually I think we should wait"
++        );
++    }
++}
+--- a/src-tauri/src/rewrite/chunker.rs
++++ b/src-tauri/src/rewrite/chunker.rs
+@@ -66,6 +66,22 @@
+     }
+ }
+ 
++/// Explicit discourse transitions give unpunctuated ASR text a safe topic
++/// boundary without guessing where an ordinary clause ends.
++fn topic_boundaries(text: &str) -> Vec<usize> {
++    static TRANSITIONS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
++    let transitions = TRANSITIONS.get_or_init(|| {
++        regex::Regex::new(r"(?i)\b(?:(?:okay\s+)?switching\s+topics|moving\s+on\s+to|on\s+another\s+topic|next\s+topic|last\s+thing)\b")
++            .expect("fixed topic transitions")
++    });
++    transitions
++        .find_iter(text)
++        .filter(|found| !crate::formatting::literals::overlaps_literal(text, found.range()))
++        .map(|found| found.start())
++        .filter(|start| *start > 0 && text[..*start].ends_with(char::is_whitespace))
++        .collect()
++}
++
+ /// Trimmed byte ranges of each sentence or line.
+ fn sentences(text: &str) -> Vec<(usize, usize)> {
+     let mut ranges = Vec::new();
+@@ -77,13 +93,24 @@
+             ranges.push((start + lead, start + lead + trimmed.len()));
+         }
+     };
++    let topics = topic_boundaries(text);
+     let mut start = 0;
+     for (index, ch) in text.char_indices() {
+         let end = index + ch.len_utf8();
++        if topics.contains(&index) {
++            push(start, index);
++            start = index;
++        }
+         if ch == '\n' {
+             push(start, index);
+             start = end;
+         } else if is_sentence_boundary(text, index, ch) {
++            // A numbered marker belongs to its item, rather than forming a
++            // sentence of its own (which could detach the final item).
++            let prefix = text[start..index].trim();
++            if ch == '.' && !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit()) {
++                continue;
++            }
+             push(start, end);
+             start = end;
+         }
+@@ -99,7 +126,19 @@
+         .map(str::to_lowercase)
+         .collect();
+     let mut found = Vec::new();
+-    let mut bullet = false;
++    let line = sentence.trim_start();
++    let mut bullet = ["- ", "* ", "• "]
++        .iter()
++        .any(|marker| line.starts_with(marker));
++    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
++    if digits > 0 && matches!(line.as_bytes().get(digits), Some(b'.' | b')')) {
++        found.push(format!("item {}", &line[..digits]));
++    } else if words
++        .first()
++        .is_some_and(|word| NUMBER_WORDS.contains(&word.as_str()))
++    {
++        found.push(format!("item {}", words[0]));
++    }
+     for (i, word) in words.iter().enumerate() {
+         if ORDINALS.contains(&word.as_str()) {
+             found.push(word.clone());
+@@ -169,6 +208,7 @@
+         }];
+     }
+ 
++    let topics = topic_boundaries(text);
+     let sentence_ranges = sentences(text);
+     // Merge each spoken list into one atom so no boundary falls inside it.
+     let regions = list_regions(text, &sentence_ranges);
+@@ -217,7 +257,7 @@
+             let soft = parts_left > 1
+                 && (closer(words, atom_words, left_words.div_ceil(parts_left))
+                     || closer(tokens, atom_tokens, left_tokens.div_ceil(parts_left)));
+-            if hard || soft {
++            if hard || soft || topics.contains(&start) {
+                 groups.push((current_start, current_end));
+                 current_start = start;
+                 left_words = left_words.saturating_sub(words);
+@@ -236,7 +276,13 @@
+     let mut chunks = Vec::with_capacity(groups.len());
+     let mut previous_end = None;
+     for (start, end) in groups {
+-        let separator_before = previous_end.map_or("", |prev| gap_separator(&text[prev..start]));
++        let separator_before = previous_end.map_or("", |prev| {
++            if topics.contains(&start) {
++                "\n\n"
++            } else {
++                gap_separator(&text[prev..start])
++            }
++        });
+         chunks.push(Chunk {
+             text: text[start..end].to_owned(),
+             separator_before,
+@@ -266,6 +312,36 @@
+             out.push_str(&chunk.text);
+             out
+         })
++    }
++
++    #[test]
++    fn deterministic_list_markers_stay_together_across_chunk_limits() {
++        for list in [
++            "1. Call the bank.\n2. Email the landlord.\n3. Book the tickets.",
++            "- Call the bank.\n- Email the landlord.\n- Book the tickets.",
++            "one call the bank. two email the landlord. three book the tickets.",
++        ] {
++            let chunks = split(list, 5, 2000);
++            assert_eq!(chunks.len(), 1, "{list}");
++            assert_eq!(chunks[0].text, list);
++        }
++    }
++
++    #[test]
++    fn explicit_topic_changes_split_long_unpunctuated_dictation() {
++        let topic = "we need to review the project status today ".repeat(15);
++        let text = format!("{topic}okay switching topics {topic}last thing {topic}");
++        let chunks = split(&text, MAX_CHUNK_WORDS, 2000);
++        assert_eq!(chunks.len(), 3);
++        assert!(chunks
++            .iter()
++            .all(|chunk| word_count(&chunk.text) <= MAX_CHUNK_WORDS));
++        assert_eq!(chunks[1].separator_before, "\n\n");
++        assert_eq!(chunks[2].separator_before, "\n\n");
++        assert_eq!(
++            rejoin(&chunks).split_whitespace().collect::<Vec<_>>(),
++            text.split_whitespace().collect::<Vec<_>>()
++        );
+     }
+ 
+     #[test]
+--- a/src-tauri/src/rewrite/validate.rs
++++ b/src-tauri/src/rewrite/validate.rs
+@@ -20,10 +20,6 @@
+ /// leading characters and differs by at most `STEM_SLACK_CHARS` (walk/walks).
+ pub const STEM_MIN_PREFIX_CHARS: usize = 3;
+ pub const STEM_SLACK_CHARS: usize = 2;
+-/// Reject a translation when the output keeps less than this fraction of the
+-/// input's dominant-script share. Near-ties between scripts in code-switched
+-/// text therefore do not flip the verdict.
+-pub const SCRIPT_RETENTION_FLOOR: f32 = 0.5;
+ /// A loop is an n-gram repeated back to back at least this many times.
+ pub const LOOP_NGRAM_WORDS: usize = 4;
+ pub const LOOP_MIN_REPEATS: usize = 3;
+@@ -133,19 +129,22 @@
+     words(text).iter().filter(|word| is_negation(word)).count()
+ }
+ 
+-fn has_consecutive_repeat(words: &[String], gram: usize, times: usize) -> bool {
+-    let span = gram * times;
+-    if gram == 0 || words.len() < span {
+-        return false;
+-    }
+-    (0..=words.len() - span).any(|start| {
+-        let first = &words[start..start + gram];
+-        (1..times).all(|k| &words[start + k * gram..start + (k + 1) * gram] == first)
++fn has_novel_loop(input: &[String], output: &[String]) -> bool {
++    let span = LOOP_NGRAM_WORDS * LOOP_MIN_REPEATS;
++    output.windows(span).any(|window| {
++        let first = &window[..LOOP_NGRAM_WORDS];
++        (1..LOOP_MIN_REPEATS).all(|repeat| {
++            let start = repeat * LOOP_NGRAM_WORDS;
++            &window[start..start + LOOP_NGRAM_WORDS] == first
++        }) && !input.windows(span).any(|spoken| spoken == window)
+     })
+ }
+ 
+ fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
+-    text.trim_start().to_lowercase().starts_with(prefix)
++    text.trim_start()
++        .to_lowercase()
++        .strip_prefix(prefix)
++        .is_some_and(|rest| rest.is_empty() || rest.starts_with(|ch: char| !ch.is_alphanumeric()))
+ }
+ 
+ /// Strip preambles, wrapping quotes and stray transcript tags.
+@@ -170,6 +169,18 @@
+             }
+         }
+     }
++    // Short acknowledgements may precede the cleaned text on the same line.
++    for acknowledgement in ["sure", "certainly", "of course"] {
++        if starts_with_ignore_case(&text, acknowledgement)
++            && !starts_with_ignore_case(input, acknowledgement)
++        {
++            text = text[acknowledgement.len()..]
++                .trim_start_matches(|ch: char| {
++                    ch.is_whitespace() || matches!(ch, ',' | ':' | '!' | '.')
++                })
++                .to_owned();
++        }
++    }
+     for (open, close) in [('"', '"'), ('“', '”'), ('\'', '\''), ('«', '»')] {
+         let Some(inner) = text
+             .strip_prefix(open)
+@@ -212,7 +223,9 @@
+             .take_while(|(a, b)| **a == *b)
+             .count();
+         let shorter = word_chars.len().min(known.chars().count());
+-        shared >= STEM_MIN_PREFIX_CHARS && shared + STEM_SLACK_CHARS >= shorter
++        shared >= STEM_MIN_PREFIX_CHARS
++            && shared == shorter
++            && word_chars.len().abs_diff(known.chars().count()) <= STEM_SLACK_CHARS
+     })
+ }
+ 
+@@ -263,9 +276,7 @@
+     let input_scripts = ScriptCounts::of(input);
+     let output_scripts = ScriptCounts::of(&output);
+     if let (Some(from), Some(to)) = (input_scripts.dominant(), output_scripts.dominant()) {
+-        if from != to
+-            && output_scripts.share(from) < input_scripts.share(from) * SCRIPT_RETENTION_FLOOR
+-        {
++        if from != to {
+             return Err(Rejection::Translation);
+         }
+     }
+@@ -274,9 +285,7 @@
+         return Err(Rejection::NegationDropped);
+     }
+ 
+-    if has_consecutive_repeat(&output_words, LOOP_NGRAM_WORDS, LOOP_MIN_REPEATS)
+-        && !has_consecutive_repeat(&input_words, LOOP_NGRAM_WORDS, LOOP_MIN_REPEATS)
+-    {
++    if has_novel_loop(&input_words, &output_words) {
+         return Err(Rejection::Loop);
+     }
+ 
+@@ -465,6 +474,42 @@
+         assert!(validate("- milk\n- eggs\n- bread", "- Milk\n- Eggs\n- Bread").is_ok());
+     }
+ 
++    #[test]
++    fn a_different_spoken_loop_does_not_authorize_a_new_loop() {
++        let input = "send the report today ".repeat(3) + "bring the coffee tomorrow";
++        let output = "bring the coffee tomorrow ".repeat(3);
++        assert!(has_novel_loop(&words(&input), &words(&output)));
++        assert_eq!(validate(&input, &output), Err(Rejection::Loop));
++    }
++
++    #[test]
++    fn acknowledgements_are_stripped_without_removing_spoken_words() {
++        assert_eq!(
++            clean_output("Sure, Send the report.", "send the report"),
++            "Send the report."
++        );
++        assert_eq!(
++            clean_output("Surely we can go.", "we can go"),
++            "Surely we can go."
++        );
++        assert_eq!(
++            clean_output("Sure, I can go.", "sure i can go"),
++            "Sure, I can go."
++        );
++    }
++
++    #[test]
++    fn shared_prefixes_do_not_authorize_unspoken_content() {
++        assert!(!present_in("deployment", &words("department")));
++        assert!(!present_in("coffee", &words("coffin")));
++        assert!(present_in("reports", &words("report")));
++    }
++
++    #[test]
++    fn a_dominant_script_change_is_rejected_even_when_both_scripts_remain() {
++        assert_eq!(validate("API कल", "API कल कल"), Err(Rejection::Translation));
++    }
++
+     /// Validation runs on the dictation hot path after the model answers.
+     #[test]
+     fn validating_a_full_chunk_costs_milliseconds() {
+@@ -497,6 +542,6 @@
+             "Please send the report. Please send the report. Please send the report."
+         )
+         .is_ok());
+-        assert!(!has_consecutive_repeat(&words("a b c d a b c d"), 4, 3));
+-    }
+-}
++        assert!(!has_novel_loop(&[], &words("a b c d a b c d")));
++    }
++}
+--- a/src-tauri/src/session.rs
++++ b/src-tauri/src/session.rs
+@@ -257,17 +257,11 @@
+     // `intent.run_llm` is the single authority. Deriving this from
+     // `cleanup_level` is what made the default install advertise the
+     // smart_flow tier while never running Stage 2.
+-    let wants_flow = (intent.run_llm
+-        || mode
+-            .is_some_and(|m| !m.custom_instructions.trim().is_empty() || m.translate_to.is_some()))
+-        && level != CleanupLevel::Raw
+-        && !smart.is_empty();
++    let wants_flow = intent.run_llm && level != CleanupLevel::Raw && !smart.is_empty();
+     let formatting_requested = settings.transcript_format != "off";
+     let formatting_block_reason = if formatting_requested
+         && level != CleanupLevel::Raw
+         && !intent.run_llm
+-        && !mode
+-            .is_some_and(|m| !m.custom_instructions.trim().is_empty() || m.translate_to.is_some())
+     {
+         Some("Intelligent formatting needs an enabled local refinement model. Select Qwen3.5 0.8B or Qwen3.5 2B; Reflow will keep your current selection unchanged.".to_owned())
+     } else if formatting_requested && level == CleanupLevel::Raw {
+@@ -1282,13 +1276,9 @@
+     };
+     ctx.bus.emit(DoryEvent::Stage(Stage::Format));
+     let cleanup_level = intent.cleanup_level.clone();
+-    let task_requested = session_intent == crate::dory::SessionIntent::Assistant
+-        || command_input.is_some()
+-        || !mode.custom_instructions.trim().is_empty()
+-        || mode.translate_to.is_some();
+     let wants_flow = (session_intent == crate::dory::SessionIntent::Assistant
+         || command_input.is_some()
+-        || ((intent.run_llm || task_requested) && intent.cleanup_level != "raw"))
++        || (intent.run_llm && intent.cleanup_level != "raw"))
+         && !processing_text.trim().is_empty();
+     if wants_flow && intent.flow_model == "none" {
+         intent.flow_model = "qwen3.5-0.8b".into();
+--- a/src-tauri/tests/cleanup_eval_live.rs
++++ b/src-tauri/tests/cleanup_eval_live.rs
+@@ -224,23 +224,14 @@
+         passed += usize::from(ok);
+         rewrite_ms.push(outcome.rewrite_ms.unwrap_or(0));
+         deterministic_ms.push(outcome.formatting_ms);
+-        let show = |text: &str| {
+-            if text.chars().count() > 220 {
+-                format!(
+-                    "{}… ({} words)",
+-                    text.chars().take(220).collect::<String>(),
+-                    words(text)
+-                )
+-            } else {
+-                text.to_owned()
+-            }
+-        };
++        // The opt-in eval prints synthetic fixture content in full so omissions
++        // in long dictations remain reviewable. Production logs never do this.
+         eprintln!(
+             "\n[{}] {id}\n  input:    {}\n  expected: {}\n  actual:   {}\n  llm_used={} fallback={:?} rewrite_ms={:?}{}",
+             if ok { "PASS" } else { "FAIL" },
+-            show(input),
+-            show(&case["expected"].as_str().unwrap().replace('\n', "\\n")),
+-            show(&outcome.final_text.replace('\n', "\\n")),
++            input,
++            case["expected"].as_str().unwrap().replace('\n', "\\n"),
++            outcome.final_text.replace('\n', "\\n"),
+             outcome.rewriter_used,
+             outcome.fallback_reason,
+             outcome.rewrite_ms,
+--- a/src-tauri/tests/task_completion_regressions.rs
++++ b/src-tauri/tests/task_completion_regressions.rs
+@@ -306,3 +306,32 @@
+     assert_eq!(outcome.final_text, format!("Send to {expansion}."));
+     assert!(!server.requests()[0].to_string().contains("42 ruE de PARIS"));
+ }
++
++#[test]
++fn a_custom_mode_cannot_enable_the_llm_in_the_no_llm_tier() {
++    let server = ModelStub::new("This must never be injected.", Some(100));
++    let settings = AppSettings {
++        intelligence_tier: "raw_verbatim".into(),
++        cleanup_level: "light".into(),
++        ..AppSettings::default()
++    };
++    for translation in [None, Some("bn".to_owned())] {
++        let mode = Mode {
++            custom_instructions: "Rewrite this text.".into(),
++            translate_to: translation,
++            ..Mode::default()
++        };
++        let outcome = postprocess_with_context(
++            "please keep my original language and words",
++            &settings,
++            "",
++            &server.client(4096),
++            Some(&mode),
++            &SessionContext::default(),
++        );
++        assert_eq!(outcome.final_text, outcome.smart);
++        assert_eq!(outcome.rewrite_ms, None);
++        assert!(!outcome.rewriter_used);
++    }
++    assert!(server.requests().is_empty());
++}

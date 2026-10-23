@@ -1,0 +1,85 @@
+{
+  "recorded_at": "2026-10-22T23:59:55.617509+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "dirty_worktree": true,
+  "source_sha256": {
+    "src-tauri/src/asr/python_setup.rs": "0e39862dbac8f767ab59eb4e86fc17eb6d40182aba7891077eed16b30809a99b",
+    "src-tauri/src/lib.rs": "f3b2b415c91fe6697dc75e49f1211ea9082f1bb767af23ed7094cfffc160e34f",
+    "src-tauri/src/formatting/normalizers.rs": "80098647998f334d01e5e076b2f9d7a83af37e6e8ad644e576964f1936902afa",
+    "src-tauri/src/formatting/punctuation.rs": "3c8d67d156937a8cd2e50206316d68da086d39ddb3bbfd043b0caa364ad8dfba",
+    "src-tauri/tests/dictation_polish_quality.rs": "2cf1749ee81f2d8836efaf53bc795ee25437ad3191acd175215c68cb8a07c568",
+    "src/services/speechSetup.ts": "8ac41c67e54263db548506d601cffba97683d240b7082cecdd6eb539b6d8b88a",
+    "src/services/speechSetup.test.ts": "08903191b51b0c30e61430168c38791fc4cea37733b0bd82dc99be03b6f93c7b",
+    "src/services/tauriApi.ts": "15224c48654608022977aea8c1637a689eadb3fc535edc824ba4fa4b0d16cd52",
+    "src/types/index.ts": "8c4440d803b457f3cafa6bf44a9ca490977eb055032a31ac9ed75368b623ca93",
+    "src/components/SpeechDependencySetup.tsx": "0d16b6794f337d97fc1160db4e7133593f14fd8f9386471ddbbeb3b28fab0816",
+    "src/components/SpeechDependencySetup.test.tsx": "700e88704081aa9d4f79c567315e656f3ad89304b593ceeb4d1ca6c832378320",
+    "src/components/PythonRuntimeSetup.tsx": "ca087096abb27958d399093cc0701f43779c8208901de8fbf51bdd767e810ef2",
+    "src/components/PythonRuntimeSetup.test.tsx": "41184ee5273149ce024d01cca34a0a2e3d1835da1e48485d925f51daf4635732",
+    "src/components/Onboarding.test.tsx": "1b76d0476cd17391331329c94868ea40c5e2db249d700ed7c3ef2121274d3287"
+  },
+  "checks": {
+    "frontend": {
+      "suites": 56,
+      "passed": 371,
+      "command": "npm run check",
+      "exit_code": 0,
+      "warnings": ["Existing CleanupPage set-state-in-effect warning"]
+    },
+    "frontend_build": {
+      "command": "npm run build",
+      "exit_code": 0,
+      "main_js_kb": 567.35,
+      "main_js_gzip_kb": 166.72,
+      "warnings": ["Existing >500 kB main chunk warning"]
+    },
+    "rust": {
+      "command": "cargo test --locked --all-targets",
+      "exit_code": 0,
+      "passed": 971,
+      "failed": 0,
+      "ignored": 27,
+      "library_passed": 628,
+      "library_ignored": 16
+    },
+    "clippy": {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "exit_code": 0
+    },
+    "rust_format": {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0
+    },
+    "offline_dependency_pack": {
+      "passed": 1,
+      "command": "cargo test --locked --lib cached_runtime_pack_installs_offline_and_failed_repairs_preserve_it -- --ignored --nocapture --test-threads=1",
+      "exit_code": 0,
+      "evidence": "runtime-pack-linux-2026-10-23/setup-recovery-offline-install.json",
+      "source_provenance": "runtime-pack-linux-2026-10-23/setup-recovery-provenance.json"
+    }
+  },
+  "check_logs": {
+    "frontend_check": {
+      "path": "/tmp/reflow-recovery-final-ui-check.log",
+      "sha256": "41a258c580b4cc8549073064d9f2bc7483038b68bd6eee69bd2a22537b399063"
+    },
+    "frontend_build": {
+      "path": "/tmp/reflow-recovery-final-ui-build.log",
+      "sha256": "9bd641d710d29662cbff71290bc00233e18643ded883f060ac366cb278e8777f"
+    },
+    "rust_all_targets": {
+      "path": "/tmp/reflow-recovery-final-rust-all.log",
+      "sha256": "02b18bca6db51d90456ec62f0d12e187e4637c5716ea803df2352fca551b8c2c"
+    },
+    "clippy_all_targets": {
+      "path": "/tmp/reflow-recovery-final-clippy.log",
+      "sha256": "e1945721115c509e1965d55d4304434faae8aa86e23e15d7bfbd803b22a81c87"
+    }
+  },
+  "refinement_evidence": "refinement-2026-10-23/reported-speech/provenance.json",
+  "selected_source_lines_delta": 6233,
+  "scope": "Linux automated contracts and installed-model inference; native installers, physical device/desktop insertion, signing and broad fault acceptance remain unverified. Final visual/browser inspection unavailable.",
+  "no_model_downloads": true,
+  "published": false,
+  "test_harness_change": "The isolated offline-pack health assertion now uses the existing production bounded Python probe. The initial unbounded test-only command inherited deliberately invalid PYTHONHOME and failed after successful installation."
+}

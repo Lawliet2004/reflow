@@ -614,6 +614,9 @@ body.overlay-window #root {
 
   .hud-standalone {
     margin: 4px;
+    /* Native/WebKit scale changes must never cut off the capsule's edge. */
+    max-width: calc(100vw - 8px);
+    max-height: calc(100vh - 8px);
   }
 
   .hud-floating {

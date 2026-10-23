@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "baseline_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "baseline_snapshot": "initial dirty worktree, reconstructed from saved patch and untracked archive",
+  "baseline": {
+    "src": {
+      "files": 130,
+      "lines": 26333,
+      "bytes": 938126
+    },
+    "src-tauri/src": {
+      "files": 127,
+      "lines": 56435,
+      "bytes": 2127411
+    },
+    "src-tauri/tests": {
+      "files": 42,
+      "lines": 10312,
+      "bytes": 369400
+    },
+    "model-runtime": {
+      "files": 9,
+      "lines": 4289,
+      "bytes": 191522
+    },
+    "scripts": {
+      "files": 22,
+      "lines": 3072,
+      "bytes": 119375
+    }
+  },
+  "current": {
+    "src": {
+      "files": 138,
+      "lines": 28507,
+      "bytes": 1021729
+    },
+    "src-tauri/src": {
+      "files": 132,
+      "lines": 60345,
+      "bytes": 2278049
+    },
+    "src-tauri/tests": {
+      "files": 43,
+      "lines": 10717,
+      "bytes": 385198
+    },
+    "model-runtime": {
+      "files": 9,
+      "lines": 4312,
+      "bytes": 192756
+    },
+    "scripts": {
+      "files": 26,
+      "lines": 3793,
+      "bytes": 157032
+    }
+  },
+  "note": "Counts include embedded unit tests, standalone tests, comments and whitespace. Added behavior and evidence are included; this is not a claim of production-only code reduction.",
+  "delta": {
+    "src": {
+      "files": 8,
+      "lines": 2174,
+      "bytes": 83603
+    },
+    "src-tauri/src": {
+      "files": 5,
+      "lines": 3910,
+      "bytes": 150638
+    },
+    "src-tauri/tests": {
+      "files": 1,
+      "lines": 405,
+      "bytes": 15798
+    },
+    "model-runtime": {
+      "files": 0,
+      "lines": 23,
+      "bytes": 1234
+    },
+    "scripts": {
+      "files": 4,
+      "lines": 721,
+      "bytes": 37657
+    }
+  },
+  "baseline_archive_sha256": {
+    "working-tree.patch": "3ef578d4f31fe864fdb99178298fabb8998206a9095937380d48d2196baa31e3",
+    "untracked.tar.gz": "c0957aefeeb78e9a2d2b5948705201e4e71ff763c4ad0a4f7e3a0288cb8fe48f"
+  },
+  "counted_extensions": [".cjs", ".css", ".py", ".rs", ".ts", ".tsx"],
+  "count_method": "File bytes; lines counted with newline bytes; baseline re-created from HEAD, saved initial patch and untracked archive."
+}

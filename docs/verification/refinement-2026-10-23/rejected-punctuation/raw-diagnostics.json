@@ -1,0 +1,1219 @@
+{
+  "scope": "Raw unvalidated model outputs, diagnostic only. No production change adopted.",
+  "probes": {
+    "sentence_boundary": {
+      "actual_context": 1024,
+      "system_unchanged": true,
+      "production_safety_gate_applied": false,
+      "variants": {
+        "punctuate": "Add the missing punctuation, sentence breaks and paragraph breaks to this transcript. Keep its words and order; correct capitalization and spelling. Preserve every name, number, negation, pronoun, object, command and exact quote. Keep related sentences together. Separate a greeting and sign-off onto their own lines. Return only edited text.",
+        "copyedit": "Copyedit the dictated text. Separate independent clauses into grammatical sentences. Separate distinct topics, greetings and sign-offs with line breaks. Preserve every meaningful word, pronoun, object, name, number, negation, uncertainty and literal. Output only edited text.",
+        "complete_sentences": "Edit this transcript into fluent, grammatical writing in its original language. Keep all meaningful words, including pronouns and their objects. Make every sentence complete; add periods between run-on clauses, not just at the end. Separate topic changes, greetings and sign-offs with paragraph breaks. Use bullets only for independent items."
+      },
+      "results": [
+        {
+          "variant": "punctuate",
+          "id": "ordinary_paragraph",
+          "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 25,
+            "prompt_tokens": 375,
+            "total_tokens": 400,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 132,
+            "prompt_ms": 517.929,
+            "prompt_per_token_ms": 3.9237045454545454,
+            "prompt_per_second": 254.86118753728795,
+            "predicted_n": 25,
+            "predicted_ms": 207.116,
+            "predicted_per_token_ms": 8.629833333333334,
+            "predicted_per_second": 115.87709302999284
+          },
+          "ms": 790
+        },
+        {
+          "variant": "punctuate",
+          "id": "independent_requirements",
+          "source": "The app should work offline use sqlite for storage support dark mode and keep ram usage low.",
+          "production_output": "- The app should work offline.\n- Use sqlite for storage.\n- Support dark mode.\n- Keep RAM usage low.",
+          "candidate": "The app should work offline, use sqlite for storage, support dark mode, and keep ram usage low.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 22,
+            "prompt_tokens": 370,
+            "total_tokens": 392,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 127,
+            "prompt_ms": 65.412,
+            "prompt_per_token_ms": 0.5150551181102363,
+            "prompt_per_second": 1941.5397786338897,
+            "predicted_n": 22,
+            "predicted_ms": 172.549,
+            "predicted_per_token_ms": 8.216619047619048,
+            "predicted_per_second": 121.704559284609
+          },
+          "ms": 258
+        },
+        {
+          "variant": "punctuate",
+          "id": "technical_correction",
+          "source": "Use svelte and connect it to postgres not mysql.",
+          "production_output": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "candidate": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 13,
+            "prompt_tokens": 363,
+            "total_tokens": 376,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 120,
+            "prompt_ms": 65.446,
+            "prompt_per_token_ms": 0.5453833333333333,
+            "prompt_per_second": 1833.5727164379796,
+            "predicted_n": 13,
+            "predicted_ms": 99.492,
+            "predicted_per_token_ms": 8.291,
+            "predicted_per_second": 120.61271257990592
+          },
+          "ms": 170
+        },
+        {
+          "variant": "punctuate",
+          "id": "email",
+          "source": "Hi Noura the invoice is attached thanks Maya.",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached thanks Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 362,
+            "total_tokens": 374,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 119,
+            "prompt_ms": 64.421,
+            "prompt_per_token_ms": 0.5413529411764706,
+            "prompt_per_second": 1847.2237313919372,
+            "predicted_n": 12,
+            "predicted_ms": 90.935,
+            "predicted_per_token_ms": 8.266818181818183,
+            "predicted_per_second": 120.96552482542475
+          },
+          "ms": 161
+        },
+        {
+          "variant": "punctuate",
+          "id": "requirements_modifiers",
+          "source": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "production_output": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "candidate": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 16,
+            "prompt_tokens": 367,
+            "total_tokens": 383,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 124,
+            "prompt_ms": 65.91,
+            "prompt_per_token_ms": 0.5315322580645161,
+            "prompt_per_second": 1881.3533606433016,
+            "predicted_n": 16,
+            "predicted_ms": 123.29,
+            "predicted_per_token_ms": 8.219333333333333,
+            "predicted_per_second": 121.66436856192716
+          },
+          "ms": 208
+        },
+        {
+          "variant": "punctuate",
+          "id": "meeting_actions",
+          "source": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "production_output": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "candidate": "Rahul will finish the frontend by Friday. Priya owns API integration testing on Saturday. Launch is before Monday.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 24,
+            "prompt_tokens": 374,
+            "total_tokens": 398,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 131,
+            "prompt_ms": 65.921,
+            "prompt_per_token_ms": 0.5032137404580154,
+            "prompt_per_second": 1987.2271355106868,
+            "predicted_n": 24,
+            "predicted_ms": 189.686,
+            "predicted_per_token_ms": 8.247217391304348,
+            "predicted_per_second": 121.25301814577774
+          },
+          "ms": 274
+        },
+        {
+          "variant": "punctuate",
+          "id": "two_topics",
+          "source": "The frontend is complete and the tests pass. On a different topic the office move is scheduled for Thursday and we still need boxes.",
+          "production_output": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "candidate": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 28,
+            "prompt_tokens": 378,
+            "total_tokens": 406,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 135,
+            "prompt_ms": 70.678,
+            "prompt_per_token_ms": 0.5235407407407408,
+            "prompt_per_second": 1910.0710263448316,
+            "predicted_n": 28,
+            "predicted_ms": 223.417,
+            "predicted_per_token_ms": 8.274703703703704,
+            "predicted_per_second": 120.85024863819675
+          },
+          "ms": 311
+        },
+        {
+          "variant": "punctuate",
+          "id": "no_wait_request",
+          "source": "No wait for me outside do not leave without me.",
+          "production_output": "No wait for me outside do not leave without me.",
+          "candidate": "No wait for me outside do not leave without me.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 363,
+            "total_tokens": 375,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 120,
+            "prompt_ms": 64.495,
+            "prompt_per_token_ms": 0.5374583333333334,
+            "prompt_per_second": 1860.6093495619814,
+            "predicted_n": 12,
+            "predicted_ms": 91.266,
+            "predicted_per_token_ms": 8.296909090909091,
+            "predicted_per_second": 120.52681173712007
+          },
+          "ms": 160
+        },
+        {
+          "variant": "copyedit",
+          "id": "ordinary_paragraph",
+          "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 25,
+            "prompt_tokens": 361,
+            "total_tokens": 386,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 118,
+            "prompt_ms": 64.086,
+            "prompt_per_token_ms": 0.5431016949152542,
+            "prompt_per_second": 1841.2757856630155,
+            "predicted_n": 25,
+            "predicted_ms": 198.407,
+            "predicted_per_token_ms": 8.266958333333333,
+            "predicted_per_second": 120.96347407097531
+          },
+          "ms": 280
+        },
+        {
+          "variant": "copyedit",
+          "id": "independent_requirements",
+          "source": "The app should work offline use sqlite for storage support dark mode and keep ram usage low.",
+          "production_output": "- The app should work offline.\n- Use sqlite for storage.\n- Support dark mode.\n- Keep RAM usage low.",
+          "candidate": "The app should work offline, use sqlite for storage, support dark mode, and keep ram usage low.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 22,
+            "prompt_tokens": 356,
+            "total_tokens": 378,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 113,
+            "prompt_ms": 63.298,
+            "prompt_per_token_ms": 0.5601592920353983,
+            "prompt_per_second": 1785.2064836171758,
+            "predicted_n": 22,
+            "predicted_ms": 172.836,
+            "predicted_per_token_ms": 8.230285714285715,
+            "predicted_per_second": 121.50246476428521
+          },
+          "ms": 240
+        },
+        {
+          "variant": "copyedit",
+          "id": "technical_correction",
+          "source": "Use svelte and connect it to postgres not mysql.",
+          "production_output": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "candidate": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 13,
+            "prompt_tokens": 349,
+            "total_tokens": 362,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 106,
+            "prompt_ms": 61.651,
+            "prompt_per_token_ms": 0.5816132075471698,
+            "prompt_per_second": 1719.355728212032,
+            "predicted_n": 13,
+            "predicted_ms": 98.794,
+            "predicted_per_token_ms": 8.232833333333334,
+            "predicted_per_second": 121.46486628742636
+          },
+          "ms": 164
+        },
+        {
+          "variant": "copyedit",
+          "id": "email",
+          "source": "Hi Noura the invoice is attached thanks Maya.",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached thanks Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 348,
+            "total_tokens": 360,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 105,
+            "prompt_ms": 62.532,
+            "prompt_per_token_ms": 0.5955428571428572,
+            "prompt_per_second": 1679.1402801765496,
+            "predicted_n": 12,
+            "predicted_ms": 91.374,
+            "predicted_per_token_ms": 8.306727272727272,
+            "predicted_per_second": 120.38435441153939
+          },
+          "ms": 157
+        },
+        {
+          "variant": "copyedit",
+          "id": "requirements_modifiers",
+          "source": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "production_output": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "candidate": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 16,
+            "prompt_tokens": 353,
+            "total_tokens": 369,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 110,
+            "prompt_ms": 62.632,
+            "prompt_per_token_ms": 0.5693818181818182,
+            "prompt_per_second": 1756.2907140120067,
+            "predicted_n": 16,
+            "predicted_ms": 123.414,
+            "predicted_per_token_ms": 8.2276,
+            "predicted_per_second": 121.54212650104527
+          },
+          "ms": 190
+        },
+        {
+          "variant": "copyedit",
+          "id": "meeting_actions",
+          "source": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "production_output": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "candidate": "Rahul will finish the frontend by Friday. Priya owns API integration testing on Saturday. Launch is before Monday.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 24,
+            "prompt_tokens": 360,
+            "total_tokens": 384,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 117,
+            "prompt_ms": 65.706,
+            "prompt_per_token_ms": 0.5615897435897436,
+            "prompt_per_second": 1780.6593005205004,
+            "predicted_n": 24,
+            "predicted_ms": 187.78,
+            "predicted_per_token_ms": 8.164347826086956,
+            "predicted_per_second": 122.48375758866757
+          },
+          "ms": 257
+        },
+        {
+          "variant": "copyedit",
+          "id": "two_topics",
+          "source": "The frontend is complete and the tests pass. On a different topic the office move is scheduled for Thursday and we still need boxes.",
+          "production_output": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "candidate": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 28,
+            "prompt_tokens": 364,
+            "total_tokens": 392,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 121,
+            "prompt_ms": 64.277,
+            "prompt_per_token_ms": 0.5312148760330578,
+            "prompt_per_second": 1882.477402492338,
+            "predicted_n": 28,
+            "predicted_ms": 221.143,
+            "predicted_per_token_ms": 8.190481481481482,
+            "predicted_per_second": 122.09294438440286
+          },
+          "ms": 289
+        },
+        {
+          "variant": "copyedit",
+          "id": "no_wait_request",
+          "source": "No wait for me outside do not leave without me.",
+          "production_output": "No wait for me outside do not leave without me.",
+          "candidate": "No wait for me outside do not leave without me.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 349,
+            "total_tokens": 361,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 106,
+            "prompt_ms": 61.717,
+            "prompt_per_token_ms": 0.5822358490566037,
+            "prompt_per_second": 1717.5170536481037,
+            "predicted_n": 12,
+            "predicted_ms": 90.819,
+            "predicted_per_token_ms": 8.256272727272728,
+            "predicted_per_second": 121.12002994968013
+          },
+          "ms": 156
+        },
+        {
+          "variant": "complete_sentences",
+          "id": "ordinary_paragraph",
+          "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 25,
+            "prompt_tokens": 372,
+            "total_tokens": 397,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 129,
+            "prompt_ms": 66.848,
+            "prompt_per_token_ms": 0.5182015503875969,
+            "prompt_per_second": 1929.7510770703686,
+            "predicted_n": 25,
+            "predicted_ms": 197.948,
+            "predicted_per_token_ms": 8.247833333333334,
+            "predicted_per_second": 121.24396306100591
+          },
+          "ms": 270
+        },
+        {
+          "variant": "complete_sentences",
+          "id": "independent_requirements",
+          "source": "The app should work offline use sqlite for storage support dark mode and keep ram usage low.",
+          "production_output": "- The app should work offline.\n- Use sqlite for storage.\n- Support dark mode.\n- Keep RAM usage low.",
+          "candidate": "The app should work offline, use SQLite for storage, support dark mode, and keep RAM usage low.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 22,
+            "prompt_tokens": 367,
+            "total_tokens": 389,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 124,
+            "prompt_ms": 64.841,
+            "prompt_per_token_ms": 0.5229112903225805,
+            "prompt_per_second": 1912.370259557996,
+            "predicted_n": 22,
+            "predicted_ms": 170.295,
+            "predicted_per_token_ms": 8.109285714285713,
+            "predicted_per_second": 123.31542323614904
+          },
+          "ms": 239
+        },
+        {
+          "variant": "complete_sentences",
+          "id": "technical_correction",
+          "source": "Use svelte and connect it to postgres not mysql.",
+          "production_output": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "candidate": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 13,
+            "prompt_tokens": 360,
+            "total_tokens": 373,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 117,
+            "prompt_ms": 62.995,
+            "prompt_per_token_ms": 0.5384188034188034,
+            "prompt_per_second": 1857.290261131836,
+            "predicted_n": 13,
+            "predicted_ms": 99.495,
+            "predicted_per_token_ms": 8.29125,
+            "predicted_per_second": 120.60907583295642
+          },
+          "ms": 166
+        },
+        {
+          "variant": "complete_sentences",
+          "id": "email",
+          "source": "Hi Noura the invoice is attached thanks Maya.",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached thanks, Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 13,
+            "prompt_tokens": 359,
+            "total_tokens": 372,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 116,
+            "prompt_ms": 63.033,
+            "prompt_per_token_ms": 0.5433879310344828,
+            "prompt_per_second": 1840.3058715276125,
+            "predicted_n": 13,
+            "predicted_ms": 97.916,
+            "predicted_per_token_ms": 8.159666666666666,
+            "predicted_per_second": 122.55402589975081
+          },
+          "ms": 165
+        },
+        {
+          "variant": "complete_sentences",
+          "id": "requirements_modifiers",
+          "source": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "production_output": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "candidate": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 16,
+            "prompt_tokens": 364,
+            "total_tokens": 380,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 121,
+            "prompt_ms": 64.743,
+            "prompt_per_token_ms": 0.5350661157024793,
+            "prompt_per_second": 1868.9279149869485,
+            "predicted_n": 16,
+            "predicted_ms": 119.801,
+            "predicted_per_token_ms": 7.9867333333333335,
+            "predicted_per_second": 125.20763599636062
+          },
+          "ms": 188
+        },
+        {
+          "variant": "complete_sentences",
+          "id": "meeting_actions",
+          "source": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "production_output": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "candidate": "Rahul will finish the frontend by Friday. Priya owns API integration testing on Saturday. Launch is before Monday.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 24,
+            "prompt_tokens": 371,
+            "total_tokens": 395,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 128,
+            "prompt_ms": 65.413,
+            "prompt_per_token_ms": 0.5110390625,
+            "prompt_per_second": 1956.7975784629969,
+            "predicted_n": 24,
+            "predicted_ms": 186.076,
+            "predicted_per_token_ms": 8.090260869565217,
+            "predicted_per_second": 123.60540854274598
+          },
+          "ms": 255
+        },
+        {
+          "variant": "complete_sentences",
+          "id": "two_topics",
+          "source": "The frontend is complete and the tests pass. On a different topic the office move is scheduled for Thursday and we still need boxes.",
+          "production_output": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "candidate": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 28,
+            "prompt_tokens": 375,
+            "total_tokens": 403,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 132,
+            "prompt_ms": 65.745,
+            "prompt_per_token_ms": 0.49806818181818185,
+            "prompt_per_second": 2007.7572438968743,
+            "predicted_n": 28,
+            "predicted_ms": 221.256,
+            "predicted_per_token_ms": 8.194666666666667,
+            "predicted_per_second": 122.03058900097624
+          },
+          "ms": 290
+        },
+        {
+          "variant": "complete_sentences",
+          "id": "no_wait_request",
+          "source": "No wait for me outside do not leave without me.",
+          "production_output": "No wait for me outside do not leave without me.",
+          "candidate": "No wait for me outside do not leave without me.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 360,
+            "total_tokens": 372,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "timings": {
+            "cache_n": 243,
+            "prompt_n": 117,
+            "prompt_ms": 65.537,
+            "prompt_per_token_ms": 0.5601452991452992,
+            "prompt_per_second": 1785.2510795428536,
+            "predicted_n": 12,
+            "predicted_ms": 91.18,
+            "predicted_per_token_ms": 8.289090909090909,
+            "predicted_per_second": 120.64049133581925
+          },
+          "ms": 160
+        }
+      ]
+    },
+    "layout_shape": {
+      "actual_context": 1024,
+      "system_unchanged": true,
+      "production_safety_gate_applied": false,
+      "results": [
+        {
+          "variant": "email_shape",
+          "id": "email",
+          "instruction": "Format this as an email. Put its existing greeting, body and sign-off on separate lines. Preserve every dictated word and detail. Add appropriate punctuation. Do not add a greeting, signature or other words.",
+          "source": "Hi Noura the invoice is attached thanks Maya.",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached thanks Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 337,
+            "total_tokens": 349,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 527
+        },
+        {
+          "variant": "paragraph_shape",
+          "id": "ordinary_paragraph",
+          "instruction": "Punctuate this dictation as a paragraph of complete sentences. Place a full stop at the end of each complete thought and start the next sentence with a capital letter. Preserve all meaningful words, pronouns, objects and details. Return only the edited paragraph.",
+          "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 25,
+            "prompt_tokens": 361,
+            "total_tokens": 386,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 277
+        },
+        {
+          "variant": "raw_punctuation",
+          "id": "ordinary_paragraph",
+          "instruction": "Edit this transcript into fluent, grammatical writing in its original language. Keep all meaningful words, including pronouns and their objects. Split run-on sentences. Use paragraphs for topic changes and separate greetings/sign-offs when present; use bullets only for independent items.",
+          "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today",
+          "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 25,
+            "prompt_tokens": 359,
+            "total_tokens": 384,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 274
+        },
+        {
+          "variant": "raw_punctuation",
+          "id": "email",
+          "instruction": "Edit this transcript into fluent, grammatical writing in its original language. Keep all meaningful words, including pronouns and their objects. Split run-on sentences. Use paragraphs for topic changes and separate greetings/sign-offs when present; use bullets only for independent items.",
+          "source": "Hi Noura the invoice is attached thanks Maya",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached. Thanks, Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 14,
+            "prompt_tokens": 346,
+            "total_tokens": 360,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 182
+        },
+        {
+          "variant": "raw_punctuation",
+          "id": "requirements_modifiers",
+          "instruction": "Edit this transcript into fluent, grammatical writing in its original language. Keep all meaningful words, including pronouns and their objects. Split run-on sentences. Use paragraphs for topic changes and separate greetings/sign-offs when present; use bullets only for independent items.",
+          "source": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode",
+          "production_output": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "candidate": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 16,
+            "prompt_tokens": 351,
+            "total_tokens": 367,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 194
+        },
+        {
+          "variant": "email_register",
+          "id": "email",
+          "instruction": "Rewrite as clean written text, in a professional email register. Email: use body paragraphs; separate greeting/sign-off only when present and keep their words; use bullets only for clear lists and respect requested numbering:",
+          "source": "Hi Noura the invoice is attached thanks Maya.",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached. Thanks, Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 14,
+            "prompt_tokens": 338,
+            "total_tokens": 352,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 172
+        }
+      ]
+    },
+    "tail_instruction": {
+      "actual_context": 1024,
+      "system_unchanged": true,
+      "production_safety_gate_applied": false,
+      "results": [
+        {
+          "variant": "full_stops",
+          "id": "ordinary_paragraph",
+          "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday, and I'm working on the backend today.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 26,
+            "prompt_tokens": 368,
+            "total_tokens": 394,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 552
+        },
+        {
+          "variant": "full_stops",
+          "id": "independent_requirements",
+          "source": "The app should work offline use sqlite for storage support dark mode and keep ram usage low.",
+          "production_output": "- The app should work offline.\n- Use sqlite for storage.\n- Support dark mode.\n- Keep RAM usage low.",
+          "candidate": "The app should work offline, use sqlite for storage, support dark mode, and keep ram usage low.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 22,
+            "prompt_tokens": 363,
+            "total_tokens": 385,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 249
+        },
+        {
+          "variant": "full_stops",
+          "id": "technical_correction",
+          "source": "Use svelte and connect it to postgres not mysql.",
+          "production_output": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "candidate": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 13,
+            "prompt_tokens": 356,
+            "total_tokens": 369,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 174
+        },
+        {
+          "variant": "full_stops",
+          "id": "email",
+          "source": "Hi Noura the invoice is attached thanks Maya.",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached. Thanks, Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 14,
+            "prompt_tokens": 355,
+            "total_tokens": 369,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 181
+        },
+        {
+          "variant": "full_stops",
+          "id": "requirements_modifiers",
+          "source": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "production_output": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "candidate": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 16,
+            "prompt_tokens": 360,
+            "total_tokens": 376,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 192
+        },
+        {
+          "variant": "full_stops",
+          "id": "meeting_actions",
+          "source": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "production_output": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "candidate": "Rahul will finish the frontend by Friday. Priya owns API integration testing on Saturday, and the launch will occur before Monday.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 27,
+            "prompt_tokens": 367,
+            "total_tokens": 394,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 291
+        },
+        {
+          "variant": "full_stops",
+          "id": "two_topics",
+          "source": "The frontend is complete and the tests pass. On a different topic the office move is scheduled for Thursday and we still need boxes.",
+          "production_output": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "candidate": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday, and we still need boxes.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 29,
+            "prompt_tokens": 371,
+            "total_tokens": 400,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 298
+        },
+        {
+          "variant": "full_stops",
+          "id": "no_wait_request",
+          "source": "No wait for me outside do not leave without me.",
+          "production_output": "No wait for me outside do not leave without me.",
+          "candidate": "No wait for me outside do not leave without me.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 356,
+            "total_tokens": 368,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 158
+        },
+        {
+          "variant": "sentence_boundaries",
+          "id": "ordinary_paragraph",
+          "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 25,
+            "prompt_tokens": 366,
+            "total_tokens": 391,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 267
+        },
+        {
+          "variant": "sentence_boundaries",
+          "id": "independent_requirements",
+          "source": "The app should work offline use sqlite for storage support dark mode and keep ram usage low.",
+          "production_output": "- The app should work offline.\n- Use sqlite for storage.\n- Support dark mode.\n- Keep RAM usage low.",
+          "candidate": "The app should work offline, use SQLite for storage, support dark mode, and keep RAM usage low.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 22,
+            "prompt_tokens": 361,
+            "total_tokens": 383,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 240
+        },
+        {
+          "variant": "sentence_boundaries",
+          "id": "technical_correction",
+          "source": "Use svelte and connect it to postgres not mysql.",
+          "production_output": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "candidate": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 13,
+            "prompt_tokens": 354,
+            "total_tokens": 367,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 166
+        },
+        {
+          "variant": "sentence_boundaries",
+          "id": "email",
+          "source": "Hi Noura the invoice is attached thanks Maya.",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached. Thanks, Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 14,
+            "prompt_tokens": 353,
+            "total_tokens": 367,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 175
+        },
+        {
+          "variant": "sentence_boundaries",
+          "id": "requirements_modifiers",
+          "source": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "production_output": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "candidate": "Use encrypted sqlite storage support for offline dictation and offer an optional dark mode.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 17,
+            "prompt_tokens": 358,
+            "total_tokens": 375,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 197
+        },
+        {
+          "variant": "sentence_boundaries",
+          "id": "meeting_actions",
+          "source": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "production_output": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "candidate": "Rahul will finish the frontend by Friday. Priya owns API integration testing on Saturday, and the launch will occur before Monday.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 27,
+            "prompt_tokens": 365,
+            "total_tokens": 392,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 280
+        },
+        {
+          "variant": "sentence_boundaries",
+          "id": "two_topics",
+          "source": "The frontend is complete and the tests pass. On a different topic the office move is scheduled for Thursday and we still need boxes.",
+          "production_output": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "candidate": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday, and we still need boxes.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 29,
+            "prompt_tokens": 369,
+            "total_tokens": 398,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 296
+        },
+        {
+          "variant": "sentence_boundaries",
+          "id": "no_wait_request",
+          "source": "No wait for me outside do not leave without me.",
+          "production_output": "No wait for me outside do not leave without me.",
+          "candidate": "No wait for me outside do not leave without me.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 354,
+            "total_tokens": 366,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 156
+        },
+        {
+          "variant": "instruction_after",
+          "id": "ordinary_paragraph",
+          "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 25,
+            "prompt_tokens": 359,
+            "total_tokens": 384,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 263
+        },
+        {
+          "variant": "instruction_after",
+          "id": "independent_requirements",
+          "source": "The app should work offline use sqlite for storage support dark mode and keep ram usage low.",
+          "production_output": "- The app should work offline.\n- Use sqlite for storage.\n- Support dark mode.\n- Keep RAM usage low.",
+          "candidate": "The app should work offline, use SQLite for storage, support dark mode, and keep RAM usage low.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 22,
+            "prompt_tokens": 354,
+            "total_tokens": 376,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 237
+        },
+        {
+          "variant": "instruction_after",
+          "id": "technical_correction",
+          "source": "Use svelte and connect it to postgres not mysql.",
+          "production_output": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "candidate": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 13,
+            "prompt_tokens": 347,
+            "total_tokens": 360,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 165
+        },
+        {
+          "variant": "instruction_after",
+          "id": "email",
+          "source": "Hi Noura the invoice is attached thanks Maya.",
+          "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+          "candidate": "Hi Noura, the invoice is attached. Thanks, Maya.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 14,
+            "prompt_tokens": 346,
+            "total_tokens": 360,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 173
+        },
+        {
+          "variant": "instruction_after",
+          "id": "requirements_modifiers",
+          "source": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "production_output": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+          "candidate": "Use encrypted sqlite storage support for offline dictation and offer an optional dark mode.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 17,
+            "prompt_tokens": 351,
+            "total_tokens": 368,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 199
+        },
+        {
+          "variant": "instruction_after",
+          "id": "meeting_actions",
+          "source": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "production_output": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+          "candidate": "Rahul will finish the frontend by Friday. Priya owns API integration testing on Saturday, and the launch will occur before Monday.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 27,
+            "prompt_tokens": 358,
+            "total_tokens": 385,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 279
+        },
+        {
+          "variant": "instruction_after",
+          "id": "two_topics",
+          "source": "The frontend is complete and the tests pass. On a different topic the office move is scheduled for Thursday and we still need boxes.",
+          "production_output": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+          "candidate": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday, and we still need boxes.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 29,
+            "prompt_tokens": 362,
+            "total_tokens": 391,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 295
+        },
+        {
+          "variant": "instruction_after",
+          "id": "no_wait_request",
+          "source": "No wait for me outside do not leave without me.",
+          "production_output": "No wait for me outside do not leave without me.",
+          "candidate": "No wait for me outside do not leave without me.",
+          "finish": "stop",
+          "usage": {
+            "completion_tokens": 12,
+            "prompt_tokens": 347,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 243
+            }
+          },
+          "ms": 155
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,420 @@
+   Compiling reflow v0.5.0 (/home/papan/Desktop/Projects/reflow/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.36s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/reflow_lib-56be4f760e07d724)
+
+running 1 test
+downloading: 
+extracting: 
+creating_env: 
+creating_env: Preparing resumable downloads
+creating_env: Collecting pip==26.2.2 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/pip-requirements.txt (line 1))
+creating_env:   Downloading pip-26.2.2-py3-none-any.whl (1.8 MB)
+test asr::python_setup::tests::e2e::managed_zipformer_clean_install_and_cancelled_repair has been running for over 60 seconds
+creating_env:      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 38.2 kB/s eta 0:00:00
+creating_env: Successfully installed pip-26.2.2
+installing_packages: Installing verified zipformer packages (none)
+installing_packages: Collecting annotated-doc==0.0.5 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 1))
+installing_packages:   Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+installing_packages: Collecting anyio==4.15.1 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 4))
+installing_packages:   Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+installing_packages: Collecting certifi==2026.10.19 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 7))
+installing_packages: Collecting filelock==4.2.4 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 10))
+installing_packages:   Downloading filelock-4.2.4-py3-none-any.whl (162 kB)
+installing_packages: Collecting fsspec==2026.9.0 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 13))
+installing_packages:   Downloading fsspec-2026.9.0-py3-none-any.whl (221 kB)
+installing_packages: Collecting h11==0.16.0 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 16))
+installing_packages: Collecting hf-xet==1.7.0 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 19))
+installing_packages: Downloading a speech package: 0.3 of 4.2 MB
+installing_packages: Downloading a speech package: 0.5 of 4.2 MB
+installing_packages: Downloading a speech package: 0.8 of 4.2 MB
+installing_packages: Downloading a speech package: 1.0 of 4.2 MB
+installing_packages: Downloading a speech package: 1.3 of 4.2 MB
+installing_packages: Downloading a speech package: 1.6 of 4.2 MB
+installing_packages: Downloading a speech package: 2.1 of 4.2 MB
+installing_packages: Downloading a speech package: 2.4 of 4.2 MB
+installing_packages: Downloading a speech package: 2.6 of 4.2 MB
+installing_packages: Downloading a speech package: 3.1 of 4.2 MB
+installing_packages: Downloading a speech package: 3.4 of 4.2 MB
+installing_packages: Downloading a speech package: 3.7 of 4.2 MB
+installing_packages: Collecting httpcore==1.0.9 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 37))
+installing_packages: Collecting httpx==0.28.1 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 40))
+installing_packages: Collecting huggingface-hub==1.11.0 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 43))
+installing_packages:   Downloading huggingface_hub-1.11.0-py3-none-any.whl (645 kB)
+installing_packages: Downloading a speech package: 0.3 of 0.6 MB
+installing_packages: Collecting idna==3.20 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 46))
+installing_packages: Collecting markdown-it-py==4.2.0 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 49))
+installing_packages: Collecting mdurl==0.1.2 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 52))
+installing_packages: Collecting numpy==2.4.4 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 55))
+installing_packages:   Downloading numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.6 MB)
+installing_packages: Downloading a speech package: 0.5 of 16.6 MB
+installing_packages: Downloading a speech package: 1.0 of 16.6 MB
+installing_packages: Downloading a speech package: 1.3 of 16.6 MB
+installing_packages: Downloading a speech package: 1.6 of 16.6 MB
+installing_packages: Downloading a speech package: 1.8 of 16.6 MB
+installing_packages: Downloading a speech package: 2.1 of 16.6 MB
+installing_packages: Downloading a speech package: 2.4 of 16.6 MB
+installing_packages: Downloading a speech package: 2.6 of 16.6 MB
+installing_packages: Downloading a speech package: 2.9 of 16.6 MB
+installing_packages: Downloading a speech package: 3.1 of 16.6 MB
+installing_packages: Downloading a speech package: 3.4 of 16.6 MB
+installing_packages: Downloading a speech package: 3.7 of 16.6 MB
+installing_packages: Downloading a speech package: 3.9 of 16.6 MB
+installing_packages: Downloading a speech package: 4.2 of 16.6 MB
+installing_packages: Downloading a speech package: 4.5 of 16.6 MB
+installing_packages: Downloading a speech package: 4.7 of 16.6 MB
+installing_packages: Downloading a speech package: 5.0 of 16.6 MB
+installing_packages: Downloading a speech package: 5.2 of 16.6 MB
+installing_packages: Downloading a speech package: 5.5 of 16.6 MB
+installing_packages: Downloading a speech package: 5.8 of 16.6 MB
+installing_packages: Downloading a speech package: 6.0 of 16.6 MB
+installing_packages: Downloading a speech package: 6.6 of 16.6 MB
+installing_packages: Downloading a speech package: 6.8 of 16.6 MB
+installing_packages: Downloading a speech package: 7.1 of 16.6 MB
+installing_packages: Downloading a speech package: 7.6 of 16.6 MB
+installing_packages: Downloading a speech package: 8.1 of 16.6 MB
+installing_packages: Downloading a speech package: 8.4 of 16.6 MB
+installing_packages: Downloading a speech package: 8.7 of 16.6 MB
+installing_packages: Downloading a speech package: 8.9 of 16.6 MB
+installing_packages: Downloading a speech package: 9.2 of 16.6 MB
+installing_packages: Downloading a speech package: 9.4 of 16.6 MB
+installing_packages: Downloading a speech package: 9.7 of 16.6 MB
+installing_packages: Downloading a speech package: 10.0 of 16.6 MB
+installing_packages: Downloading a speech package: 10.2 of 16.6 MB
+installing_packages: Downloading a speech package: 10.5 of 16.6 MB
+installing_packages: Downloading a speech package: 10.7 of 16.6 MB
+installing_packages: Downloading a speech package: 11.0 of 16.6 MB
+installing_packages: Downloading a speech package: 11.3 of 16.6 MB
+installing_packages: Downloading a speech package: 11.5 of 16.6 MB
+installing_packages: Downloading a speech package: 11.8 of 16.6 MB
+installing_packages: Downloading a speech package: 12.1 of 16.6 MB
+installing_packages: Downloading a speech package: 12.3 of 16.6 MB
+installing_packages: Downloading a speech package: 12.6 of 16.6 MB
+installing_packages: Downloading a speech package: 13.1 of 16.6 MB
+installing_packages: Downloading a speech package: 13.9 of 16.6 MB
+installing_packages: Downloading a speech package: 14.2 of 16.6 MB
+installing_packages: Downloading a speech package: 14.7 of 16.6 MB
+installing_packages: Downloading a speech package: 14.9 of 16.6 MB
+installing_packages: Downloading a speech package: 15.2 of 16.6 MB
+installing_packages: Downloading a speech package: 15.5 of 16.6 MB
+installing_packages: Downloading a speech package: 16.3 of 16.6 MB
+installing_packages: Downloading a speech package: 16.5 of 16.6 MB
+installing_packages: Downloading a speech package: 16.6 of 16.6 MB
+installing_packages: Collecting packaging==26.3 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 128))
+installing_packages: Collecting pygments==2.21.0 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 131))
+installing_packages: Downloading a speech package: 0.3 of 1.3 MB
+installing_packages: Downloading a speech package: 0.5 of 1.3 MB
+installing_packages: Downloading a speech package: 0.8 of 1.3 MB
+installing_packages: Collecting pyyaml==6.0.3 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 134))
+installing_packages: Downloading a speech package: 0.3 of 0.8 MB
+installing_packages: Downloading a speech package: 0.8 of 0.8 MB
+installing_packages: Collecting rich==15.0.0 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 208))
+installing_packages: Collecting shellingham==1.5.4 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 211))
+installing_packages: Collecting sherpa-onnx==1.13.4 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 214))
+installing_packages:   Downloading sherpa_onnx-1.13.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.4 MB)
+installing_packages: Downloading a speech package: 0.3 of 4.4 MB
+installing_packages: Downloading a speech package: 0.8 of 4.4 MB
+installing_packages: Downloading a speech package: 1.3 of 4.4 MB
+installing_packages: Downloading a speech package: 1.8 of 4.4 MB
+installing_packages: Downloading a speech package: 2.4 of 4.4 MB
+installing_packages: Downloading a speech package: 2.9 of 4.4 MB
+installing_packages: Downloading a speech package: 3.1 of 4.4 MB
+installing_packages: Downloading a speech package: 3.4 of 4.4 MB
+installing_packages: Downloading a speech package: 3.7 of 4.4 MB
+installing_packages: Downloading a speech package: 3.9 of 4.4 MB
+installing_packages: Downloading a speech package: 4.2 of 4.4 MB
+installing_packages: Collecting sherpa-onnx-core==1.13.4 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 273))
+installing_packages:   Downloading sherpa_onnx_core-1.13.4-py3-none-manylinux2014_x86_64.whl (10.3 MB)
+installing_packages: Downloading a speech package: 0.8 of 10.3 MB
+installing_packages: Downloading a speech package: 1.0 of 10.3 MB
+installing_packages: Downloading a speech package: 1.3 of 10.3 MB
+installing_packages: Downloading a speech package: 1.6 of 10.3 MB
+installing_packages: Downloading a speech package: 2.1 of 10.3 MB
+installing_packages: Downloading a speech package: 2.4 of 10.3 MB
+installing_packages: Downloading a speech package: 3.1 of 10.3 MB
+installing_packages: Downloading a speech package: 3.4 of 10.3 MB
+installing_packages: Downloading a speech package: 3.7 of 10.3 MB
+installing_packages: Downloading a speech package: 4.2 of 10.3 MB
+installing_packages: Downloading a speech package: 4.5 of 10.3 MB
+installing_packages: Downloading a speech package: 5.0 of 10.3 MB
+installing_packages: Downloading a speech package: 5.5 of 10.3 MB
+installing_packages: Downloading a speech package: 5.8 of 10.3 MB
+installing_packages: Downloading a speech package: 6.3 of 10.3 MB
+installing_packages: Downloading a speech package: 6.6 of 10.3 MB
+installing_packages: Downloading a speech package: 6.8 of 10.3 MB
+installing_packages: Downloading a speech package: 7.3 of 10.3 MB
+installing_packages: Downloading a speech package: 7.9 of 10.3 MB
+installing_packages: Downloading a speech package: 8.1 of 10.3 MB
+installing_packages: Downloading a speech package: 8.7 of 10.3 MB
+installing_packages: Downloading a speech package: 8.9 of 10.3 MB
+installing_packages: Downloading a speech package: 9.2 of 10.3 MB
+installing_packages: Downloading a speech package: 9.4 of 10.3 MB
+installing_packages: Downloading a speech package: 9.7 of 10.3 MB
+installing_packages: Downloading a speech package: 10.0 of 10.3 MB
+installing_packages: Downloading a speech package: 10.2 of 10.3 MB
+installing_packages: Downloading a speech package: 10.3 of 10.3 MB
+installing_packages: Collecting tqdm==4.70.1 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 282))
+installing_packages: Collecting typer==0.27.3 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 285))
+installing_packages:   Downloading typer-0.27.3-py3-none-any.whl (123 kB)
+installing_packages: Collecting typing-extensions==4.16.0 (from -r /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22/python-generations/9ce82198-842e-4abf-ae6e-0aada29f0ff0/requirements.txt (line 288))
+installing_packages:   Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+installing_packages: Installing collected packages: sherpa-onnx-core, typing-extensions, tqdm, sherpa-onnx, shellingham, pyyaml, pygments, packaging, numpy, mdurl, idna, hf-xet, h11, fsspec, filelock, certifi, annotated-doc, markdown-it-py, httpcore, anyio, rich, httpx, typer, huggingface-hub
+installing_packages: Successfully installed annotated-doc-0.0.5 anyio-4.15.1 certifi-2026.10.19 filelock-4.2.4 fsspec-2026.9.0 h11-0.16.0 hf-xet-1.7.0 httpcore-1.0.9 httpx-0.28.1 huggingface-hub-1.11.0 idna-3.20 markdown-it-py-4.2.0 mdurl-0.1.2 numpy-2.4.4 packaging-26.3 pygments-2.21.0 pyyaml-6.0.3 rich-15.0.0 shellingham-1.5.4 sherpa-onnx-1.13.4 sherpa-onnx-core-1.13.4 tqdm-4.70.1 typer-0.27.3 typing-extensions-4.16.0
+verifying: 
+verifying: No broken requirements found.
+Isolated acceptance directory: /tmp/reflow-python-e2e-1bb714c3-389a-4bd9-aab6-0c8aa612cc22
+test asr::python_setup::tests::e2e::managed_zipformer_clean_install_and_cancelled_repair ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 590 filtered out; finished in 488.19s
+
+     Running unittests src/main.rs (src-tauri/target/debug/deps/reflow-a7a84bb3cbe09154)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/asr_selection_tests.rs (src-tauri/target/debug/deps/asr_selection_tests-d6b347c480375f38)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+     Running tests/asr_status_live.rs (src-tauri/target/debug/deps/asr_status_live-9a8f693435882564)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/audio_retention_tests.rs (src-tauri/target/debug/deps/audio_retention_tests-55d3ed0ac3d8f13c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/automatic_dictionary.rs (src-tauri/target/debug/deps/automatic_dictionary-49107260c512701c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+     Running tests/capability_tests.rs (src-tauri/target/debug/deps/capability_tests-b26e909487e497de)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/config_tests.rs (src-tauri/target/debug/deps/config_tests-203e219cfc0a8d4b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+     Running tests/continuous_dictation.rs (src-tauri/target/debug/deps/continuous_dictation-3fa98eaf1c683fc2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/crash_loop_tests.rs (src-tauri/target/debug/deps/crash_loop_tests-0d7c0aa5ed5a1327)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/dictation_polish_live.rs (src-tauri/target/debug/deps/dictation_polish_live-30bb804afb92de58)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/dictation_polish_quality.rs (src-tauri/target/debug/deps/dictation_polish_quality-401cf24457f2a835)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.00s
+
+     Running tests/distribution_tests.rs (src-tauri/target/debug/deps/distribution_tests-d72ccc8bc6f307be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/expansion_migrations.rs (src-tauri/target/debug/deps/expansion_migrations-fcf20ed4e6370539)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/expansion_processing.rs (src-tauri/target/debug/deps/expansion_processing-7cce56c5eeb2e4ef)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/fallback_oom_tests.rs (src-tauri/target/debug/deps/fallback_oom_tests-8e9f33a38b9735c6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/flow_runtime_live.rs (src-tauri/target/debug/deps/flow_runtime_live-1ec65802ada16795)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/hardware_matrix_tests.rs (src-tauri/target/debug/deps/hardware_matrix_tests-c14bb3bc3962c7c2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/history_encryption_stats.rs (src-tauri/target/debug/deps/history_encryption_stats-fc5988e2f6517f36)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/hotkey_session_ownership.rs (src-tauri/target/debug/deps/hotkey_session_ownership-725878af11fc5881)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/integration_tests.rs (src-tauri/target/debug/deps/integration_tests-34278fcf96afdec6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/linux_dictation_smoke.rs (src-tauri/target/debug/deps/linux_dictation_smoke-9183f9c6318a1d20)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/local_automation.rs (src-tauri/target/debug/deps/local_automation-08d32c11520e62ce)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/long_form_tests.rs (src-tauri/target/debug/deps/long_form_tests-5ad2a71120ca0e95)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/network_transfer.rs (src-tauri/target/debug/deps/network_transfer-7fec0d086ea47a72)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/phase2_expansion.rs (src-tauri/target/debug/deps/phase2_expansion-ee03829db75c7761)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+     Running tests/phase3_options.rs (src-tauri/target/debug/deps/phase3_options-0313c9f5f61fb335)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/phase4_features.rs (src-tauri/target/debug/deps/phase4_features-adc17f49c98be925)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests/phonon_live.rs (src-tauri/target/debug/deps/phonon_live-d744c1e4215a7c03)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/platform_hotkey_migration.rs (src-tauri/target/debug/deps/platform_hotkey_migration-2b02bbe373af9906)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/polish_toggle_tests.rs (src-tauri/target/debug/deps/polish_toggle_tests-66649cb4a3f3c413)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/privacy_audit_tests.rs (src-tauri/target/debug/deps/privacy_audit_tests-bd0dbc040c9fc1b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/profile_tests.rs (src-tauri/target/debug/deps/profile_tests-d644420507506dbe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s
+
+     Running tests/runtime_policy_tests.rs (src-tauri/target/debug/deps/runtime_policy_tests-b034e0346a0d10be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/sidecar_lifecycle_tests.rs (src-tauri/target/debug/deps/sidecar_lifecycle_tests-5677361e8a33e875)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/spill_tests.rs (src-tauri/target/debug/deps/spill_tests-948f098e5017d32a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+     Running tests/startup_storage_recovery.rs (src-tauri/target/debug/deps/startup_storage_recovery-8506539045b6410a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/storage_audit_regressions.rs (src-tauri/target/debug/deps/storage_audit_regressions-17294d05c355d1b3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+     Running tests/task_completion_regressions.rs (src-tauri/target/debug/deps/task_completion_regressions-2c9bb6802533dfc4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/task_prompts.rs (src-tauri/target/debug/deps/task_prompts-dd86c4ba6bd640eb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/telemetry_tests.rs (src-tauri/target/debug/deps/telemetry_tests-9782a0489c95fa7c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+     Running tests/writing_structure_live.rs (src-tauri/target/debug/deps/writing_structure_live-54541ff1a7328d04)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/writing_structure_quality.rs (src-tauri/target/debug/deps/writing_structure_quality-cf5c82be6edfb86d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+

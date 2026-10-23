@@ -1,0 +1,50 @@
+{
+  "scripts/eval_cleanup.cjs": {
+    "before_sha256": "b9a508b775102758b60fadca18dba7989ccf867218f9f35aa305bdc34b5be2e2",
+    "after_sha256": "29d75f617ea4d0198c69f19e6d8846af0211ed7da0804a65189464cd054ef245"
+  },
+  "src/components/LatencyWaterfall.test.tsx": {
+    "before_sha256": "3fb91034d549d2e5c171abf7c3d16e9df5981c5e113f552a4bc2dcb6d093ae54",
+    "after_sha256": "bdef1a91c7dcb80a02dfda415dc1c357a3423670b44d86b413d054d115a07abf"
+  },
+  "src/components/LatencyWaterfall.tsx": {
+    "before_sha256": "86efa62640ca092ef516d55af43f1ac83df750b51eea6d2d6ec11e470b82844b",
+    "after_sha256": "6106927b25308a90cc797a226c5491b78b8f92a621bd9e36e85158dea116b201"
+  },
+  "src/components/settings/DiagnosticsWaterfall.test.tsx": {
+    "before_sha256": "abea57d2de53771199284eac63859f81494f4f2044e086dbeacd4afa9ec9f0c5",
+    "after_sha256": "7a0b29415918accb21c608ac45f72d2369660aaba6bfc537a4c67b1949922d06"
+  },
+  "src/components/settings/DiagnosticsWaterfall.tsx": {
+    "before_sha256": "38108d42ebcbc00d5b95ad13a5f977c91472c2c1f19c5421a09a05b0b4e88fc2",
+    "after_sha256": "7076e13edba4e5c565a024c24d578631648dbbe0b35be48f730f244a5ac7ebfa"
+  },
+  "src/types/index.ts": {
+    "before_sha256": "8c4440d803b457f3cafa6bf44a9ca490977eb055032a31ac9ed75368b623ca93",
+    "after_sha256": "93f8a18b23acc448866a8dba7c39191e17b88d388a63dea9d1ee47cdeb914690"
+  },
+  "src-tauri/src/formatting/backtrack.rs": {
+    "before_sha256": "d93fa9f2d0a87cb2eade18b9e985b0f30285d7c97a686e2221830a4f150890a8",
+    "after_sha256": "0a93b87d20fb0e951dd8bb47c8791696316a73ee3fd807f1425f526863bc54a3"
+  },
+  "src-tauri/src/rewrite/chunker.rs": {
+    "before_sha256": "ae86229f5043951c3a89e0aad78b8962cf59e1001b5188baae3d96c36a9b2ecb",
+    "after_sha256": "eb900e3edc78840f090af2f0e4d69277687194052690775968f0e34022dc8e49"
+  },
+  "src-tauri/src/rewrite/validate.rs": {
+    "before_sha256": "1144835bbed05bb4ee1f6847db00b082173b8987b56ce413bd2d8ad4f613a349",
+    "after_sha256": "e12b8666fb155be9e10fefe00a7eaa0b4af854ee2e45e50b851252b240852f85"
+  },
+  "src-tauri/src/session.rs": {
+    "before_sha256": "ed305dc28e8fa084757347b147d5da6288ea2630f6a0396d94ca59f4a2ac7eb0",
+    "after_sha256": "8ee8759df78d1d2f5ed6dc54cfc4c11cb27bc864b89be928c28e9d5dbf294233"
+  },
+  "src-tauri/tests/cleanup_eval_live.rs": {
+    "before_sha256": "afceb0933b18427ec50296785c8adfdf72740a73731a547cc50aa44e7f8b7913",
+    "after_sha256": "4d912896a6209aaf8bb0babe6dd355479ea43662739ef70c662ad0f4fddae84e"
+  },
+  "src-tauri/tests/task_completion_regressions.rs": {
+    "before_sha256": "36a4b59a37348c89a7f9cf5dac8d254bd6b4ad2aca111319e8df340e5ffb9d70",
+    "after_sha256": "7d45326f999909e47765fe6be3681b25767dd8222c69f2ff4d25d0767a438be4"
+  }
+}

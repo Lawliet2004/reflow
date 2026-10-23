@@ -1,0 +1,138 @@
+{
+  "recorded_at": "2026-10-23T01:29:52.677015+00:00",
+  "source_checkpoint": "../paragraph-preservation/provenance.json",
+  "source_sha256": {
+    "src-tauri/src/rewrite/prompt.rs": "bda76d653712f641cd5412ca01e1db778e293efa904a9179ce08bf70beb9d5fb",
+    "src-tauri/src/rewrite/client.rs": "704eab7227f91f3b54143e535b0afbbef7d6d2879ad5321a211ce193fc2e9d43",
+    "src-tauri/src/rewrite/server.rs": "dd5c39f13349ecc116adc95d001c6ba1b28069b52bb38ee86f05f1d7e2c929a7",
+    "src-tauri/src/rewrite/safety.rs": "9b9769bfff339f7372541d46cd6736795286859f1bf7f39c735d3bbb03547072",
+    "src-tauri/src/session.rs": "712f5b594e7d1d7091a9529f4337c8ba87064ed2d3f5f249ea6e13b86d549753",
+    "src-tauri/src/formatting/backtrack.rs": "d93fa9f2d0a87cb2eade18b9e985b0f30285d7c97a686e2221830a4f150890a8",
+    "src-tauri/src/formatting/normalizers.rs": "80098647998f334d01e5e076b2f9d7a83af37e6e8ad644e576964f1936902afa",
+    "src-tauri/src/formatting/cleaner.rs": "a9703178d767a6aaf4f2c232a67993d3c938247b682c6bfb5edff089e95655f2",
+    "src-tauri/src/formatting/literals.rs": "d673ecb4ef83f62190bbfb887ddb5b1802a1dc52d386a6f6c7268e8adb520e37",
+    "src-tauri/src/settings/config.rs": "5c06792728a4287f277b48be46b00fcf19d52df425a57b75c930062203e63f6a",
+    "src-tauri/tests/refinement_benchmark.rs": "de3b6d74a456e27cf2479534ec847b4ef19655f7fa21affdfb9a99d9b959a71d",
+    "src-tauri/tests/fixtures/refinement_cases.json": "190d9ff9b38f959ec15e94b35526d68e698f5cd9dec1e9abb6b5117c969e49ac",
+    "src-tauri/src/formatting/replacements.rs": "2c0446b2190442ff83e6a72c7614674d3a813cd13d19481c77d55fd6ae8488d7",
+    "src-tauri/src/formatting/punctuation.rs": "3c8d67d156937a8cd2e50206316d68da086d39ddb3bbfd043b0caa364ad8dfba",
+    "src-tauri/tests/dictation_polish_quality.rs": "49929ea5f63ff9d5e0712641253a332904ded867f937bb5774e2ae60e09d22cc"
+  },
+  "model": {
+    "filename": "Qwen3.5-0.8B-Q4_K_M.gguf",
+    "size_bytes": 532517120,
+    "sha256": "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517"
+  },
+  "runtime": {
+    "path": "/home/papan/.local/share/reflow/bin/runtimes/b11146-Vulkan-3558e001-8190-44ac-bb2c-72c7ac237b5f/llama-server",
+    "sha256": "22de090746c114569367998ec930b28f27f12e078e593ff21175a54b409d26fe"
+  },
+  "actual_context": 1024,
+  "no_extra_model_process": true,
+  "no_model_downloads": true,
+  "adopted": false,
+  "reason": "Improved email punctuation but applied rewrites fell from 43/50 to 39/50 and visible canonical technical casing was lost to fallback. Sentence boundary and topic/layout gaps remain. Keep production instruction and guards unchanged.",
+  "controlled_changes": [
+    {
+      "id": "ordinary_paragraph",
+      "before": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+      "after": "Hey, I wanted to ask you about the project I finished the frontend yesterday, and I'm working on the backend today.",
+      "before_used": true,
+      "after_used": true,
+      "reason": null
+    },
+    {
+      "id": "framework_wait",
+      "before": "Use Svelte for the frontend.",
+      "after": "Use Svelte for the frontend.",
+      "before_used": true,
+      "after_used": false,
+      "reason": "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved."
+    },
+    {
+      "id": "command",
+      "before": "Run `git reset --soft HEAD~1` but do not run `git reset --hard`.",
+      "after": "Run `git reset --soft HEAD~1` but do not run `git reset --hard`.",
+      "before_used": true,
+      "after_used": false,
+      "reason": "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved."
+    },
+    {
+      "id": "identifier",
+      "before": "Set retryCount to 3 and keep src/api/client.ts unchanged.",
+      "after": "Set retryCount to 3 and keep src/api/client.ts unchanged.",
+      "before_used": true,
+      "after_used": false,
+      "reason": "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved."
+    },
+    {
+      "id": "question",
+      "before": "Can you send the report before five tomorrow?",
+      "after": "Can you send the report before five tomorrow?",
+      "before_used": false,
+      "after_used": true,
+      "reason": null
+    },
+    {
+      "id": "parentheses",
+      "before": "Keep the flag --dry-run (default: false) when testing.",
+      "after": "Keep the flag --dry-run (default: false) when testing.",
+      "before_used": true,
+      "after_used": false,
+      "reason": "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved."
+    },
+    {
+      "id": "email",
+      "before": "Hi Noura, the invoice is attached thanks, Maya.",
+      "after": "Hi Noura, the invoice is attached. Thanks, Maya.",
+      "before_used": true,
+      "after_used": true,
+      "reason": null
+    },
+    {
+      "id": "two_topics",
+      "before": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+      "after": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday, and we still need boxes.",
+      "before_used": true,
+      "after_used": true,
+      "reason": null
+    },
+    {
+      "id": "technical_terms",
+      "before": "Connect FastAPI to PostgreSQL and use Redis for caching.",
+      "after": "Connect fast api to postgres and use redis for caching.",
+      "before_used": true,
+      "after_used": false,
+      "reason": "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved."
+    },
+    {
+      "id": "quote_code",
+      "before": "Print `print(\"no no\")` exactly and keep the message \"actually use React\".",
+      "after": "Print `print(\"no no\")` exactly and keep the message \"actually use React\".",
+      "before_used": true,
+      "after_used": false,
+      "reason": "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved."
+    },
+    {
+      "id": "technical_negation",
+      "before": "Use Svelte not React and PostgreSQL not MySQL.",
+      "after": "Use Svelte instead of React and PostgreSQL instead of MySQL.",
+      "before_used": false,
+      "after_used": true,
+      "reason": null
+    }
+  ],
+  "coarse_oracle_note": "49/50 candidate score includes a substring false failure: instead of React/MySQL retains the intended not React/MySQL exclusions. Raw fields retained.",
+  "diagnostic_requests": 54,
+  "pipeline_requests": 100,
+  "script_sha256": {
+    "/tmp/reflow-sentence-boundary-probe.py": "5da1634b8c6b0953b68a2e6dc3c1474d658b129131b7766dbec0fed141795a98",
+    "/tmp/reflow-layout-shape-probe.py": "ebdc1978e410e7fddf858fed06df5d3544e61c1cc6ca266d7e45f95ac32d372a",
+    "/tmp/reflow-tail-instruction-probe.py": "de000225247276499c14cb952570b8e045b8afb0900dba5dad52a9ec30e88294",
+    "/tmp/reflow-tail-pipeline-probe.py": "9bf0f3eb971080b6a71fa5c5103d086dd3799e5a0fafeab142ee7c65eeff84b8"
+  },
+  "artifact_sha256": {
+    "raw-diagnostics.json": "f0a3ee067bc269fa55633f2e0146760db914b75f550cd07c02f1a7a7e2e9afeb",
+    "controlled-1024.json": "3544c553355504892b5ee81fcd7e44ff2b9406f3722c231f6e2988a16276925e"
+  }
+}

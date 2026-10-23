@@ -1,0 +1,5 @@
+WARN Retry attempt #0. Sleeping 1.98179791s before the next attempt
+WARN Retry attempt #1. Sleeping 2.838880637s before the next attempt
+WARN Retry attempt #0. Sleeping 1.873947363s before the next attempt
+WARN Retry attempt #2. Sleeping 1.912870644s before the next attempt
+Resolved 40 packages in 43.61s

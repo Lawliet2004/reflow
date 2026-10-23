@@ -27,7 +27,21 @@ fn qt_key(shortcut: &str) -> Result<i32, String> {
     if shortcut.trim().is_empty() {
         return Err("Choose a key combination first.".into());
     }
-    let parsed: Shortcut = crate::hotkey::HotkeyManager::normalize_shortcut(shortcut)
+    let normalized = crate::hotkey::HotkeyManager::normalize_shortcut(shortcut);
+    if let Some(flags) = crate::hotkey::HotkeyManager::modifier_only_flags(&normalized) {
+        // KDE represents a modifier-only QKeySequence as modifier bits with
+        // no base key. KGlobalAccel activates it on the first key release.
+        return Ok([
+            (1u8, 0x02000000),
+            (2, 0x04000000),
+            (4, 0x08000000),
+            (8, 0x10000000),
+        ]
+        .iter()
+        .filter(|(flag, _)| flags & flag != 0)
+        .fold(0, |mask, (_, qt)| mask | qt));
+    }
+    let parsed: Shortcut = normalized
         .parse()
         .map_err(|error| format!("Invalid shortcut: {error}"))?;
     let name = parsed.key.to_string();
@@ -167,6 +181,19 @@ async fn assign(
     Ok(())
 }
 
+fn supports_modifier_shortcuts(info: &str) -> bool {
+    info.lines()
+        .find_map(|line| line.trim().strip_prefix("KWin version:"))
+        .and_then(|version| {
+            let mut parts = version.trim().split('.');
+            Some((
+                parts.next()?.parse::<u32>().ok()?,
+                parts.next()?.parse::<u32>().ok()?,
+            ))
+        })
+        .is_some_and(|version| version >= (6, 1))
+}
+
 pub async fn set_shortcut(
     app_id: &str,
     action: &str,
@@ -179,6 +206,23 @@ pub async fn set_shortcut(
         .build()
         .await
         .map_err(|error| error.to_string())?;
+    if shortcut.is_some_and(|key| {
+        crate::hotkey::HotkeyManager::modifier_only_flags(
+            &crate::hotkey::HotkeyManager::normalize_shortcut(key),
+        )
+        .is_some()
+    }) {
+        let kwin = Proxy::new(&connection, "org.kde.KWin", "/KWin", "org.kde.KWin")
+            .await
+            .map_err(|e| format!("Could not check desktop shortcut support: {e}"))?;
+        let info: String = kwin
+            .call("supportInformation", &())
+            .await
+            .map_err(|e| format!("Could not check desktop shortcut support: {e}"))?;
+        if !supports_modifier_shortcuts(&info) {
+            return Err("Modifier-only shortcuts require KDE Plasma 6.1 or newer.".into());
+        }
+    }
     let proxy = Proxy::new(
         &connection,
         "org.kde.kglobalaccel",
@@ -192,6 +236,19 @@ pub async fn set_shortcut(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn modifier_only_bindings_use_kde_modifier_masks() {
+        assert_eq!(super::qt_key("Ctrl+Shift").unwrap(), 0x06000000);
+        assert_eq!(super::qt_key("Ctrl+Win").unwrap(), 0x14000000);
+        assert_eq!(super::qt_key("Shift+Win").unwrap(), 0x12000000);
+        assert_eq!(super::qt_key("Meta+Control").unwrap(), 0x14000000);
+        assert_eq!(super::qt_key("Ctrl+Shift+Win").unwrap(), 0x16000000);
+        assert!(super::supports_modifier_shortcuts("KWin version: 6.6.6"));
+        assert!(super::supports_modifier_shortcuts("KWin version: 6.1.0"));
+        assert!(!super::supports_modifier_shortcuts("KWin version: 6.0.5"));
+        assert!(!super::supports_modifier_shortcuts("unknown"));
+    }
+
     use super::*;
 
     #[test]
@@ -205,7 +262,7 @@ mod tests {
         assert_eq!(qt_key("Ctrl+K").unwrap(), 0x0400004b);
         assert_eq!(qt_key("Ctrl+1").unwrap(), 0x04000031);
         assert!(qt_key("").is_err());
-        assert!(qt_key("Ctrl+Shift").is_err());
+        assert_eq!(qt_key("Ctrl+Shift").unwrap(), 0x06000000);
         assert!(qt_key("Ctrl+NotAKey").is_err());
     }
 
@@ -320,6 +377,38 @@ mod tests {
                 .await
                 .unwrap();
             assign(&proxy, &component, "second", None).await.unwrap();
+            for shortcut in [
+                "Ctrl+Shift",
+                "Ctrl+Win",
+                "Shift+Win",
+                "Ctrl+Shift+Win",
+                "Ctrl+Space",
+                "Shift+Space",
+                "Ctrl+1",
+            ] {
+                let key = qt_key(shortcut).unwrap();
+                assign(&proxy, &component, "first", Some(key))
+                    .await
+                    .unwrap();
+                let assigned: Vec<KeySequence> = proxy
+                    .call(
+                        "shortcutKeys",
+                        &(vec![
+                            component.as_str(),
+                            "first",
+                            "Reflow shortcut test",
+                            "first",
+                        ],),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(assigned, vec![key_sequence(key)], "{shortcut}");
+                assert!(assign(&proxy, &component, "second", Some(key))
+                    .await
+                    .unwrap_err()
+                    .contains("Reflow's"));
+                assign(&proxy, &component, "first", None).await.unwrap();
+            }
         })
         .catch_unwind()
         .await;

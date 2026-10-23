@@ -1,0 +1,6 @@
+numpy==2.4.4
+huggingface_hub==1.11.0
+httpx==0.28.1
+# Install into the same Python interpreter used by Reflow's speech sidecar.
+# sherpa-onnx bundles its onnxruntime native libraries inside the wheel.
+sherpa-onnx==1.13.4

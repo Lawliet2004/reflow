@@ -1,0 +1,575 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.78s
+     Running tests/asr_selection_tests.rs (src-tauri/target/debug/deps/asr_selection_tests-d6b347c480375f38)
+
+running 21 tests
+test native_selection_only_considers_native_installs ... ok
+test native_runtime_uses_vulkan_without_python_cuda ... ok
+test only_installed_models_are_considered ... ok
+test phonon_keeps_its_own_engine_under_every_preset ... ok
+test phonon_uses_cuda_when_it_fits_and_cpu_when_it_does_not ... ok
+test a_full_gpu_falls_back_to_cpu_with_the_smallest_model ... ok
+test preset_drives_selection::balanced_and_auto_defer_to_settings ... ok
+test both_python_models_accept_explicit_int4_without_substitution ... ok
+test preset_drives_selection::accurate_still_respects_the_vram_budget ... ok
+test preset_drives_selection::custom_honours_the_users_model ... ok
+test preset_drives_selection::accurate_reaches_above_the_settings_model ... ok
+test a_model_that_does_not_fit_steps_down_instead_of_falling_to_cpu ... ok
+test the_measured_working_configuration_is_admitted_to_the_gpu ... ok
+test preset_drives_selection::fast_on_a_machine_with_no_gpu_uses_the_cpu ... ok
+test an_explicit_cpu_request_uses_the_smallest_model ... ok
+test a_model_that_fits_is_loaded_as_requested ... ok
+test with_no_gpu_it_falls_back_to_cpu_and_explains ... ok
+test zipformer_explains_ignored_gpu_and_rejects_forced_precision ... ok
+test zipformer_stays_cpu_int8_under_every_preset_and_runtime ... ok
+test selection_never_upgrades_beyond_the_request ... ok
+test preset_drives_selection::fast_takes_the_smallest_model_despite_ample_vram ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/asr_status_live.rs (src-tauri/target/debug/deps/asr_status_live-9a8f693435882564)
+
+running 1 test
+test model_status_converges_to_loaded_without_a_false_failure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audio_retention_tests.rs (src-tauri/target/debug/deps/audio_retention_tests-55d3ed0ac3d8f13c)
+
+running 7 tests
+test audio_expiry_keeps_transcripts_and_cannot_be_reversed ... ok
+test expiry_is_enforced_after_restart_and_before_background_cleanup ... ok
+test extracted_wav_is_playable_and_existing_exports_are_preserved ... ok
+test never_save_is_default_and_deleting_history_removes_audio ... ok
+test audio_retention_settings_survive_restart_and_invalid_values_are_rejected ... ok
+test retry_recognizes_audio_without_replacing_history_or_injecting_text ... ok
+test session_keeps_the_whole_recording_beyond_the_previous_sixty_second_buffer ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s
+
+     Running tests/automatic_dictionary.rs (src-tauri/target/debug/deps/automatic_dictionary-49107260c512701c)
+
+running 14 tests
+test does_not_learn_changes_in_meaning_or_added_prose ... ok
+test learns_joined_words_and_split_names_from_an_edit ... ok
+test learns_automatically_persists_and_isolates_users ... ok
+test dictionary_outputs_are_literal_and_longer_phrases_win ... ok
+test vocabulary_enforces_saved_capitalization ... ok
+test newest_preference_updates_existing_aliases ... ok
+test respects_opt_out_and_deleted_learned_rules ... ok
+test literal_replacements_do_not_cascade_or_change_contractions ... ok
+test observer_does_not_overwrite_newer_edits_or_recreate_deleted_history ... ok
+test dictionary_learning_works_without_storing_history ... ok
+test ordinary_edits_sync_history_without_learning_but_later_spelling_edits_still_learn ... ok
+test observed_history_edits_work_with_encryption_and_keep_user_source ... ok
+test fallback_cleanup_does_not_apply_replacements_twice ... ok
+test observed_edit_updates_history_preserves_raw_and_applies_next_time ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/capability_tests.rs (src-tauri/target/debug/deps/capability_tests-b26e909487e497de)
+
+running 11 tests
+test driver_cuda_version_is_parsed_from_bare_smi_output ... ok
+test vulkan_is_probed_independently_of_cuda ... ok
+test used_vram_is_never_reported_as_capacity ... ok
+test gpu_without_usable_cuda_is_its_own_state ... ok
+test hybrid_graphics_prefers_the_discrete_device ... ok
+test no_gpu_machine_reports_cpu_only ... ok
+test free_vram_is_measured_not_derived_from_a_nominal_total ... ok
+test cached_reads_do_not_shell_out ... ok
+test diagnostics_report_contains_no_transcript_text ... ok
+test torch_report_is_the_only_source_of_cuda_availability ... ok
+test live_probe_is_internally_consistent ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s
+
+     Running tests/config_tests.rs (src-tauri/target/debug/deps/config_tests-203e219cfc0a8d4b)
+
+running 17 tests
+test fresh_install_is_deterministic_until_an_llm_tier_is_picked ... ok
+test a_cpu_refinement_device_never_keeps_gpu_layers ... ok
+test legacy_settings_keep_automatic_paste_and_explicit_terminal_chords_validate ... ok
+test a_legacy_cpu_backend_stays_on_cpu_after_migration ... ok
+test legacy_flat_patch_keys_still_reach_the_nested_sections ... ok
+test gpu_refinement_requires_the_memory_policy_to_allow_it ... ok
+test a_nested_patch_merges_rather_than_replaces ... ok
+test asr_and_refinement_devices_are_independent_and_both_honoured ... ok
+test every_historic_config_shape_round_trips ... ok
+test legacy_config_migrates_without_user_action ... ok
+test refinement_model_always_agrees_with_the_tier ... ok
+test custom_cancel_persists_but_invalid_keys_preserve_saved_bindings ... ok
+test schema_2_flat_compute_fields_migrate_into_nested_sections ... ok
+test legacy_processing_mode_still_maps_to_a_cleanup_level ... ok
+test changing_cleanup_level_does_not_disable_refinement ... ok
+test selecting_a_tier_sets_the_stage_two_gate_only ... ok
+test resolve_intent_is_self_consistent_for_every_reachable_combination ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/continuous_dictation.rs (src-tauri/target/debug/deps/continuous_dictation-3fa98eaf1c683fc2)
+
+running 1 test
+test test_100_consecutive_dictation_cycles_stress_and_leak_detection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.01s
+
+     Running tests/crash_loop_tests.rs (src-tauri/target/debug/deps/crash_loop_tests-0d7c0aa5ed5a1327)
+
+running 1 test
+test test_sidecar_crash_loop_circuit_breaker_trips_after_3_crashes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/dictation_polish_live.rs (src-tauri/target/debug/deps/dictation_polish_live-30bb804afb92de58)
+
+running 1 test
+test local_model_polishes_dictation_without_inventing_list_quantities ... ignored, requires the installed Qwen3.5 0.8B model and llama-server
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dictation_polish_quality.rs (src-tauri/target/debug/deps/dictation_polish_quality-401cf24457f2a835)
+
+running 47 tests
+test a_headerless_list_cannot_gain_an_invented_recipient ... ok
+test an_explicit_line_break_survives_polishing ... ok
+test a_shop_dictation_rejects_an_unrelated_inventory ... ok
+test accepts_spoken_enumeration_as_bullets_without_inventing_counts ... ok
+test a_complete_inventory_and_following_request_can_be_formatted ... ok
+test a_single_quantity_with_an_ambiguous_conjunction_is_preserved ... ok
+test an_inventory_cannot_become_a_substitution_between_its_items ... ok
+test accepts_the_same_spoken_list_as_natural_prose ... ok
+test an_unparsed_inventory_cannot_gain_an_extra_item ... ok
+test a_single_list_item_preserves_its_full_name ... ok
+test a_stated_inventory_count_does_not_justify_fabricating_a_missing_item ... ok
+test a_spoken_ordinal_inventory_preserves_the_full_item_names ... ok
+test an_explicit_prose_inventory_preserves_the_full_item_names ... ok
+test changing_name_casing_does_not_rename_the_recipient ... ok
+test dot_command_arguments_cannot_move_to_a_different_command ... ok
+test bakery_prose_cannot_be_replaced_with_electronics_objects ... ok
+test compound_hyphenation_is_valid_inventory_cleanup ... ok
+test formatting_an_inventory_preserves_names_in_its_following_request ... ok
+test cleanup_preserves_negation_numbers_and_identifiers ... ok
+test explicit_item_quantities_survive_list_formatting ... ok
+test conjunctions_inside_an_item_are_preserved_when_removing_list_labels ... ok
+test article_like_words_inside_names_are_preserved ... ok
+test dot_command_arguments_remain_content_when_rewriting_list_items ... ok
+test formatting_an_inventory_preserves_the_request_after_its_last_item ... ok
+test grouping_applies_to_other_places_objects_and_quantities ... ok
+test group_headers_preserve_source_and_destination_roles ... ok
+test inventory_grammar_and_fillers_can_be_cleaned_without_changing_objects ... ok
+test non_inventory_prose_rejects_unrelated_nouns_even_at_the_same_length ... ok
+test common_contractions_preserve_the_speaker_and_sentence_meaning ... ok
+test non_inventory_grammar_can_improve_without_changing_its_content ... ok
+test prose_preserves_source_and_destination_roles ... ok
+test only_an_initial_and_may_be_removed_from_a_group_header ... ok
+test rejects_user_reported_quantity_hallucination ... ok
+test possessive_sentence_grammar_and_contractions_remain_editable ... ok
+test rejects_added_or_changed_quantities_in_enumerated_items ... ok
+test noun_suffixes_are_not_grammatical_variants_of_distinct_objects_or_names ... ok
+test shop_groups_can_be_formatted_with_all_objects_and_explicit_quantities ... ok
+test recipient_names_or_ambiguous_nouns_are_not_verb_agreement_candidates ... ok
+test compound_item_names_and_modifiers_are_preserved_generally ... ok
+test quoted_hesitations_and_commands_survive_ai_cleanup ... ok
+test truncating_a_list_item_preserves_the_complete_structured_inventory ... ok
+test a_four_things_dictation_with_three_items_preserves_the_ambiguous_last_word ... ok
+test an_unrelated_model_inventory_preserves_the_complete_shop_dictation ... ok
+test rejected_model_output_falls_back_to_the_complete_formatted_dictation ... ok
+test ordinary_quantity_prose_is_not_interpreted_as_an_enumeration ... ok
+test complex_shop_dictation_prepares_both_groups_before_polishing ... ok
+test valid_model_cleanup_reaches_the_final_dictation ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/distribution_tests.rs (src-tauri/target/debug/deps/distribution_tests-d72ccc8bc6f307be)
+
+running 4 tests
+test asr_and_refinement_manifest_lookups ... ok
+test all_manifests_are_pinned_and_verifiable ... ok
+test sha256_checksum_verification_and_corruption_detection ... ok
+test atomic_staging_prevents_partial_installation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/expansion_migrations.rs (src-tauri/target/debug/deps/expansion_migrations-fcf20ed4e6370539)
+
+running 1 test
+test v4_hotkey_migrates_and_legacy_patches_update_only_dictation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/expansion_processing.rs (src-tauri/target/debug/deps/expansion_processing-7cce56c5eeb2e4ef)
+
+running 2 tests
+test command_translation_resolves_catalogue_names_and_context_is_bounded ... ok
+test snippets_follow_replacements_and_remain_verbatim_at_final_output ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/fallback_oom_tests.rs (src-tauri/target/debug/deps/fallback_oom_tests-8e9f33a38b9735c6)
+
+running 2 tests
+test test_load_failure_kind_classification ... ok
+test test_llm_refinement_fallback_on_error_preserves_raw_text ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/flow_runtime_live.rs (src-tauri/target/debug/deps/flow_runtime_live-1ec65802ada16795)
+
+running 7 tests
+test polish_is_actually_applied_to_real_dictation ... ok
+test installed_runtime_summarizes_a_meeting_with_its_task_context ... ok
+test warming_the_prompt_cache_makes_cpu_rewrites_fast ... ok
+test a_meaning_changing_rewrite_is_refused_and_the_original_kept ... ok
+test flow_runtime_starts_and_serves_a_rewrite ... ok
+test a_warm_runtime_is_reused ... ok
+test installed_runtime_cleans_writing_tasks_without_losing_details ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/hardware_matrix_tests.rs (src-tauri/target/debug/deps/hardware_matrix_tests-c14bb3bc3962c7c2)
+
+running 5 tests
+test validate_class_b_rtx_2050_4gb ... ok
+test validate_class_a_cpu_only ... ok
+test validate_class_c_6gb_gpu ... ok
+test validate_class_e_24gb_workstation ... ok
+test validate_class_d_8gb_gpu ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/history_encryption_stats.rs (src-tauri/target/debug/deps/history_encryption_stats-fc5988e2f6517f36)
+
+running 11 tests
+test failed_encryption_setup_also_blocks_retranscription_of_existing_plaintext ... ok
+test authenticated_values_cannot_be_swapped_between_transcript_columns ... ok
+test failed_decryption_migration_rolls_back_transcripts_and_manifest ... ok
+test usage_stats_exclude_manual_notes_and_files_and_fill_thirty_day_series ... ok
+test failed_enabling_is_transactional_and_keeps_plaintext_state ... ok
+test enabling_encryption_removes_old_plaintext_wal_frames ... ok
+test missing_or_wrong_key_preserves_encrypted_original_byte_for_byte ... ok
+test encrypted_edits_retries_search_and_pagination_return_plaintext_to_callers ... ok
+test requested_encryption_blocks_private_writes_in_missing_key_recovery ... ok
+test missing_key_recovery_never_replaces_the_original_or_creates_a_key ... ok
+test encryption_migrates_every_private_surface_and_reopens_with_existing_key ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/hotkey_session_ownership.rs (src-tauri/target/debug/deps/hotkey_session_ownership-725878af11fc5881)
+
+running 11 tests
+test releasing_command_shortcut_cannot_stop_dictation ... ok
+test explicit_mode_release_only_belongs_to_that_mode ... ok
+test external_capture_never_belongs_to_a_keyboard_shortcut ... ok
+test automatically_selected_mode_still_belongs_to_the_dictation_shortcut ... ok
+test completed_recording_cannot_be_stopped_again_by_a_late_release ... ok
+test releasing_dictation_shortcut_cannot_stop_command_assistant_or_note ... ok
+test command_start_cannot_claim_an_external_recording ... ok
+test rejected_start_preserves_the_session_being_processed ... ok
+test queued_release_of_old_session_cannot_stop_a_new_recording ... ok
+test queued_escape_for_an_old_session_cannot_cancel_a_new_recording ... ok
+test escape_cancellation_waits_for_in_progress_startup_instead_of_being_lost ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/integration_tests.rs (src-tauri/target/debug/deps/integration_tests-34278fcf96afdec6)
+
+running 7 tests
+test test_mock_asr_streaming_simulation ... ok
+test test_vad_speech_and_silence_detection ... ok
+test test_default_settings_are_tray_first ... ok
+test test_legacy_settings_json_defaults_api_fields ... ok
+test test_settings_store_persistence ... ok
+test test_sqlite_history_store_full_lifecycle ... ok
+test test_mixed_language_and_jargon_formatting ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/linux_dictation_smoke.rs (src-tauri/target/debug/deps/linux_dictation_smoke-9183f9c6318a1d20)
+
+running 5 tests
+test linux_microphone_delivers_audio_to_capture_pipeline ... ignored, opens the configured Linux microphone for three seconds
+test meeting_capture_mixes_two_pipewire_streams_and_reaps_them ... ignored, requires an isolated REFLOW_SMOKE_PLAYBACK_SINK and speech fixture
+test pipewire_capture_resampling_and_recognition_work_together ... ignored, requires an isolated PipeWire loopback, REFLOW_SMOKE_PLAYBACK_SINK, and speech fixture
+test repeated_linux_capture_reaps_workers_without_dropped_chunks ... ignored, opens REFLOW_SMOKE_MIC for 30 one-second capture/cancel cycles
+test rust_actor_transcribes_english_and_recovers_after_cancel ... ignored, requires installed Zipformer and REFLOW_SMOKE_WAV English fixture
+
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/local_automation.rs (src-tauri/target/debug/deps/local_automation-08d32c11520e62ce)
+
+running 5 tests
+test portable_directory_is_beside_executable ... ok
+test automation_tokens_are_hashed_rotatable_and_revocable ... ok
+test automation_routes_reject_phone_tokens_before_side_effects ... ok
+test automation_credentials_stop_working_on_lan_and_when_disabled ... ok
+test automation_validates_text_and_cannot_stop_unowned_session ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/network_transfer.rs (src-tauri/target/debug/deps/network_transfer-7fec0d086ea47a72)
+
+running 6 tests
+test unknown_model_bytes_are_rejected_before_destination_changes ... ok
+test offline_is_fail_closed_and_only_pinned_https_hosts_are_allowed ... ok
+test official_hf_cdn_redirects_are_allowed_without_accepting_lookalikes ... ok
+test journal_reads_newest_bounded_entries_and_discards_untrusted_hosts ... ok
+test config_rejects_versions_paths_privilege_changes_and_executable_actions ... ok
+test config_roundtrip_preserves_local_privileges_and_merges_collections ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/phase2_expansion.rs (src-tauri/target/debug/deps/phase2_expansion-ee03829db75c7761)
+
+running 15 tests
+test large_file_import_requires_confirmation_before_decoding ... ok
+test notes_markdown_preserves_multiline_text_and_uses_current_edited_transcript ... ok
+test correction_learning_does_not_learn_punctuation_or_broad_rewrites ... ok
+test correction_learning_accepts_spelling_case_and_hyphen_changes_without_punctuation ... ok
+test correction_learning_recognizes_common_transposed_letter_spelling_errors ... ok
+test subtitle_exports_keep_unicode_and_correct_hour_and_millisecond_timing ... ok
+test old_settings_deserialize_directly_with_safe_expansion_defaults ... ok
+test file_decoder_rejects_nonfinite_float_audio ... ok
+test file_decoder_rejects_invalid_empty_and_out_of_range_audio ... ok
+test segmentation_places_a_boundary_at_a_quiet_window_near_thirty_seconds ... ok
+test already_cancelled_file_does_no_asr_work_and_writes_no_history ... ok
+test notes_query_excludes_other_kinds_and_pins_survive_reopening ... ok
+test cancellation_between_audio_packets_discards_partial_output_and_cancels_stream ... ok
+test segmentation_covers_each_sample_once_with_bounded_nonempty_chunks ... ok
+test file_decoder_matches_existing_wav_conversion_for_mono_and_resampled_stereo ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/phase3_options.rs (src-tauri/target/debug/deps/phase3_options-0313c9f5f61fb335)
+
+running 5 tests
+test privacy_exclusions_match_exact_process_basenames ... ok
+test invalid_options_do_not_replace_persisted_settings ... ok
+test automation_capture_is_never_owned_by_a_physical_shortcut ... ok
+test whole_voice_commands_do_not_match_embedded_or_extended_phrases ... ok
+test disabling_initial_capitalization_preserves_continuation_and_later_sentences ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/phase4_features.rs (src-tauri/target/debug/deps/phase4_features-adc17f49c98be925)
+
+running 10 tests
+test summaries_reject_unbounded_sentences_and_propagate_model_failures ... ok
+test summaries_split_at_sentence_boundaries_and_keep_all_sections ... ok
+test meeting_capture_timestamps_preserve_continuous_audio_despite_callback_jitter ... ok
+test meeting_mix_aligns_sources_and_leaves_silent_gaps ... ok
+test assistant_commands_are_entire_allowlisted_proposals ... ok
+test summaries_accept_the_default_local_context_window ... ok
+test meeting_mix_has_a_fixed_memory_bound ... ok
+test meeting_mode_requires_opt_in_before_opening_devices ... ok
+test meeting_pipeline_saves_provenance_and_never_pastes ... ok
+test earlier_meeting_speech_survives_an_overflowed_silent_tail ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s
+
+     Running tests/phonon_live.rs (src-tauri/target/debug/deps/phonon_live-d744c1e4215a7c03)
+
+running 1 test
+test phonon_real_sidecar_cpu_and_cuda ... ignored, requires installed Phonon weights, Python dependencies and REFLOW_PHONON_AUDIO
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/platform_hotkey_migration.rs (src-tauri/target/debug/deps/platform_hotkey_migration-2b02bbe373af9906)
+
+running 2 tests
+test supported_cross_platform_hotkeys_are_preserved ... ok
+test windows_modifier_only_shortcuts_do_not_block_linux_dictation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/polish_toggle_tests.rs (src-tauri/target/debug/deps/polish_toggle_tests-66649cb4a3f3c413)
+
+running 5 tests
+test enabling_from_a_never_polished_document_picks_a_real_tier ... ok
+test turning_polish_off_disables_stage_two ... ok
+test disabling_twice_is_idempotent ... ok
+test toggling_back_on_restores_the_tier_that_was_in_use ... ok
+test the_mode_survives_a_restart ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/privacy_audit_tests.rs (src-tauri/target/debug/deps/privacy_audit_tests-bd0dbc040c9fc1b6)
+
+running 2 tests
+test localhost_binding_guarantee ... ok
+test diagnostics_report_strictly_enforces_privacy_and_redaction ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+
+     Running tests/profile_tests.rs (src-tauri/target/debug/deps/profile_tests-d644420507506dbe)
+
+running 28 tests
+test an_explicit_custom_choice_is_never_overwritten ... ok
+test class_c_6gb_can_take_the_larger_model ... ok
+test class_b_rtx_2050_picks_a_configuration_that_fits_4gb ... ok
+test class_b_never_selects_the_configuration_that_spills ... ok
+test class_d_8gb_prefers_bf16_for_the_larger_model ... ok
+test amd_vulkan_machine_runs_asr_on_cpu_and_never_claims_cuda ... ok
+test an_explicit_refinement_of_none_turns_it_off_cleanly ... ok
+test class_a_cpu_only_4core_runs_everything_on_cpu ... ok
+test balanced_and_accurate_both_enable_refinement ... ok
+test a_measured_peak_overrides_the_estimate ... ok
+test accurate_preset_selects_the_larger_refinement_model ... ok
+test a_busy_gpu_degrades_rather_than_over_admitting ... ok
+test class_e_24gb_offers_the_full_ladder ... ok
+test cpu_only_6core_still_takes_the_small_model_despite_spare_ram ... ok
+test fast_preset_is_asr_only_and_that_is_not_a_failure ... ok
+test gpu_present_but_cuda_unusable_resolves_to_cpu_with_an_explanation ... ok
+test hybrid_graphics_reserves_less_because_the_igpu_drives_the_display ... ok
+test measured_attempts_are_marked_as_measured ... ok
+test every_class_produces_a_usable_profile_with_a_stated_reason ... ok
+test overrides_are_honoured_under_every_preset_not_just_custom ... ok
+test int4_is_never_chosen_automatically ... ok
+test preset_parsing_is_tolerant_but_never_silently_becomes_custom ... ok
+test refinement_moves_to_the_gpu_only_once_measured_to_fit ... ok
+test requesting_cuda_without_cuda_reports_it_instead_of_pretending ... ok
+test streaming_turns_on_only_below_the_rtf_ceiling ... ok
+test the_vram_reserve_is_a_floor_on_measured_free_not_a_share_of_nominal_total ... ok
+test profiles_round_trip_through_json ... ok
+test the_resolver_is_deterministic ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/runtime_policy_tests.rs (src-tauri/target/debug/deps/runtime_policy_tests-b034e0346a0d10be)
+
+running 8 tests
+test larger_gpu_gets_a_larger_bounded_context ... ok
+test quantized_cpu_llm_is_not_budgeted_as_fp32_weights ... ok
+test custom_automatic_offload_budgets_the_resolved_writing_model ... ok
+test low_ram_suppresses_additional_llm_load_and_warm_residency ... ok
+test auto_uses_small_asr_and_reserves_its_weights_before_llm ... ok
+test fast_execution_skips_llm_without_persisting_preferences ... ok
+test transient_free_vram_does_not_change_a_warm_runtime_request ... ok
+test custom_settings_are_preserved_exactly ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sidecar_lifecycle_tests.rs (src-tauri/target/debug/deps/sidecar_lifecycle_tests-5677361e8a33e875)
+
+running 1 test
+test test_asr_actor_graceful_lifecycle_and_shutdown ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/spill_tests.rs (src-tauri/target/debug/deps/spill_tests-948f098e5017d32a)
+
+running 12 tests
+test every_failure_kind_has_actionable_remediation ... ok
+test clipboard_fallback_is_reported_consistently ... ok
+test a_clean_cuda_load_is_healthy_on_device ... ok
+test cpu_loads_report_no_spill_and_are_not_claimed_as_device_healthy ... ok
+test an_unchecked_load_is_not_treated_as_clean ... ok
+test a_spilled_load_is_not_healthy_even_though_it_loaded ... ok
+test no_speech_does_not_get_a_truncation_warning_appended ... ok
+test spill_invalidates_a_benchmark_result ... ok
+test permanent_failures_are_not_retried ... ok
+test spill_is_distinguishable_from_oom_and_timeout ... ok
+test truncation_warning_reaches_the_user_facing_message ... ok
+test engine_status_round_trips_through_json ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/startup_storage_recovery.rs (src-tauri/target/debug/deps/startup_storage_recovery-8506539045b6410a)
+
+running 8 tests
+test a_fresh_install_keeps_normal_privacy_defaults ... ok
+test recovery_expires_only_recordings_whose_saved_deadline_passed ... ok
+test valid_disabled_recording_settings_do_not_delete_existing_audio_on_startup ... ok
+test a_valid_false_encryption_setting_does_not_decrypt_an_encrypted_manifest_on_startup ... ok
+test recovered_settings_cannot_allow_plaintext_writes_when_the_original_key_is_missing ... ok
+test recovery_with_conflicting_encryption_metadata_still_blocks_plaintext_writes ... ok
+test future_settings_schemas_preserve_unknown_fields_and_reject_all_saves ... ok
+test missing_or_invalid_settings_preserve_encrypted_history_audio_and_subtitles ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/storage_audit_regressions.rs (src-tauri/target/debug/deps/storage_audit_regressions-17294d05c355d1b3)
+
+running 9 tests
+test storage_audit_correction_learning_skips_tokens_exceeding_dictionary_limits ... ok
+test storage_audit_import_still_updates_safe_default_and_trigger_preferences ... ok
+test storage_audit_import_preserves_privileged_modes_and_cannot_activate_them ... ok
+test storage_audit_recovery_reopens_saved_history_without_touching_the_original ... ok
+test storage_audit_recovery_resumes_a_legacy_uuid_store ... ok
+test storage_audit_failed_subtitle_invalidation_rolls_back_edits_and_retries ... ok
+test storage_audit_missing_key_recovery_reopens_explicitly_readable_notes ... ok
+test storage_audit_edit_and_retry_invalidate_old_subtitle_text ... ok
+test storage_audit_automatic_retention_preserves_saved_notes_and_explicit_clear_removes_them ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/task_completion_regressions.rs (src-tauri/target/debug/deps/task_completion_regressions-2c9bb6802533dfc4)
+
+running 8 tests
+test task_that_cannot_fit_the_minimum_answer_never_dispatches_completion ... ok
+test task_completion_uses_only_the_remaining_context_for_output ... ok
+test coding_dictation_skips_tasks_even_when_a_custom_mode_requests_transformation ... ok
+test cleanup_fallback_accounting_includes_all_private_context ... ok
+test custom_mode_instruction_and_private_context_reach_the_final_user_turn ... ok
+test cleanup_with_context_keeps_the_cacheable_prefix_unchanged ... ok
+test snippets_are_inserted_after_task_generation_and_preserve_exact_stored_text ... ok
+test refused_or_meta_task_results_preserve_the_entire_dictation ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/task_prompts.rs (src-tauri/target/debug/deps/task_prompts-dd86c4ba6bd640eb)
+
+running 2 tests
+test task_prefix_stays_stable_and_private_input_stays_in_user_turn ... ok
+test tasks_accept_transformations_and_reject_refusals_and_meta ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/telemetry_tests.rs (src-tauri/target/debug/deps/telemetry_tests-9782a0489c95fa7c)
+
+running 9 tests
+test rtf_uses_measured_segment_compute_time ... ok
+test latency_waterfall_attributes_every_stage ... ok
+test no_latency_metric_is_structurally_zero ... ok
+test total_duration_is_session_wall_clock_not_audio_length ... ok
+test rewrite_ms_is_zero_when_no_rewrite_ran ... ok
+test rolling_percentiles_track_the_distribution ... ok
+test tail_audio_reaches_the_engine_before_stop_stream ... ok
+test first_partial_is_timestamped_and_emitted ... ok
+test completed_session_reports_a_full_waterfall ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+     Running tests/writing_structure_live.rs (src-tauri/target/debug/deps/writing_structure_live-54541ff1a7328d04)
+
+running 1 test
+test writing_categories_record_quality_separately_from_safe_fallback ... ignored, requires the installed Qwen3.5 0.8B model and llama-server
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/writing_structure_quality.rs (src-tauri/target/debug/deps/writing_structure_quality-cf5c82be6edfb86d)
+
+running 21 tests
+test builtin_email_mode_requests_layout_even_with_its_light_defaults ... ok
+test a_passive_rewrite_cannot_reverse_the_actor_and_recipient ... ok
+test a_possession_cannot_be_rewritten_as_an_identity ... ok
+test an_email_can_separate_its_existing_greeting_body_and_signoff ... ok
+test a_review_can_gain_paragraphs_without_inventing_a_rating_or_verdict ... ok
+test paragraphs_can_improve_prose_without_adding_a_heading ... ok
+test grammar_fixes_keep_the_sentence_content_and_voice ... ok
+test review_negation_stays_attached_to_the_same_opinion ... ok
+test mixed_language_punctuation_preserves_names_quantities_and_negation ... ok
+test a_literal_period_in_a_noun_phrase_is_not_a_punctuation_command ... ok
+test an_explicit_numbered_list_uses_positions_without_changing_quantities ... ok
+test an_explicit_terminal_colon_remains_a_heading_delimiter ... ok
+test a_grammar_refinement_does_not_apply_a_second_vocabulary_replacement ... ok
+test configured_vocabulary_is_applied_in_the_actual_postprocessing_pipeline ... ok
+test writing_bullets_keep_quantities_and_a_dictated_heading ... ok
+test spoken_comma_and_semicolon_form_the_dictated_clause_boundaries ... ok
+test a_question_in_one_paragraph_does_not_change_the_next_statement ... ok
+test explicit_paragraph_and_line_commands_keep_their_distinct_structure ... ok
+test builtin_email_mode_formats_a_short_greeting_body_and_signoff_in_the_pipeline ... ok
+test vocabulary_spelling_does_not_change_path_or_email_identifiers ... ok
+test accepted_email_and_review_structure_reach_the_final_pipeline_output ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+

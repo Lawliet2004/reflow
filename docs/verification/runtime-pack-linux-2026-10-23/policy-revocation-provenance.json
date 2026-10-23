@@ -1,0 +1,24 @@
+{
+  "recorded_at": "2026-10-23T01:06:44.875889+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "dirty_worktree": true,
+  "source_sha256": {
+    "scripts/runtime-packs.py": "9ce04772327f947ed7b19c8ea549088b9c5d934868e430c4759db5ae64e3e116",
+    "scripts/test_runtime_packs.py": "81385cb873af647d1e8f9a319189c0f7691bd7324731a985b454d48b3d23c582",
+    "src-tauri/src/asr/python_setup.rs": "0e39862dbac8f767ab59eb4e86fc17eb6d40182aba7891077eed16b30809a99b",
+    "src-tauri/src/asr/runtime_pack.rs": "377ccfc9915cd14ab61011c8d90cdbe0cfc18d8eb1b8fb33404996efebf0f439",
+    "src-tauri/src/asr/sidecar.rs": "1c3fed9318f7b72da8275cdc2487de2cfafaab6d77a1fb11a469dc9a252bd627",
+    "src-tauri/src/network_policy/download.rs": "fc901aa7d16b4ab331f96170c0128a6458ee1269b8cd38374223ebe63d1f7f8c",
+    "model-runtime/python-builds.json": "264bef1d61cea3fe7113371bf91fdd488cc059e0d7c599378f24f13bf9a20635",
+    "model-runtime/locks/x86_64-unknown-linux-gnu-zipformer-none.txt": "10b27c4759a572548207244fc63e8f8a4276704975abf1ccfa361ff897b23ac8",
+    "model-runtime/locks/pip.txt": "a5156dc41a4a00784002d063a17d6fcdb3e6922dd650046fd907b80173a502a7",
+    "src-tauri/src/network_policy.rs": "0be459ca8bf551aed75f6a1de559c36b0c68bee01c9ca44d5764eb446d66412a",
+    "src-tauri/src/platform/persistence.rs": "ae78fb5342d5c064a2c63cedab5fb0c8f3f1c102fd950caea6886cd09b05bab9",
+    "src-tauri/src/platform/mod.rs": "b899fba6d14826e3172920dbbd5744f616e44473b3b652c4e5ddcd93746524db",
+    "src-tauri/src/rewrite/runtime_inventory.rs": "9a5d58284e390c7b183f94157e27168a0e30cd5d50f5c3d94822d5a5e72c8c66"
+  },
+  "scope": "Current-source model-free dependency worker under simulated APPDIR and invalid inherited/original PYTHONHOME. ASR process revocation/startup has separate controlled tests; actual packaged GUI, native Windows/macOS and physical ASR remain unverified.",
+  "command": "APPDIR=<simulation> PYTHONHOME=<invalid> REFLOW_APPIMAGE_ORIGINAL_PYTHONHOME=<invalid> REFLOW_TEST_RUNTIME_PACK_CATALOG=<local-catalog> cargo test --locked --lib cached_runtime_pack_installs_offline_and_failed_repairs_preserve_it -- --ignored --nocapture --test-threads=1",
+  "result_file": "policy-revocation-offline-install.json",
+  "run_log_sha256": "1f2cc5ca03ff50c1edfb300501786b42c5814a7fd600effb9c30cc4bbd09ac72"
+}

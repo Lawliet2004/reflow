@@ -10,24 +10,15 @@ import { api, safeListen } from "../services/tauriApi";
 import { useViewVisibility } from "./useViewVisibility";
 import type { IntelligenceDownloadEvent } from "../App";
 
-/**
- * Single source of truth for intelligence state.
- *
- * Replaces three competing sources that used to race: the 2s
- * `getIntelligenceStatus` poll in `useIntelligenceStatus`, the
- * `intelligence:download-progress` events in `App.tsx`, and the per-page
- * polling loops in `ModelPage` (2s) and `CleanupPage` (1.5s). Event pushes
- * update download state immediately; polling only runs when no download is in
- * flight (the backend reports `installed: false` until the file is fully
- * written, so polling mid-download would clobber the UI and resurrect the
- * Download button).
- */
+/** Shared writing-runtime state. Events provide immediate progress; versioned
+ * backend snapshots recover missed events and reject stale poll results. */
 export interface IntelligenceHub {
   flowStatus: FlowStatus | null;
   systemMetrics: SystemMetrics | null;
   intelligenceTiers: IntelligenceTierState[] | null;
   capabilitiesRefreshKey: number;
   intelligenceDownload: IntelligenceDownloadEvent | null;
+  intelligenceDownloads?: Partial<Record<IntelligenceTier, IntelligenceDownloadEvent>>;
   activeDownloadTiers: Set<IntelligenceTier>;
   runtimeDownload: RuntimeDownloadEvent | null;
   runtimeDownloadActive: boolean;
@@ -40,7 +31,7 @@ export interface IntelligenceHub {
   refreshCapabilities: () => void;
 }
 
-const TERMINAL = new Set(["complete", "error"]);
+const TERMINAL = new Set(["complete", "error", "cancelled"]);
 
 function isInFlight(phase: string): boolean {
   return !TERMINAL.has(phase);
@@ -54,10 +45,15 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
   const [capabilitiesRefreshKey, setCapabilitiesRefreshKey] = useState(0);
   const [intelligenceDownload, setIntelligenceDownload] =
     useState<IntelligenceDownloadEvent | null>(null);
+  const [intelligenceDownloads, setIntelligenceDownloads] = useState<
+    Partial<Record<IntelligenceTier, IntelligenceDownloadEvent>>
+  >({});
+  const latestDownloads = useRef<Partial<Record<IntelligenceTier, IntelligenceDownloadEvent>>>({});
   const [activeDownloadTiers, setActiveDownloadTiers] = useState<Set<IntelligenceTier>>(
     () => new Set(),
   );
   const [runtimeDownload, setRuntimeDownload] = useState<RuntimeDownloadEvent | null>(null);
+  const latestRuntime = useRef<RuntimeDownloadEvent | null>(null);
   const [runtimeDownloadActive, setRuntimeDownloadActive] = useState(false);
   const [runtimeDownloadError, setRuntimeDownloadError] = useState<string | null>(null);
   const [lastToast, setLastToast] = useState<{ kind: "error" | "info"; text: string } | null>(null);
@@ -76,18 +72,113 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
     setLastToast({ kind, text });
   }, []);
 
+  const recordRuntime = useCallback((event: RuntimeDownloadEvent) => {
+    const previous = latestRuntime.current;
+    if (
+      previous?.revision !== undefined &&
+      event.revision !== undefined &&
+      event.revision <= previous.revision
+    )
+      return false;
+    latestRuntime.current = event;
+    setRuntimeDownload(event);
+    setRuntimeDownloadActive(isInFlight(event.phase));
+    setRuntimeDownloadError(
+      event.phase === "error" ? (event.error ?? "Runtime setup failed") : null,
+    );
+    return true;
+  }, []);
+
+  const recordDownload = useCallback((event: IntelligenceDownloadEvent) => {
+    const previous = latestDownloads.current[event.tier];
+    if (
+      event.revision !== undefined &&
+      previous?.revision !== undefined &&
+      event.revision <= previous.revision
+    )
+      return false;
+    if (
+      event.revision === undefined &&
+      previous &&
+      previous.tier === event.tier &&
+      previous.attempt_id === event.attempt_id &&
+      isInFlight(previous.phase) &&
+      isInFlight(event.phase) &&
+      event.progress_pct < previous.progress_pct
+    )
+      return false;
+    latestDownloads.current[event.tier] = event;
+    setIntelligenceDownloads((current) => ({ ...current, [event.tier]: event }));
+    setIntelligenceTiers(
+      (current) =>
+        current?.map((tier) =>
+          tier.tier === event.tier
+            ? {
+                ...tier,
+                download: event,
+                downloading: isInFlight(event.phase),
+                ...(event.phase === "complete" ? { installed: true, weights_installed: true } : {}),
+              }
+            : tier,
+        ) ?? current,
+    );
+    setActiveDownloadTiers((current) => {
+      const next = new Set(current);
+      if (isInFlight(event.phase)) next.add(event.tier);
+      else next.delete(event.tier);
+      return next;
+    });
+    setIntelligenceDownload((current) =>
+      current?.revision !== undefined &&
+      event.revision !== undefined &&
+      current.revision > event.revision
+        ? current
+        : event,
+    );
+    return true;
+  }, []);
+
   const refresh = useCallback(async () => {
     if (refreshing.current) return refreshing.current;
     const request = (async () => {
       await Promise.allSettled([
         api.getIntelligenceStatus().then((status) => {
-          if (mounted.current) setFlowStatus(status);
+          if (mounted.current) {
+            if (status.runtime_download) recordRuntime(status.runtime_download);
+            setFlowStatus(status);
+          }
         }),
         api.getSystemMetrics().then((metrics) => {
           if (mounted.current) setSystemMetrics(metrics);
         }),
         api.getIntelligenceTiers().then((tiers) => {
-          if (mounted.current) setIntelligenceTiers(tiers);
+          if (mounted.current) {
+            tiers.forEach((tier) => {
+              if (tier.download) recordDownload(tier.download);
+            });
+            setIntelligenceTiers((previous) =>
+              tiers.map((tier) => {
+                const latest = latestDownloads.current[tier.tier];
+                if (
+                  latest?.revision !== undefined &&
+                  tier.download?.revision !== undefined &&
+                  latest.revision > tier.download.revision
+                ) {
+                  return (
+                    previous?.find((current) => current.tier === tier.tier) ?? {
+                      ...tier,
+                      download: latest,
+                      downloading: isInFlight(latest.phase),
+                      ...(latest.phase === "complete"
+                        ? { installed: true, weights_installed: true }
+                        : {}),
+                    }
+                  );
+                }
+                return tier;
+              }),
+            );
+          }
         }),
       ]);
     })();
@@ -97,7 +188,7 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
     } finally {
       refreshing.current = null;
     }
-  }, []);
+  }, [recordDownload, recordRuntime]);
 
   const refreshCapabilities = useCallback(() => {
     setCapabilitiesRefreshKey((k) => k + 1);
@@ -122,35 +213,10 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
     void Promise.all([
       subscribe<IntelligenceDownloadEvent>("intelligence:download-progress", (event) => {
         if (!alive) return;
-        setActiveDownloadTiers((prev) => {
-          const next = new Set(prev);
-          if (isInFlight(event.phase)) next.add(event.tier);
-          else next.delete(event.tier);
-          return next;
-        });
-        // Monotonic guard: ignore events that would move the bar backwards
-        // mid-download; terminal phases always win.
-        setIntelligenceDownload((prev) => {
-          if (
-            prev &&
-            prev.tier === event.tier &&
-            isInFlight(prev.phase) &&
-            isInFlight(event.phase) &&
-            event.progress_pct < prev.progress_pct
-          ) {
-            return prev;
-          }
-          return event;
-        });
-        if (TERMINAL.has(event.phase)) {
-          // The file just landed on disk; re-read installed flags once.
-          void refresh();
-        }
+        if (recordDownload(event) && TERMINAL.has(event.phase)) void refresh();
       }),
       subscribe<RuntimeDownloadEvent>("runtime:download-progress", (event) => {
-        if (!alive) return;
-        setRuntimeDownloadActive(isInFlight(event.phase));
-        setRuntimeDownload(event);
+        if (!alive || !recordRuntime(event)) return;
         if (event.phase === "error") {
           setRuntimeDownloadError(event.error ?? "Runtime download failed");
           notifyToast(
@@ -168,13 +234,12 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
       alive = false;
       unsubs.forEach((fn) => fn());
     };
-  }, [refresh, notifyToast]);
+  }, [refresh, notifyToast, recordDownload, recordRuntime]);
 
-  // Polling fallback: runs only when no download is in flight, so it can never
-  // clobber event-driven progress or resurrect Download buttons mid-write.
-  const anyActive = activeDownloadTiers.size > 0 || runtimeDownloadActive;
+  // Backend snapshots carry event revisions, so polling can recover missed
+  // completion events without replacing newer progress.
   useEffect(() => {
-    if (anyActive || !visible || !pollEnabled) {
+    if (!visible || !pollEnabled) {
       if (pollTimer.current) {
         clearInterval(pollTimer.current);
         pollTimer.current = null;
@@ -191,7 +256,7 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
         pollTimer.current = null;
       }
     };
-  }, [anyActive, pollEnabled, refresh, visible]);
+  }, [pollEnabled, refresh, visible]);
 
   return {
     flowStatus,
@@ -199,6 +264,7 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
     intelligenceTiers,
     capabilitiesRefreshKey,
     intelligenceDownload,
+    intelligenceDownloads,
     activeDownloadTiers,
     runtimeDownload,
     runtimeDownloadActive,

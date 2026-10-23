@@ -1,0 +1,82 @@
+[
+  {
+    "start": 0,
+    "end": 7,
+    "title": "Think it. Say it.",
+    "voice": "Your next great idea shouldn't have to wait for your keyboard. What if your words could simply flow?",
+    "voice_start": 0.22,
+    "voice_duration": 5.090667
+  },
+  {
+    "start": 7,
+    "end": 14,
+    "title": "Meet Reflow.",
+    "voice": "Meet Reflow. Private, on-device dictation that turns the way you speak into the words you want to write.",
+    "voice_start": 7.22,
+    "voice_duration": 6.146667
+  },
+  {
+    "start": 14,
+    "end": 25,
+    "title": "Hold. Speak. Release.",
+    "voice": "Hold your shortcut. Speak naturally. Then release. Reflow transcribes your words and inserts them into the app you're already using. Stay with the thought. Keep your flow.",
+    "voice_start": 14.22,
+    "voice_duration": 9.842667
+  },
+  {
+    "start": 25,
+    "end": 36,
+    "title": "Your voice. A little clearer.",
+    "voice": "Leave the ums, repetitions, and rough edges behind. Choose a light cleanup, or use a local language model to polish grammar and shape longer thoughts into clear paragraphs.",
+    "voice_start": 25.22,
+    "voice_duration": 10.130667
+  },
+  {
+    "start": 36,
+    "end": 46,
+    "title": "One voice. Every context.",
+    "voice": "Draft an email. Send a quick message. Capture a note. Choose a writing style for the moment, with settings that adapt to the way you work.",
+    "voice_start": 36.22,
+    "voice_duration": 7.634667
+  },
+  {
+    "start": 46,
+    "end": 56,
+    "title": "Make it your language.",
+    "voice": "Names, technical terms, and the words you use every day. Add your vocabulary to the dictionary, and turn spoken shortcuts into the text you repeat most.",
+    "voice_start": 46.22,
+    "voice_duration": 9.026667
+  },
+  {
+    "start": 56,
+    "end": 65,
+    "title": "More than live dictation.",
+    "voice": "Already have a recording? Import your audio, transcribe it locally, and export text or subtitles. Give your recordings a useful second life.",
+    "voice_start": 56.22,
+    "voice_duration": 8.428979
+  },
+  {
+    "start": 65,
+    "end": 74,
+    "title": "One less thought to lose.",
+    "voice": "Keep ideas in Notes. Find past dictations in History. Search, pin, and pick up a thought right where you left it.",
+    "voice_start": 65.22,
+    "voice_duration": 7.034667
+  },
+  {
+    "start": 74,
+    "end": 83,
+    "title": "Your words stay yours.",
+    "voice": "Speech recognition and cleanup run on your computer. Download your models once, then dictate offline. Your voice deserves a workspace you can trust.",
+    "voice_start": 74.22,
+    "voice_duration": 8.428792
+  },
+  {
+    "start": 83,
+    "end": 90,
+    "title": "Speak freely.",
+    "voice": "Less friction between thinking and writing. More room for your ideas. Reflow. Speak freely.",
+    "voice_start": 83.22,
+    "voice_duration": 5.930667
+  }
+]

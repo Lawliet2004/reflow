@@ -2,6 +2,7 @@ import React from "react";
 import { AppSettings, Hotkeys } from "../../types";
 import { DesktopIntegrationPanel } from "../DesktopIntegrationPanel";
 import { Section, Row, Toggle } from "./ui";
+import { isModifierOnlyShortcut } from "../../services/shortcutKeys";
 import { HotkeyPicker } from "../HotkeyPicker";
 import { Keyboard } from "lucide-react";
 
@@ -41,6 +42,11 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
         renderShortcuts={({ status, busy, configure, setShortcut }) => {
           const wayland = status?.session === "wayland";
           const inApp = wayland && status.shortcut_editable;
+          const tapOnly =
+            wayland &&
+            isModifierOnlyShortcut(
+              status.assigned_shortcuts.dictate ?? status.shortcut.assigned_trigger,
+            );
           const editingDisabled =
             busy ||
             (inApp && status.shortcut.state !== "ready" && status.shortcut.state !== "unassigned");
@@ -64,7 +70,7 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
                 <HotkeyPicker
                   value={trigger ?? "Choose shortcut…"}
                   onChange={(key) => setShortcut(action, key)}
-                  allowModifierOnly={false}
+                  allowModifierOnly
                   disabled={editingDisabled}
                   ariaLabel={label}
                   allowEscape={action === "cancel"}
@@ -90,7 +96,7 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
               : "Your desktop assigns the active key. Click to change it.";
           } else {
             dictationHint = settings.push_to_talk
-              ? "Hold to dictate anywhere. Release to transcribe."
+              ? "Hold to dictate. Release to transcribe. Double-tap for hands-free; press again to stop."
               : "Press once to start, press again to stop";
           }
 
@@ -110,7 +116,7 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
 
           return (
             <>
-              <Row label="Push-to-talk shortcut" hint={dictationHint}>
+              <Row label="Dictation shortcut" hint={dictationHint}>
                 {field("dictation", settings.hotkey, (value) => change("hotkey", value))}
               </Row>
               {hotkeyRisky && !wayland && (
@@ -119,9 +125,17 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
                   used while typing. Consider combos with Ctrl, Alt, or Win.
                 </div>
               )}
-              <Row label="Push-to-talk mode" hint="Off = toggle start/stop with the same shortcut">
+              <Row
+                label="Push-to-talk mode"
+                hint={
+                  tapOnly
+                    ? "Tap this shortcut to start. Tap again to stop."
+                    : "On: hold to record, or double-tap within 0.5 seconds for hands-free. Off: press to start/stop."
+                }
+              >
                 <Toggle
-                  on={settings.push_to_talk}
+                  on={settings.push_to_talk && !tapOnly}
+                  disabled={tapOnly}
                   onChange={(value) => change("push_to_talk", value)}
                   ariaLabel="Push to talk"
                 />

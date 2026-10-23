@@ -1,0 +1,132 @@
+{
+  "recorded_at": "2026-10-23T01:16:05.629112+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "worktree": "modified; scoped hashes identify evaluated source",
+  "source_sha256": {
+    "src-tauri/src/rewrite/prompt.rs": "bda76d653712f641cd5412ca01e1db778e293efa904a9179ce08bf70beb9d5fb",
+    "src-tauri/src/rewrite/client.rs": "704eab7227f91f3b54143e535b0afbbef7d6d2879ad5321a211ce193fc2e9d43",
+    "src-tauri/src/rewrite/server.rs": "dd5c39f13349ecc116adc95d001c6ba1b28069b52bb38ee86f05f1d7e2c929a7",
+    "src-tauri/src/rewrite/safety.rs": "9b9769bfff339f7372541d46cd6736795286859f1bf7f39c735d3bbb03547072",
+    "src-tauri/src/session.rs": "712f5b594e7d1d7091a9529f4337c8ba87064ed2d3f5f249ea6e13b86d549753",
+    "src-tauri/src/formatting/backtrack.rs": "d93fa9f2d0a87cb2eade18b9e985b0f30285d7c97a686e2221830a4f150890a8",
+    "src-tauri/src/formatting/normalizers.rs": "80098647998f334d01e5e076b2f9d7a83af37e6e8ad644e576964f1936902afa",
+    "src-tauri/src/formatting/cleaner.rs": "a9703178d767a6aaf4f2c232a67993d3c938247b682c6bfb5edff089e95655f2",
+    "src-tauri/src/formatting/literals.rs": "d673ecb4ef83f62190bbfb887ddb5b1802a1dc52d386a6f6c7268e8adb520e37",
+    "src-tauri/src/settings/config.rs": "5c06792728a4287f277b48be46b00fcf19d52df425a57b75c930062203e63f6a",
+    "src-tauri/tests/refinement_benchmark.rs": "de3b6d74a456e27cf2479534ec847b4ef19655f7fa21affdfb9a99d9b959a71d",
+    "src-tauri/tests/fixtures/refinement_cases.json": "190d9ff9b38f959ec15e94b35526d68e698f5cd9dec1e9abb6b5117c969e49ac",
+    "src-tauri/src/formatting/replacements.rs": "2c0446b2190442ff83e6a72c7614674d3a813cd13d19481c77d55fd6ae8488d7",
+    "src-tauri/src/formatting/punctuation.rs": "3c8d67d156937a8cd2e50206316d68da086d39ddb3bbfd043b0caa364ad8dfba",
+    "src-tauri/tests/dictation_polish_quality.rs": "49929ea5f63ff9d5e0712641253a332904ded867f937bb5774e2ae60e09d22cc"
+  },
+  "changes_since_previous": [
+    "src-tauri/src/formatting/backtrack.rs",
+    "src-tauri/tests/refinement_benchmark.rs",
+    "src-tauri/tests/dictation_polish_quality.rs"
+  ],
+  "model": {
+    "filename": "Qwen3.5-0.8B-Q4_K_M.gguf",
+    "size_bytes": 532517120,
+    "sha256": "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517"
+  },
+  "runtime": {
+    "path": "/home/papan/.local/share/reflow/bin/runtimes/b11146-Vulkan-3558e001-8190-44ac-bb2c-72c7ac237b5f/llama-server",
+    "sha256": "22de090746c114569367998ec930b28f27f12e078e593ff21175a54b409d26fe"
+  },
+  "hardware": "Ryzen 5 7535HS, 16 GB RAM, NVIDIA RTX 2050 4 GB, Kubuntu",
+  "no_model_downloads": true,
+  "previous_source": "../object-retention/provenance.json",
+  "changes": "Preserve original prefix bytes and limit explicit repairs to one line. Keep line breaks out of marker whitespace, handle terminal periods on technical replacement choices. Add Stage 1/safety integration regression and report explicit-break counts in the live harness. System prompt, safety thresholds, context/token budgets, decoding and model are unchanged.",
+  "runs": ["contexts.json", "temperature-015.json"],
+  "actual_context_verification": "Harness asserts /props active per-slot n_ctx against each requested context. Raw rows retain server_context and reported_context.",
+  "memory_note": "VmHWM is per-process peak RSS; VRAM is device-wide and includes the resident app at its saved 1024 context. One temporary benchmark server ran at a time and was shut down. Desktop load was not isolated.",
+  "command": "REFLOW_REFINEMENT_BENCH_OUTPUT=<output> REFLOW_REFINEMENT_CONTEXTS=2048,4096,8192 cargo test --locked --test refinement_benchmark installed_model_quality_and_context_measurements -- --ignored --exact --nocapture",
+  "temperature_command": "Same test with REFLOW_REFINEMENT_CONTEXTS=4096 and REFLOW_REFINEMENT_TEMPERATURE=0.15.",
+  "stable_system_source_sha256": "773c432b20a09d44aa4752ef4a20d6cff3763599e4d01afbf26f2209ea11dfea",
+  "ponytail": {
+    "version": "5.3.2",
+    "upstream_latest_rechecked_on": "2026-10-23 Asia/Kolkata",
+    "source": "https://github.com/DietrichGebert/ponytail/releases/tag/v5.3.2"
+  },
+  "verification": {
+    "rust_all_targets": {
+      "command": "cargo test --locked --all-targets",
+      "passed": 982,
+      "failed": 0,
+      "ignored": 27,
+      "targets": 45,
+      "library_passed": 638,
+      "library_ignored": 16,
+      "exit_code": 0,
+      "log_sha256": "d605f378937dd6cf884fb73f6d00e0ecc02dc7cc8a02c0891fd2b7a7763b33b2"
+    },
+    "clippy_all_targets": {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log_sha256": "e83123dbab1de9f67c7e7c5118addc46f7c0bf5a58fb2b5080eb0eea65210f4c"
+    },
+    "rust_format": {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0
+    },
+    "repository_format": {
+      "command": "npm run format:check",
+      "exit_code": 0,
+      "log_sha256": "0aaa94ebb7c9974eb24e337e82ec2e975a2ef4f381a45bd9bf78beefa50610f5"
+    },
+    "git_diff_check": {
+      "command": "git diff --check",
+      "exit_code": 0
+    },
+    "focused_backtrack_before": {
+      "command": "cargo test --locked --lib formatting::backtrack::tests:: -- --nocapture",
+      "passed": 18,
+      "failed": 2,
+      "exit_code": 101,
+      "log_sha256": "9cd3d43ef0eb5d9f53fdde285f187370643a8ff253760cefded66395f1fe125c"
+    },
+    "focused_backtrack_after": {
+      "command": "cargo test --locked --lib formatting::backtrack::tests:: -- --nocapture",
+      "passed": 20,
+      "failed": 0,
+      "exit_code": 0,
+      "log_sha256": "a0592370d847f0ae92212840077f53899ac24af1cbaf033f91ea5f8fb57ee157"
+    },
+    "dictation_integration": {
+      "command": "cargo test --locked --test dictation_polish_quality",
+      "passed": 49,
+      "failed": 0,
+      "exit_code": 0,
+      "log_sha256": "2c07b89853ce29c3318e68c44a81ff6b892f41ba22398873ba5bc2581054deb3"
+    },
+    "live_contexts": {
+      "cases": 150,
+      "test_result": "1 passed, 2 filtered out",
+      "exit_code": 0,
+      "log_sha256": "819fb331a3a93322b802dcb03db6f6ad118a206516904dde61c5e275751fddaa"
+    },
+    "live_temperature": {
+      "cases": 50,
+      "test_result": "1 passed, 2 filtered out",
+      "exit_code": 0,
+      "log_sha256": "02567ed853abd3ff1923d6faf51c96e37d5716f3fa4f16500f6acffa7fef61e3"
+    },
+    "frontend": {
+      "scope": "No frontend or IPC source edited; nine captured source/test hashes rechecked unchanged against setup-recovery evidence. Prior 371-test/build results reused; no new frontend test/build run claimed.",
+      "previous_provenance": "../../setup-recovery-provenance-2026-10-23.json"
+    },
+    "asr_runtime": {
+      "scope": "All 11 captured source hashes rechecked unchanged from policy-revocation evidence. Local offline pack/ASR lifecycle checks were not rerun for this cleanup-only change.",
+      "previous_provenance": "../../network-policy-revocation-provenance-2026-10-23.json"
+    }
+  },
+  "verification_note": "Full locked test/Clippy and format checks completed. Native acceptance, broader faults, advisories and remaining quality cases stay open.",
+  "asset_hashes_rechecked_at": "2026-10-23T01:16:06.062589+00:00",
+  "verification_recorded_at": "2026-10-23T01:19:03.272892+00:00",
+  "selected_source_lines_delta": 6968,
+  "artifact_sha256": {
+    "contexts.json": "f8f9ef00569ecc4ee7c6fec9ccce8f6b0e798b3dd94b2ad7ccc221bfda4da721",
+    "temperature-015.json": "e19b9b703e512fee48180076529c60b16461c2225ce716431e8569f339789865",
+    "summary.json": "40658b60d6bbae767bcc50457420a7dc2bcbc020f27b85e99ffb0fac78473896"
+  }
+}

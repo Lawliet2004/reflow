@@ -1,0 +1,45 @@
+{
+  "pack_sha256": "80a6eb835b574612a6001d4c677c7e16582416c09c2084c429676b859adecc7b",
+  "python": "/home/papan/.cache/reflow-phonon-runtime-pack-verification/tmp/reflow-python-e2e-2e849853-33b6-4194-bca0-3565274e8e43/python-generations/eb2016e9-a334-47de-bf9d-402a95d91bec/runtime/bin/python",
+  "model_dir": "/home/papan/.cache/reflow-phonon-runtime-pack-verification/tmp/reflow-python-e2e-2e849853-33b6-4194-bca0-3565274e8e43/models/phonon-2",
+  "source_archive_sha256": "98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e",
+  "source_weights_copied_locally": true,
+  "model_downloads": 0,
+  "cold_model_cache_before_first_load": true,
+  "runs": [
+    {
+      "audio_seconds": 4.605,
+      "backend": "Phonon-2 \u00b7 CPU int8 \u00b7 cpu: C encoder (packed one-dot int8) + C TDT loop, avx2 tier",
+      "device": "cpu",
+      "load_ms": 34644,
+      "model_downloads": 0,
+      "native_desktop_acceptance": false,
+      "other_language_rejected": true,
+      "precision": "int8",
+      "reference": "The application should work offline. Please keep my recordings private.",
+      "reference_words_match": true,
+      "stop_and_decode_ms": 227,
+      "text": "The application should work offline. Please keep my recordings private.",
+      "mode": "default",
+      "log_sha256": "b06f5d369ae89f1d1fddc084e00a575bb35d8ce4df8ccbf152f48c8bdf10bd28"
+    },
+    {
+      "audio_seconds": 4.605,
+      "backend": "Phonon-2 \u00b7 CPU fp32 \u00b7 cpu: dense fp32 encoder (torch) + C TDT loop",
+      "device": "cpu",
+      "load_ms": 23068,
+      "model_downloads": 0,
+      "native_desktop_acceptance": false,
+      "other_language_rejected": true,
+      "precision": "fp32",
+      "reference": "The application should work offline. Please keep my recordings private.",
+      "reference_words_match": true,
+      "stop_and_decode_ms": 383,
+      "text": "The application should work offline. Please keep my recordings private.",
+      "mode": "fp32",
+      "log_sha256": "2592de5684c15c24f7ae7e222f2be0f26c4e27ef8d2d2aad79ba095f8a819b29"
+    }
+  ],
+  "source_archive_unchanged": true,
+  "isolated_network_journal_entries": 0
+}

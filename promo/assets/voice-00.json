@@ -1,0 +1,20 @@
+[
+  { "type": "WordBoundary", "offset": 943330, "duration": 943330, "text": "Your" },
+  { "type": "WordBoundary", "offset": 2004580, "duration": 2476250, "text": "next" },
+  { "type": "WordBoundary", "offset": 4599160, "duration": 2358330, "text": "great" },
+  { "type": "WordBoundary", "offset": 7075410, "duration": 4127500, "text": "idea" },
+  { "type": "WordBoundary", "offset": 13797080, "duration": 3184160, "text": "shouldn't" },
+  { "type": "WordBoundary", "offset": 17099160, "duration": 1768750, "text": "have" },
+  { "type": "WordBoundary", "offset": 18985830, "duration": 707500, "text": "to" },
+  { "type": "WordBoundary", "offset": 19811250, "duration": 2476250, "text": "wait" },
+  { "type": "WordBoundary", "offset": 22405830, "duration": 1061250, "text": "for" },
+  { "type": "WordBoundary", "offset": 23585000, "duration": 1061250, "text": "your" },
+  { "type": "WordBoundary", "offset": 24764160, "duration": 4481250, "text": "keyboard" },
+  { "type": "WordBoundary", "offset": 33136660, "duration": 825410, "text": "What" },
+  { "type": "WordBoundary", "offset": 34080000, "duration": 825410, "text": "if" },
+  { "type": "WordBoundary", "offset": 35023750, "duration": 1179160, "text": "your" },
+  { "type": "WordBoundary", "offset": 36320830, "duration": 2594160, "text": "words" },
+  { "type": "WordBoundary", "offset": 39032910, "duration": 1297080, "text": "could" },
+  { "type": "WordBoundary", "offset": 40447910, "duration": 3302080, "text": "simply" },
+  { "type": "WordBoundary", "offset": 43867910, "duration": 3655830, "text": "flow" }
+]

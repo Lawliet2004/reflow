@@ -180,3 +180,12 @@ describe("latency report shape", () => {
     `);
   });
 });
+
+it("shows a cleanup fallback reason without requiring it on older metrics", () => {
+  render(
+    <LatencyWaterfall
+      metrics={{ ...populatedMetrics(), rewrite_fallback_reason: "negation_dropped" }}
+    />,
+  );
+  expect(screen.getByText("negation_dropped")).toBeInTheDocument();
+});

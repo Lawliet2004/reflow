@@ -1,0 +1,79 @@
+{
+  "deterministic": {
+    "2048": {
+      "cases": 50,
+      "applied": 40,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 10,
+      "median_total_ms": 279.0,
+      "p95_total_ms": 409,
+      "peak_server_rss_bytes": 778571776,
+      "peak_device_vram_mib": 1238
+    },
+    "4096": {
+      "cases": 50,
+      "applied": 40,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 10,
+      "median_total_ms": 272.5,
+      "p95_total_ms": 444,
+      "peak_server_rss_bytes": 778547200,
+      "peak_device_vram_mib": 1264
+    },
+    "8192": {
+      "cases": 50,
+      "applied": 40,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 10,
+      "median_total_ms": 274.5,
+      "p95_total_ms": 412,
+      "peak_server_rss_bytes": 778293248,
+      "peak_device_vram_mib": 1316
+    }
+  },
+  "temperature_015_at_4096": {
+    "cases": 50,
+    "applied": 40,
+    "coarse_contracts": 50,
+    "safety_fallbacks": 10,
+    "median_total_ms": 270.0,
+    "p95_total_ms": 411,
+    "peak_server_rss_bytes": 778940416,
+    "peak_device_vram_mib": 1264
+  },
+  "paired_changes": [
+    {
+      "context": 2048,
+      "id": "reported_no",
+      "input": "he shouted no no no",
+      "before": "He shouted no no no.",
+      "after": "He shouted, \"No, no, no!\""
+    },
+    {
+      "context": 4096,
+      "id": "reported_no",
+      "input": "he shouted no no no",
+      "before": "He shouted no no no.",
+      "after": "He shouted, \"No, no, no!\""
+    },
+    {
+      "context": 8192,
+      "id": "reported_no",
+      "input": "he shouted no no no",
+      "before": "He shouted no no no.",
+      "after": "He shouted, \"No, no, no!\""
+    }
+  ],
+  "remaining_substantive_cases": [
+    "ordinary_paragraph",
+    "technical_correction",
+    "email",
+    "requirements_modifiers",
+    "meeting_actions",
+    "two_topics",
+    "no_wait_request",
+    "long",
+    "long_corrected_requirements"
+  ],
+  "coarse_contract_warning": "The corpus contracts do not establish publication-quality writing or semantic equivalence. SQLite/Python casing also remains imperfect."
+}

@@ -83,6 +83,8 @@ export type WritingPreferences = Partial<
     | "default_mode_id"
     | "modes"
     | "auto_style_from_app"
+    | "transcript_format"
+    | "custom_format_instructions"
   >
 > &
   Partial<Pick<Mode, "custom_instructions" | "translate_to" | "context">>;

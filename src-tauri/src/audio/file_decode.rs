@@ -1,6 +1,6 @@
 pub fn wav_or_pcm_to_f32(bytes: &[u8]) -> Result<Vec<f32>, String> {
     if bytes.len() > 12 && &bytes[0..4] == b"RIFF" {
-        let cursor = std::io::Cursor::new(bytes.to_vec());
+        let cursor = std::io::Cursor::new(bytes);
         let mut reader = hound::WavReader::new(cursor).map_err(|e| e.to_string())?;
         let spec = reader.spec();
         crate::session::validate_sample_rate(spec.sample_rate).map_err(|e| e.message)?;
@@ -52,6 +52,34 @@ pub const CONFIRM_FILE_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Decode packets incrementally; audio stays on this computer.
 pub fn decode_file(path: &Path, allow_large: bool) -> Result<Vec<f32>, String> {
+    let mut output = Vec::new();
+    decode_file_chunks(
+        path,
+        allow_large,
+        &std::sync::atomic::AtomicBool::new(false),
+        |chunk| {
+            output.extend_from_slice(chunk);
+            Ok(())
+        },
+    )?;
+    Ok(output)
+}
+
+pub fn decode_file_chunks(
+    path: &Path,
+    allow_large: bool,
+    cancel: &std::sync::atomic::AtomicBool,
+    mut consume: impl FnMut(&[f32]) -> Result<(), String>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let check_cancel = || {
+        if cancel.load(Ordering::SeqCst) {
+            Err("File transcription cancelled".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    check_cancel()?;
     let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
     if !metadata.is_file() {
         return Err("Choose an audio file".into());
@@ -81,8 +109,9 @@ pub fn decode_file(path: &Path, allow_large: bool) -> Result<Vec<f32>, String> {
         .map_err(|e| e.to_string())?;
     let mut resampler = None;
     let mut stream_spec = None;
-    let mut output = Vec::new();
+    let mut total = 0usize;
     loop {
+        check_cancel()?;
         let packet = match format.next_packet() {
             Ok(packet) => packet,
             Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -111,13 +140,52 @@ pub fn decode_file(path: &Path, allow_large: bool) -> Result<Vec<f32>, String> {
         if buffer.samples().iter().any(|s| !s.is_finite()) {
             return Err("Audio samples must be finite".into());
         }
-        output.extend(converter.resample_f32(buffer.samples()));
-        if output.len() > MAX_FILE_SAMPLES {
+        let output = converter.resample_f32(buffer.samples());
+        total = total
+            .checked_add(output.len())
+            .ok_or("Audio sample count overflow")?;
+        if total > MAX_FILE_SAMPLES {
             return Err("Audio files must be at most two hours long".into());
         }
+        check_cancel()?;
+        consume(&output)?;
     }
-    if output.is_empty() {
+    if total == 0 {
         return Err("The file contains no audio".into());
     }
-    Ok(output)
+    Ok(())
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[test]
+    fn decoding_cancels_between_packets_without_materializing_the_file() {
+        let path = std::env::temp_dir().join(format!("reflow-decode-{}.wav", uuid::Uuid::new_v4()));
+        let mut writer = hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for _ in 0..16000 * 60 {
+            writer.write_sample(42i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut consumed = 0;
+        let result = decode_file_chunks(&path, false, &cancel, |chunk| {
+            consumed += chunk.len();
+            cancel.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(consumed > 0 && consumed < 16000 * 60);
+        let _ = std::fs::remove_file(path);
+    }
 }

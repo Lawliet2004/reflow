@@ -1,0 +1,19 @@
+{
+  "broken_lazy_api_rejected": true,
+  "bytes": 308489808,
+  "cancelled_repair": "pass",
+  "corrupt_cache": "pass",
+  "missing_cache": "pass",
+  "model_downloads": 0,
+  "native_desktop_or_asr_acceptance": false,
+  "network_journal_entries": 0,
+  "offline_install_ms": 53209,
+  "offline_repair": "pass",
+  "pack_sha256": "548fabff5ba36aa7c279eb5e6bd136f54c0415b73d8e1710ec9382ac5ef85f53",
+  "profile": "qwen-cpu",
+  "retained_app_dir": null,
+  "retained_python": null,
+  "target": "x86_64-unknown-linux-gnu",
+  "complete_test_seconds": 122.38,
+  "log_sha256": "5fe22c500edf1ac233391d1148abc6d09b2b18fa1af2d2acb1c65a42fd62ab14"
+}

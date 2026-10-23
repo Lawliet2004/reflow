@@ -38,7 +38,7 @@ pub(super) fn literal_ranges(text: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-pub(super) fn overlaps_literal(text: &str, span: Range<usize>) -> bool {
+pub(crate) fn overlaps_literal(text: &str, span: Range<usize>) -> bool {
     literal_ranges(text)
         .iter()
         .any(|literal| span.start < literal.end && span.end > literal.start)

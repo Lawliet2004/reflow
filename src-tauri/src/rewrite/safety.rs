@@ -1,3 +1,5 @@
+use crate::formatting::backtrack::explicit_correction_sources;
+
 /// Cleanup intensity used by the rewriter safety gate.
 ///
 /// Formatting owns the canonical `CleanupLevel` when present; this local
@@ -123,56 +125,137 @@ pub fn accept_rewrite(
     candidate: &str,
     level: impl Into<CleanupLevel>,
 ) -> Option<String> {
+    accept_rewrite_inner(original, candidate, level.into(), false)
+}
+
+/// Accepts the same content-preserving edits as [`accept_rewrite`], plus
+/// narrowly recognized neutral formatting labels and explicit phrase repairs.
+/// Literal, numeric, script, identifier, negation and repetition guards remain
+/// identical to the ordinary rewrite gate.
+pub fn accept_formatted_rewrite(
+    original: &str,
+    candidate: &str,
+    level: impl Into<CleanupLevel>,
+) -> Option<String> {
+    accept_rewrite_inner(original, candidate, level.into(), true)
+}
+
+fn accept_rewrite_inner(
+    original: &str,
+    candidate: &str,
+    level: CleanupLevel,
+    allow_formatting_labels: bool,
+) -> Option<String> {
+    validate_rewrite(original, candidate, level, allow_formatting_labels).ok()
+}
+
+/// The same safety decision with a reason suitable for diagnostics and fallback UI.
+pub fn validate_rewrite(
+    original: &str,
+    candidate: &str,
+    level: impl Into<CleanupLevel>,
+    allow_formatting_labels: bool,
+) -> Result<String, String> {
     let level = level.into();
+    // Compare with the final explicit proposition as well as the untouched
+    // speech. Every existing guard still runs, including literal protection.
+    let repaired = crate::formatting::backtrack::apply_backtrack(original);
+    if repaired != original
+        && crate::formatting::literals::literal_contents(original)
+            == crate::formatting::literals::literal_contents(&repaired)
+    {
+        if let Ok(accepted) = check_rewrite(&repaired, candidate, level, allow_formatting_labels) {
+            return Ok(accepted);
+        }
+    }
+    check_rewrite(original, candidate, level, allow_formatting_labels).map_err(str::to_owned)
+}
+
+fn check_rewrite(
+    original: &str,
+    candidate: &str,
+    level: CleanupLevel,
+    allow_formatting_labels: bool,
+) -> Result<String, &'static str> {
     let trimmed = candidate.trim();
     if trimmed.is_empty() {
-        return None;
+        return Err("empty completion");
     }
 
     let orig_chars = original.chars().count();
     let cand_chars = trimmed.chars().count();
     let max_chars = ((orig_chars as f64) * 2.5) as usize + 20;
     if cand_chars > max_chars {
-        return None;
+        return Err("completion expands beyond the allowed length");
     }
 
     if looks_like_meta(trimmed) {
-        return None;
+        return Err("completion contains commentary or a model response");
     }
 
     // Spoken line/paragraph breaks are intentional, even when the words match.
     if trimmed.matches('\n').count() < original.trim().matches('\n').count() {
-        return None;
+        return Err("explicit paragraph or line breaks were removed");
     }
+
+    // Only named, neutral headings and known list labels are removed from the
+    // content comparison. The returned candidate retains its requested layout.
+    let comparison_text = if allow_formatting_labels {
+        strip_neutral_format_labels(trimmed, original)
+    } else {
+        trimmed.to_owned()
+    };
 
     let original_literals = crate::formatting::literals::literal_contents(original);
-    if numeric_literals(original) != numeric_literals(trimmed)
-        || !original_literals.is_empty()
-            && original_literals != crate::formatting::literals::literal_contents(trimmed)
-        || spoken_quantities(original) != spoken_quantities(trimmed)
-        || !preserves_identifiers(original, trimmed)
-        || punctuation_arguments(original) != punctuation_arguments(trimmed)
-        || !preserves_scripts(original, trimmed)
-        || !preserves_enumerated_items(original, trimmed)
-        || !preserves_prose_content(original, trimmed)
+    if numeric_literals(original) != numeric_literals(trimmed) {
+        return Err("a number, amount, date, or version changed");
+    }
+    if !original_literals.is_empty()
+        && original_literals != crate::formatting::literals::literal_contents(trimmed)
     {
-        return None;
+        return Err("quoted text or literal code changed");
+    }
+    if spoken_quantities(original) != spoken_quantities(trimmed) {
+        return Err("a spoken quantity or its item changed");
+    }
+    if !preserves_identifiers(original, trimmed) {
+        return Err("a technical identifier, command, path, or name changed");
+    }
+    if punctuation_arguments(original) != punctuation_arguments(trimmed) {
+        return Err("meaningful command punctuation changed");
+    }
+    if !preserves_scripts(original, trimmed) {
+        return Err("the original language or script changed");
+    }
+    if !preserves_enumerated_items(original, &comparison_text) {
+        return Err("a listed item's content or modifier changed");
+    }
+    if !preserves_prose_content(original, &comparison_text, allow_formatting_labels) {
+        return Err("content, relationships, uncertainty, or an unresolved repair changed");
     }
 
-    if has_negation(original) && !has_negation(trimmed) {
-        return None;
+    let explicit_correction_removes_abandoned_negation = allow_formatting_labels
+        && explicit_correction_sources(original).iter().any(|source| {
+            !has_negation(source)
+                && preserves_prose_words_with_aliases(source, &comparison_text, true)
+        });
+    if has_negation(original)
+        && !has_negation(trimmed)
+        && !explicit_correction_removes_abandoned_negation
+    {
+        return Err("a genuine negation was removed");
     }
 
     if drops_first_person(original, trimmed) {
-        return None;
+        return Err("the speaker's first-person perspective was removed");
     }
 
     if reports_the_speaker(trimmed) {
-        return None;
+        return Err("the completion reports the speaker instead of editing");
     }
 
     let orig_tokens = tokenize(original);
-    let cand_tokens = tokenize(trimmed);
+    let cand_tokens = tokenize(&comparison_text);
     // A short possessive label may reach the gate without its list marker.
     // Protect the complete name, rather than accepting a one-word deletion
     // because it is small relative to the transcript's edit-distance budget.
@@ -184,9 +267,9 @@ pub fn accept_rewrite(
                 "my" | "your" | "our" | "his" | "her" | "their"
             )
         })
-        && drops_label_words(&label, &item_words(trimmed))
+        && drops_label_words(&label, &item_words(&comparison_text))
     {
-        return None;
+        return Err("a listed name or modifier was removed");
     }
     // These are the repetitions Stage 1 deliberately retains for grammar or
     // emphasis. A model must not silently turn them into accidental stutters.
@@ -205,14 +288,18 @@ pub fn accept_rewrite(
                 .filter(|token| *token == *word)
                 .count();
             if after < before {
-                return None;
+                return Err("meaningful emphasis or repeated negation was removed");
             }
         }
     }
     let max_len = orig_tokens.len().max(cand_tokens.len());
     // Bound the quadratic comparison. Oversized changes retain the original.
     if max_len > 8192 {
-        return (orig_tokens == cand_tokens).then(|| trimmed.to_string());
+        return if orig_tokens == cand_tokens {
+            Ok(trimmed.to_string())
+        } else {
+            Err("transcript is too large for bounded safety comparison")
+        };
     }
     if max_len > 0 {
         let distance = levenshtein(&orig_tokens, &cand_tokens);
@@ -222,11 +309,11 @@ pub fn accept_rewrite(
             _ => 0.55,
         };
         if ratio > limit {
-            return None;
+            return Err("rewrite exceeded the content edit budget");
         }
     }
 
-    Some(trimmed.to_string())
+    Ok(trimmed.to_string())
 }
 
 /// Preserve item names/modifiers without maintaining a compound-noun dictionary.
@@ -283,17 +370,30 @@ fn lexical_words(text: &str) -> Vec<String> {
 /// names. Confirmed inventories use their stricter item checks; ordinary prose
 /// retains content order and scoped prepositions. Grammar corrections do not
 /// justify exchanging a source/destination or stemming an unfamiliar name.
-fn preserves_prose_content(original: &str, candidate: &str) -> bool {
+fn preserves_prose_content(original: &str, candidate: &str, allow_formatting_labels: bool) -> bool {
     if crate::formatting::normalizers::enumeration_items(original).is_some() {
         return true;
     }
     if original.trim_end().ends_with(':') {
         return preserves_group_header(original, candidate);
     }
-    preserves_prose_words(original, candidate)
+    preserves_prose_words_with_aliases(original, candidate, allow_formatting_labels)
 }
 
 fn preserves_prose_words(original: &str, candidate: &str) -> bool {
+    preserves_prose_words_with_aliases(original, candidate, false)
+}
+
+fn preserves_prose_words_with_aliases(
+    original: &str,
+    candidate: &str,
+    allow_technical_aliases: bool,
+) -> bool {
+    let list_items = candidate
+        .lines()
+        .filter(|line| strip_list_marker(line.trim_start()) != line.trim_start())
+        .count();
+    let ignore_list_conjunctions = allow_technical_aliases && list_items > 1;
     // Capitalization can identify a name even where the grammar is ambiguous.
     // Preserve its exact word in both signatures, including case-only edits.
     let protected: std::collections::HashSet<String> = [original, candidate]
@@ -302,10 +402,30 @@ fn preserves_prose_words(original: &str, candidate: &str) -> bool {
         .filter(|word| word.chars().any(char::is_uppercase))
         .flat_map(tokenize)
         .collect();
-    let (after, after_prepositions) = prose_signature(candidate, &protected);
+    let (after, after_prepositions, after_copulas) = prose_signature(
+        candidate,
+        &protected,
+        allow_technical_aliases,
+        ignore_list_conjunctions,
+    );
     let preserves = |source: &str| {
-        let (before, before_prepositions) = prose_signature(source, &protected);
+        let (before, before_prepositions, before_copulas) = prose_signature(
+            source,
+            &protected,
+            allow_technical_aliases,
+            ignore_list_conjunctions,
+        );
         if before != after {
+            return false;
+        }
+        // A missing preposition can be grammatical glue. Replacing a finite
+        // predicate with one can instead attach a separate fact to its neighbor:
+        // "testing is Saturday" must not become "integration testing on Saturday".
+        if after_prepositions.iter().any(|relation| {
+            before_copulas.contains(&relation.0)
+                && !after_copulas.contains(&relation.0)
+                && !before_prepositions.contains(relation)
+        }) {
             return false;
         }
         // Adding an agent to a passive clause can reverse an active statement's
@@ -324,7 +444,105 @@ fn preserves_prose_words(original: &str, candidate: &str) -> bool {
             .iter()
             .all(|before| remaining.by_ref().any(|after| before == after))
     };
-    preserves(original) || phrase_restart_source(original).is_some_and(|source| preserves(&source))
+    preserves(original)
+        || phrase_restart_source(original).is_some_and(|source| preserves(&source))
+        || allow_technical_aliases
+            && explicit_correction_sources(original)
+                .iter()
+                .any(|source| preserves(source))
+}
+
+/// Remove only presentation labels that name structure already evident in the
+/// transcript. Unknown headings and labels stay in the comparison and are
+/// rejected if they add content.
+fn strip_neutral_format_labels(text: &str, original: &str) -> String {
+    const HEADINGS: &[&str] = &[
+        "requirements",
+        "technical requirements",
+        "backend requirements",
+        "meeting notes",
+        "decisions",
+        "action items",
+        "brainstorm",
+        "ideas",
+        "potential ideas",
+        "potential features",
+        "steps",
+        "procedure",
+        "technical overview",
+    ];
+    const LABELS: &[&str] = &[
+        "framework",
+        "database",
+        "authentication",
+        "security",
+        "caching",
+        "decision",
+        "action item",
+        "owner",
+        "deadline",
+        "task",
+        "idea",
+        "capability",
+    ];
+    const NEUTRAL_SUFFIXES: &[&str] = &["the following requirements", "these requirements"];
+    let original_words = tokenize(original);
+
+    text.lines()
+        .filter_map(|line| {
+            let leading = line.len() - line.trim_start().len();
+            let source = &line[leading..];
+            let body = strip_list_marker(source);
+            let marker_len = source.len() - body.len();
+            let prefix = &source[..marker_len];
+            let mut body = body.trim().to_owned();
+            let heading = body
+                .trim_start_matches('#')
+                .trim()
+                .trim_end_matches([':', '.', '*', '_'])
+                .trim()
+                .to_ascii_lowercase();
+            if prefix.is_empty() && HEADINGS.contains(&heading.as_str()) {
+                return None;
+            }
+
+            let body_without_terminal = body.trim_end_matches([':', '.']).trim_end().to_owned();
+            let lower = body_without_terminal.to_ascii_lowercase();
+            for suffix in NEUTRAL_SUFFIXES {
+                if lower.ends_with(suffix) {
+                    body = body_without_terminal[..body_without_terminal.len() - suffix.len()]
+                        .trim_end()
+                        .to_owned();
+                    break;
+                }
+            }
+
+            if let Some((label, value)) = body.split_once(':') {
+                if LABELS
+                    .iter()
+                    .any(|candidate| label.trim().eq_ignore_ascii_case(candidate))
+                {
+                    let label = label.trim();
+                    let label_words = tokenize(label);
+                    let label_is_dictated = !label_words.is_empty()
+                        && original_words
+                            .windows(label_words.len())
+                            .any(|words| words == label_words);
+                    body = if label_is_dictated {
+                        // A neutral field label can stand in for a word the
+                        // speaker said, but keep it after the value in the
+                        // comparison so the source's spoken order remains
+                        // checkable.
+                        format!("{} {label}", value.trim_start())
+                    } else {
+                        value.trim_start().to_owned()
+                    };
+                }
+            }
+            Some(format!("{prefix}{body}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Source-only allowance for the adjacent phrase restarts Stage 1 already
@@ -390,7 +608,8 @@ fn phrase_restart_source(original: &str) -> Option<String> {
 }
 
 fn expanded_prose_words(text: &str) -> Vec<String> {
-    text.lines()
+    let words: Vec<String> = text
+        .lines()
         .flat_map(|line| lexical_words(strip_list_marker(line)))
         .flat_map(|word| {
             let word = word.replace('’', "'");
@@ -436,7 +655,19 @@ fn expanded_prose_words(text: &str) -> Vec<String> {
                 vec![word]
             }
         })
-        .collect()
+        .collect();
+    let mut normalized = Vec::new();
+    let mut index = 0;
+    while index < words.len() {
+        if words[index] == "instead" && words.get(index + 1).is_some_and(|word| word == "of") {
+            normalized.push("not".to_owned());
+            index += 2;
+        } else {
+            normalized.push(words[index].clone());
+            index += 1;
+        }
+    }
+    normalized
 }
 
 fn scoped_preposition(word: &str) -> bool {
@@ -457,13 +688,39 @@ fn grammatical_glue(word: &str) -> bool {
 fn prose_signature(
     text: &str,
     protected: &std::collections::HashSet<String>,
-) -> (Vec<String>, Vec<(usize, String)>) {
-    let words = expanded_prose_words(text);
+    allow_technical_aliases: bool,
+    ignore_list_conjunctions: bool,
+) -> (Vec<String>, Vec<(usize, String)>, Vec<usize>) {
+    let words = expanded_prose_words(text)
+        .into_iter()
+        .flat_map(|word| {
+            if !allow_technical_aliases {
+                return vec![word];
+            }
+            match word.as_str() {
+                "fastapi" => vec!["fast".into(), "api".into()],
+                "postgresql" => vec!["postgres".into()],
+                "node.js" | "nodejs" => vec!["node".into(), "js".into()],
+                "typescript" => vec!["type".into(), "script".into()],
+                "javascript" => vec!["java".into(), "script".into()],
+                _ => vec![word],
+            }
+        })
+        .collect::<Vec<_>>();
     let mut content = Vec::new();
     let mut prepositions = Vec::new();
+    let mut copulas = Vec::new();
     for (index, word) in words.iter().enumerate() {
-        if scoped_preposition(word) {
-            prepositions.push((content.len(), word.clone()));
+        if ignore_list_conjunctions && word == "and" {
+            continue;
+        }
+        let relation = if allow_technical_aliases && word == "using" {
+            "with"
+        } else {
+            word.as_str()
+        };
+        if scoped_preposition(relation) {
+            prepositions.push((content.len(), relation.to_owned()));
         } else if matches!(word.as_str(), "have" | "has" | "had") {
             // Possession is content. Only the explicit have + be auxiliary
             // chain can be treated as grammatical glue here.
@@ -475,6 +732,8 @@ fn prose_signature(
             }
         } else if matches!(word.as_str(), "do" | "does" | "did") {
             content.push("do".into());
+        } else if matches!(word.as_str(), "am" | "is" | "are" | "was" | "were") {
+            copulas.push(content.len());
         } else if !grammatical_glue(word) {
             content.push(if protected.contains(word) {
                 word.clone()
@@ -483,7 +742,7 @@ fn prose_signature(
             });
         }
     }
-    (content, prepositions)
+    (content, prepositions, copulas)
 }
 
 // Only normalize present-tense agreement in a narrow grammatical frame, never
@@ -858,7 +1117,7 @@ fn has_negation(text: &str) -> bool {
     }
     words
         .windows(2)
-        .any(|pair| pair[0] == "do" && pair[1] == "not")
+        .any(|pair| pair[0] == "do" && pair[1] == "not" || pair[0] == "instead" && pair[1] == "of")
 }
 
 fn tokenize(text: &str) -> Vec<String> {
@@ -1053,6 +1312,87 @@ fn levenshtein(a: &[String], b: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_preposition_cannot_replace_a_finite_predicate_and_reattach_a_fact() {
+        let source = "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.";
+        let observed = "Rahul will finish the frontend by Friday. Priya owns API integration testing on Saturday, and the launch is before Monday.";
+        assert!(accept_formatted_rewrite(source, observed, "high").is_none());
+        assert!(accept_formatted_rewrite(source, "Rahul will finish the frontend by Friday. Priya owns API integration. Testing is on Saturday, and launch is before Monday.", "high").is_some());
+        assert!(accept_rewrite("Speech is CPU only", "Speech with CPU only.", "high").is_none());
+        assert!(accept_rewrite("Testing is Saturday", "Testing is on Saturday.", "high").is_some());
+        assert!(
+            accept_formatted_rewrite("Meeting is Friday", "Meeting: Friday.", "high").is_some()
+        );
+        assert!(accept_rewrite(
+            "Meeting scheduled Friday",
+            "Meeting scheduled on Friday.",
+            "high"
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn excluded_choices_allow_equivalent_instead_of_without_reversing_negation() {
+        assert!(accept_formatted_rewrite(
+            "Use Svelte and connect it to postgres not mysql",
+            "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+            "high"
+        )
+        .is_some());
+        assert!(accept_formatted_rewrite(
+            "Use Svelte and connect it to postgres not mysql",
+            "Use Svelte and connect it to MySQL instead of PostgreSQL.",
+            "high"
+        )
+        .is_none());
+        assert!(
+            accept_rewrite("Do not delete the database", "Delete the database.", "high").is_none()
+        );
+    }
+
+    #[test]
+    fn explicit_repairs_validate_the_final_proposition_without_weakening_other_guards() {
+        for (source, output) in [
+            ("I want tea no no sorry I want coffee", "I want coffee."),
+            ("I want to no no no sorry I want coffee", "I want coffee."),
+            ("Use React no actually Svelte and connect to postgres not mysql", "Use Svelte and connect to postgres, not mysql."),
+            ("I would like to book the morning train no wait I would like to book the evening train", "I would like to book the evening train."),
+            ("Send it Monday sorry Tuesday and use React no wait use Svelte", "Send it Tuesday and use Svelte."),
+        ] {
+            assert!(accept_formatted_rewrite(source, output, "high").is_some(), "{source} -> {output}");
+        }
+        for (source, output) in [
+            (
+                "I want tea no no sorry I want coffee by Friday",
+                "I want coffee.",
+            ),
+            (
+                "I want tea no no sorry I want coffee for Amina",
+                "I want coffee for Maya.",
+            ),
+            (
+                "I want tea no no sorry I want coffee do not add milk",
+                "I want coffee with milk.",
+            ),
+            ("He shouted no no no", "He shouted no."),
+            ("This is very very important", "This is very important."),
+            (
+                "Keep `React no wait Svelte` exactly",
+                "Keep `Svelte` exactly.",
+            ),
+            (
+                "I want tea no no sorry I want 3 coffees",
+                "I want 4 coffees.",
+            ),
+            ("I actually like React", "I like Svelte."),
+        ] {
+            assert!(
+                accept_formatted_rewrite(source, output, "high").is_none(),
+                "unsafe: {source} -> {output}"
+            );
+        }
+    }
 
     #[test]
     fn content_grounding_preserves_roles_names_and_command_arguments() {
@@ -1470,6 +1810,150 @@ mod tests {
         .is_some());
         // A real number change is still caught.
         assert!(accept_rewrite("pay 125.50 please", "Pay 125.60 please.", "high").is_none());
+    }
+
+    #[test]
+    fn formatted_lists_allow_neutral_labels_and_clear_explicit_phrase_repairs() {
+        let source = "build a backend using node js no wait actually python fast api and postgres database jwt authentication password hashing and redis caching";
+        let candidate = "Build a backend with the following requirements:\n\n- Framework: Python FastAPI\n- Database: PostgreSQL\n- Authentication: JWT\n- Security: Password hashing\n- Caching: Redis";
+        assert!(accept_formatted_rewrite(source, candidate, "high").is_some());
+        assert!(accept_rewrite(source, candidate, "high").is_none());
+
+        let dropped_requirement = candidate.replace("- Caching: Redis", "");
+        assert!(accept_formatted_rewrite(source, &dropped_requirement, "high").is_none());
+        let invented_assignment = candidate.replace(
+            "- Authentication: JWT",
+            "- Rahul will implement authentication: JWT",
+        );
+        assert!(accept_formatted_rewrite(source, &invented_assignment, "high").is_none());
+    }
+
+    #[test]
+    fn technical_choice_repairs_accept_optional_actually_and_use_only() {
+        for marker in [
+            "no wait",
+            "no wait actually",
+            "no wait use",
+            "no wait actually use",
+        ] {
+            let source =
+                format!("build a backend using node js {marker} python fast api and redis caching");
+            assert!(
+                accept_formatted_rewrite(
+                    &source,
+                    "Build a backend using Python FastAPI and Redis caching.",
+                    "high",
+                )
+                .is_some(),
+                "{source}"
+            );
+        }
+        for source in [
+            "build a backend using node js no wait for python fast api and redis caching",
+            "build a backend using node js no wait do not use python fast api and redis caching",
+            "build a backend using `node js no wait use python` fast api and redis caching",
+        ] {
+            assert!(
+                accept_formatted_rewrite(
+                    source,
+                    "Build a backend using Python FastAPI and Redis caching.",
+                    "high",
+                )
+                .is_none(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn formatting_allowance_does_not_relax_literals_negations_or_meaningful_repeats() {
+        assert!(accept_formatted_rewrite(
+            "do not delete src/api.ts",
+            "## Requirements\n- Delete the database",
+            "high"
+        )
+        .is_none());
+        assert!(accept_formatted_rewrite(
+            "this is very very important",
+            "## Requirements\n- This is very important",
+            "high"
+        )
+        .is_none());
+        assert!(accept_formatted_rewrite(
+            "run `git add .` and keep getUserById",
+            "## Technical requirements\n- Run `git add` and keep getUserById",
+            "high"
+        )
+        .is_none());
+        assert!(accept_formatted_rewrite(
+            "I actually enjoyed the movie",
+            "I enjoyed the movie.",
+            "high"
+        )
+        .is_none());
+        assert!(accept_formatted_rewrite(
+            "I need the report no wait actually the slides",
+            "I need the slides.",
+            "high"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn adaptive_format_fixtures_cover_conversation_technical_ideas_meetings_and_steps() {
+        let fixtures = [
+            (
+                "hey so um I was thinking we could meet tomorrow maybe around five pm and discuss the project and yeah bring your laptop if possible",
+                "Hey, so I was thinking we could meet tomorrow, maybe around five pm, and discuss the project. And yeah, bring your laptop if possible.",
+                false,
+                true,
+            ),
+            (
+                "build a backend using node js no wait actually python fast api and postgres database jwt authentication password hashing and redis caching",
+                "Build a backend with the following requirements:\n\n- Framework: Python FastAPI\n- Database: PostgreSQL\n- Authentication: JWT\n- Security: Password hashing\n- Caching: Redis",
+                true,
+                true,
+            ),
+            (
+                "I want an ai browser that's lightweight uses less RAM and maybe it can open websites search stuff do tasks and I think privacy should be important too",
+                "Ideas\n- I want an AI browser that's lightweight and uses less RAM.\n- Maybe it can open websites, search stuff, and do tasks.\n- I think privacy should be important too.",
+                true,
+                true,
+            ),
+            (
+                "rahul will finish frontend by friday priya will do the api integration testing is saturday and whole thing before monday",
+                "Meeting notes\n- Rahul will finish frontend by Friday.\n- Priya will do the API integration.\n- Testing is Saturday.\n- Whole thing before Monday.",
+                true,
+                true,
+            ),
+            (
+                "improve my speech to text application make transcription faster use a small llm to correct mistakes format the text automatically recognize code and commands support normal writing coding meeting notes and keep it offline and don't change my meaning",
+                "Technical requirements\n- Improve my speech-to-text application.\n- Make transcription faster.\n- Use a small LLM to correct mistakes and format the text automatically.\n- Recognize code and commands.\n- Support normal writing, coding, and meeting notes.\n- Keep it offline, and don't change my meaning.",
+                true,
+                true,
+            ),
+            (
+                "first install dependencies second run tests third package the app",
+                "1. Install dependencies.\n2. Run tests.\n3. Package the app.",
+                true,
+                true,
+            ),
+        ];
+
+        for (source, candidate, structured, accepted) in fixtures {
+            let result = accept_formatted_rewrite(source, candidate, "high");
+            assert_eq!(result.is_some(), accepted, "{source:?}");
+            let has_list = candidate
+                .lines()
+                .any(|line| strip_list_marker(line.trim_start()) != line.trim_start());
+            assert_eq!(has_list, structured, "unexpected layout for {source:?}");
+            if !structured {
+                assert!(
+                    !candidate.starts_with('#'),
+                    "ordinary speech grew a heading"
+                );
+            }
+        }
     }
 
     /// Email layout can change: the rewrite only

@@ -1,0 +1,61 @@
+[
+  {
+    "run": "2048",
+    "applied": 40,
+    "contracts": 50,
+    "median_ms": 271.5,
+    "p95_ms": 400,
+    "peak_rss_mib": 761.5,
+    "device_vram_mib": 1238,
+    "fallbacks": {
+      "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed": 5,
+      "LLM rewrite rejected: quoted text or literal code changed": 2,
+      "LLM rewrite rejected: a number, amount, date, or version changed": 1,
+      "LLM rewrite rejected: a technical identifier, command, path, or name changed": 2
+    }
+  },
+  {
+    "run": "4096",
+    "applied": 40,
+    "contracts": 50,
+    "median_ms": 271.0,
+    "p95_ms": 416,
+    "peak_rss_mib": 761.2,
+    "device_vram_mib": 1264,
+    "fallbacks": {
+      "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed": 5,
+      "LLM rewrite rejected: quoted text or literal code changed": 2,
+      "LLM rewrite rejected: a number, amount, date, or version changed": 1,
+      "LLM rewrite rejected: a technical identifier, command, path, or name changed": 2
+    }
+  },
+  {
+    "run": "8192",
+    "applied": 40,
+    "contracts": 50,
+    "median_ms": 289.5,
+    "p95_ms": 451,
+    "peak_rss_mib": 761.3,
+    "device_vram_mib": 1316,
+    "fallbacks": {
+      "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed": 5,
+      "LLM rewrite rejected: quoted text or literal code changed": 2,
+      "LLM rewrite rejected: a number, amount, date, or version changed": 1,
+      "LLM rewrite rejected: a technical identifier, command, path, or name changed": 2
+    }
+  },
+  {
+    "run": "4096, temperature 0.15",
+    "applied": 40,
+    "contracts": 50,
+    "median_ms": 271.0,
+    "p95_ms": 409,
+    "peak_rss_mib": 761.0,
+    "device_vram_mib": 1264,
+    "fallbacks": {
+      "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed": 6,
+      "LLM rewrite rejected: quoted text or literal code changed": 2,
+      "LLM rewrite rejected: a technical identifier, command, path, or name changed": 2
+    }
+  }
+]

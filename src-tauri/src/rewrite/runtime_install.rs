@@ -12,9 +12,14 @@
 //! resume, monotonic progress events, and a clean separation between the
 //! Tauri command entry point and the worker.
 
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Read;
+#[cfg(test)]
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -31,10 +36,6 @@ mod restore_tests;
 
 /// The pinned llama.cpp build corresponding to the stable v0.5.0 release.
 pub const PINNED_LLAMA_TAG: &str = "b11146";
-
-/// Single key under which we lock the re-entry guard. There is only one
-/// runtime binary, so a single key is enough.
-pub const RUNTIME_LOCK_KEY: &str = "llama-runtime";
 
 /// Optional override env var: pointing this at an existing `llama-server`
 /// binary short-circuits the downloader entirely. Useful for power users
@@ -88,13 +89,16 @@ pub struct LlamaRuntimeSpec {
 }
 
 /// Phases emitted to the frontend.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimePhase {
     Starting,
     Downloading,
     Verifying,
     Extracting,
+    Activating,
+    Cancelling,
+    Cancelled,
     Complete,
     Error,
 }
@@ -102,6 +106,10 @@ pub enum RuntimePhase {
 /// Payload pushed via the `runtime:download-progress` event.
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeDownloadEvent {
+    pub attempt_id: String,
+    pub revision: u64,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
     /// Pinned llama.cpp release tag, e.g. "b11146".
     pub version: String,
     /// 0..=100.
@@ -120,6 +128,89 @@ pub struct RuntimeDownloadEvent {
     /// Free-form kind label, e.g. "Vulkan".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind_label: Option<String>,
+}
+
+static NEXT_EVENT: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone)]
+pub struct RuntimeDownload {
+    pub snapshot: RuntimeDownloadEvent,
+    pub cancel: Arc<AtomicBool>,
+}
+impl RuntimeDownload {
+    pub fn active(&self) -> bool {
+        !matches!(
+            self.snapshot.phase,
+            RuntimePhase::Complete | RuntimePhase::Error | RuntimePhase::Cancelled
+        )
+    }
+    fn update(
+        &mut self,
+        attempt: &str,
+        phase: RuntimePhase,
+        progress_pct: u32,
+        speed_mbps: f32,
+        error: Option<String>,
+        path: Option<String>,
+    ) -> Option<RuntimeDownloadEvent> {
+        if self.snapshot.attempt_id != attempt || !self.active() {
+            return None;
+        }
+        self.snapshot.phase = phase;
+        if self.cancel.load(Ordering::Acquire) && self.active() {
+            self.snapshot.phase = RuntimePhase::Cancelling;
+        }
+        self.snapshot.progress_pct = progress_pct;
+        self.snapshot.speed_mbps = speed_mbps;
+        self.snapshot.error = error;
+        self.snapshot.path = path;
+        self.snapshot.revision = NEXT_EVENT.fetch_add(1, Ordering::Relaxed);
+        Some(self.snapshot.clone())
+    }
+    fn request_cancel(&self, attempt: &str) -> Result<(), String> {
+        if self.snapshot.attempt_id != attempt || !self.active() {
+            return Err("That runtime setup has ended; refresh its status.".into());
+        }
+        if self.snapshot.phase == RuntimePhase::Activating {
+            return Err(
+                "The verified runtime is being activated. Wait for setup to finish.".into(),
+            );
+        }
+        self.cancel.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+pub fn download_status(ctx: &AppContext) -> Option<RuntimeDownloadEvent> {
+    ctx.runtime_download
+        .lock()
+        .as_ref()
+        .map(|job| job.snapshot.clone())
+}
+pub fn download_active(ctx: &AppContext) -> bool {
+    ctx.runtime_download
+        .lock()
+        .as_ref()
+        .is_some_and(RuntimeDownload::active)
+}
+pub fn cancel_download(ctx: &AppContext, app: &AppHandle, attempt: &str) -> Result<(), String> {
+    let snapshot = {
+        let mut owner = ctx.runtime_download.lock();
+        let job = owner.as_mut().ok_or("No runtime setup is active")?;
+        job.request_cancel(attempt)?;
+        job.update(
+            attempt,
+            RuntimePhase::Cancelling,
+            job.snapshot.progress_pct,
+            job.snapshot.speed_mbps,
+            None,
+            None,
+        )
+    };
+    if let Some(snapshot) = snapshot {
+        let _ = app.emit("runtime:download-progress", snapshot);
+    }
+    Ok(())
 }
 
 /// Sidecar file recording which bundled runtime flavor currently occupies the
@@ -385,31 +476,100 @@ pub fn install_runtime(
     ctx: AppContext,
     spec: LlamaRuntimeSpec,
 ) -> Result<(), String> {
-    crate::network_policy::require_online(ctx.settings_store.get().offline_mode)?;
-    // Re-entry guard. Drop the lock before spawning the worker, otherwise
-    // re-entry detection is meaningless.
-    {
-        let mut active = ctx.active_runtime_downloads.lock();
-        if active.contains(RUNTIME_LOCK_KEY) {
-            return Err("A llama-server runtime download is already in progress".into());
-        }
-        active.insert(RUNTIME_LOCK_KEY.to_string());
-    }
-
-    let app_clone = app.clone();
-    let ctx_clone = ctx.clone();
-    std::thread::spawn(move || {
-        let outcome = run_install_worker(&app_clone, &ctx_clone, &spec);
-        if let Err(err) = &outcome {
-            emit_error(&app_clone, &spec, err.clone());
-        }
-        let mut active = ctx_clone.active_runtime_downloads.lock();
-        active.remove(RUNTIME_LOCK_KEY);
-        // Make sure the next inference re-launches the runtime with the
-        // new binary (or, on error, gives the user a clean retry).
-        ctx_clone.flow_runtime.shutdown();
-    });
+    let Some((attempt, cancel)) = claim_download(&ctx, &spec)? else {
+        return Ok(());
+    };
+    std::thread::Builder::new()
+        .name("reflow-runtime-install".into())
+        .spawn({
+            let ctx = ctx.clone();
+            let app = app.clone();
+            let spec = spec.clone();
+            let attempt = attempt.clone();
+            move || {
+                let _ = execute_download(&app, &ctx, &spec, &attempt, &cancel);
+            }
+        })
+        .map_err(|error| {
+            emit_event(
+                &app,
+                &ctx,
+                &attempt,
+                RuntimePhase::Error,
+                0,
+                Some(error.to_string()),
+                None,
+            );
+            error.to_string()
+        })?;
     Ok(())
+}
+
+fn claim_download(
+    ctx: &AppContext,
+    spec: &LlamaRuntimeSpec,
+) -> Result<Option<(String, Arc<AtomicBool>)>, String> {
+    crate::network_policy::require_online(ctx.settings_store.get().offline_mode)?;
+    let _operation = ctx
+        .session_operation
+        .try_lock()
+        .map_err(|_| "Finish the active operation before runtime setup")?;
+    let mut job = ctx.runtime_download.lock();
+    if let Some(active) = job.as_ref().filter(|job| job.active()) {
+        if active.snapshot.kind_label.as_deref() == Some(&spec.kind_label) {
+            return Ok(None);
+        }
+        return Err("Another runtime variant is being installed. Wait or cancel it before changing variants.".into());
+    }
+    let attempt = uuid::Uuid::new_v4().to_string();
+    let cancel = Arc::new(AtomicBool::new(false));
+    *job = Some(RuntimeDownload {
+        cancel: cancel.clone(),
+        snapshot: RuntimeDownloadEvent {
+            attempt_id: attempt.clone(),
+            revision: NEXT_EVENT.fetch_add(1, Ordering::Relaxed),
+            version: PINNED_LLAMA_TAG.into(),
+            phase: RuntimePhase::Starting,
+            progress_pct: 0,
+            speed_mbps: 0.0,
+            error: None,
+            path: None,
+            approx_bytes: spec.approx_bytes,
+            kind_label: Some(spec.kind_label.clone()),
+            downloaded_bytes: 0,
+            total_bytes: spec.approx_bytes,
+        },
+    });
+    Ok(Some((attempt, cancel)))
+}
+
+fn execute_download(
+    app: &AppHandle,
+    ctx: &AppContext,
+    spec: &LlamaRuntimeSpec,
+    attempt: &str,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_install_worker(app, ctx, spec, attempt, cancel)
+    }))
+    .unwrap_or_else(|_| Err("Runtime setup stopped unexpectedly. Retry setup.".into()));
+    if let Err(error) = &outcome {
+        emit_event(
+            app,
+            ctx,
+            attempt,
+            if cancel.load(Ordering::Acquire) {
+                RuntimePhase::Cancelled
+            } else {
+                RuntimePhase::Error
+            },
+            0,
+            Some(error.clone()),
+            None,
+        );
+    }
+    outcome
 }
 
 /// Inspect the result of a `FlowRuntime::ensure` call. If the runtime
@@ -446,7 +606,10 @@ fn run_install_worker(
     app: &AppHandle,
     ctx: &AppContext,
     spec: &LlamaRuntimeSpec,
+    attempt: &str,
+    cancel: &AtomicBool,
 ) -> Result<(), String> {
+    check_cancel(cancel)?;
     // Honor the env override by short-circuiting with a friendly event.
     if let Ok(p) = std::env::var(ENV_OVERRIDE_BIN) {
         if !p.is_empty() {
@@ -456,12 +619,15 @@ fn run_install_worker(
                     "REFLOW_LLAMA_BIN points at '{p}' but no such file exists"
                 ));
             }
+            smoke_version(&resolved, Some(cancel))?;
+            emit_event(app, ctx, attempt, RuntimePhase::Activating, 100, None, None);
+            check_cancel(cancel)?;
             emit_event(
                 app,
-                spec,
+                ctx,
+                attempt,
                 RuntimePhase::Complete,
                 100,
-                0.0,
                 None,
                 Some(resolved.display().to_string()),
             );
@@ -471,7 +637,7 @@ fn run_install_worker(
 
     // Emit a `starting` event so the UI can switch into the "Downloading…"
     // state immediately, even before the first byte is fetched.
-    emit_event(app, spec, RuntimePhase::Starting, 0, 0.0, None, None);
+    emit_event(app, ctx, attempt, RuntimePhase::Starting, 0, None, None);
 
     let bin_dir = PlatformSys::get_app_dir().join("bin");
     if let Err(err) = std::fs::create_dir_all(&bin_dir) {
@@ -501,7 +667,9 @@ fn run_install_worker(
         .unwrap_or(0);
     crate::network_policy::check_disk_space(
         &download_dir,
-        spec.approx_bytes.saturating_sub(resume_bytes),
+        spec.approx_bytes
+            .saturating_mul(5)
+            .saturating_sub(resume_bytes),
     )?;
 
     let url = std::env::var(ENV_OVERRIDE_URL)
@@ -509,23 +677,61 @@ fn run_install_worker(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| spec.url.clone());
 
-    download_with_resume(app, spec, &url, &temp_archive, &final_archive)?;
+    let started = Instant::now();
+    crate::network_policy::fetch_verified_blocking(
+        crate::network_policy::ArtifactDownload {
+            url: &url,
+            sha256: &spec.sha256,
+            exact_bytes: Some(spec.approx_bytes),
+            partial: &temp_archive,
+            destination: &final_archive,
+        },
+        cancel,
+        |progress| {
+            let pct = ((progress.bytes as u128 * 100
+                / progress.total.unwrap_or(spec.approx_bytes).max(1) as u128)
+                .min(100)) as u32;
+            let speed = progress.bytes.saturating_sub(resume_bytes) as f32
+                / 1_048_576.0
+                / started.elapsed().as_secs_f32().max(0.001);
+            let snapshot = {
+                let mut owner = ctx.runtime_download.lock();
+                owner
+                    .as_mut()
+                    .filter(|job| job.snapshot.attempt_id == attempt && job.active())
+                    .and_then(|job| {
+                        job.snapshot.downloaded_bytes = progress.bytes;
+                        job.snapshot.total_bytes = progress.total.unwrap_or(spec.approx_bytes);
+                        job.update(
+                            attempt,
+                            if progress.phase == "downloading" {
+                                RuntimePhase::Downloading
+                            } else {
+                                RuntimePhase::Verifying
+                            },
+                            pct,
+                            speed,
+                            None,
+                            None,
+                        )
+                    })
+            };
+            if let Some(snapshot) = snapshot {
+                let _ = app.emit("runtime:download-progress", snapshot);
+            }
+        },
+    )?;
+    check_cancel(cancel)?;
 
-    emit_event(app, spec, RuntimePhase::Verifying, 100, 0.0, None, None);
-
-    // Stage 2: verify SHA-256 of the downloaded archive.
-    verify_sha256(&final_archive, &spec.sha256).map_err(|err| {
-        // On a checksum failure, keep the partial so the next attempt can
-        // either resume (Range) or re-download.
-        format!("Checksum verification failed: {err}")
-    })?;
-
-    emit_event(app, spec, RuntimePhase::Extracting, 100, 0.0, None, None);
+    emit_event(app, ctx, attempt, RuntimePhase::Extracting, 100, None, None);
 
     // A new immutable generation is extracted, hashed, and smoke-tested while
     // the current runtime continues serving. No live DLL is overwritten.
-    let generation = stage_archive(&final_archive, &bin_dir, spec)?;
+    let generation = stage_archive(&final_archive, &bin_dir, spec, Some(cancel))?;
+    check_cancel(cancel)?;
     let extracted_to = super::runtime_inventory::entry_binary(&bin_dir, &generation)?;
+    emit_event(app, ctx, attempt, RuntimePhase::Activating, 100, None, None);
+    check_cancel(cancel)?;
     promote_for_context(ctx, || {
         super::runtime_inventory::promote(&bin_dir, &generation.id)
     })?;
@@ -537,16 +743,13 @@ fn run_install_worker(
     // the next dictation picks up the new binary.
     emit_event(
         app,
-        spec,
+        ctx,
+        attempt,
         RuntimePhase::Complete,
         100,
-        0.0,
         None,
         Some(extracted_to.display().to_string()),
     );
-
-    // Touch the Arc to make the borrow checker happy on shutdown.
-    let _ = Arc::strong_count(&ctx.active_runtime_downloads);
 
     Ok(())
 }
@@ -572,151 +775,12 @@ pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
     out
 }
 
-/// Number of attempts for the initial request. A 34 MB install failing
-/// permanently because one TCP connection was reset is not acceptable.
-const DOWNLOAD_ATTEMPTS: u32 = 3;
-
-/// Issue the (possibly ranged) GET, retrying transport-level failures.
-///
-/// Only connect/send failures are retried. An HTTP response — even an error
-/// status — is returned to the caller, which knows how to interpret it.
-pub(crate) fn send_with_retry(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    resume_from: u64,
-) -> Result<crate::network_policy::DownloadResponse, String> {
-    let parsed_url = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
-    crate::network_policy::check_download_url(&parsed_url)?;
-    let mut last_err = String::new();
-    for attempt in 1..=DOWNLOAD_ATTEMPTS {
-        let mut request = client.get(url);
-        if resume_from > 0 {
-            request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
-        }
-        match crate::network_policy::send_download(request) {
-            Ok(response) => return Ok(response),
-            Err(err) => {
-                last_err = err;
-                log::warn!(
-                    "Runtime download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed for {url}: {last_err}"
-                );
-                if attempt < DOWNLOAD_ATTEMPTS {
-                    std::thread::sleep(std::time::Duration::from_secs(2 * attempt as u64));
-                }
-            }
-        }
-    }
-    let msg = format!(
-        "Download request failed after {DOWNLOAD_ATTEMPTS} attempts ({url}): {last_err}. \
-         Check your internet connection, VPN, or proxy and try again."
-    );
-    log::error!("{msg}");
-    Err(msg)
-}
-
-fn download_with_resume(
-    app: &AppHandle,
-    spec: &LlamaRuntimeSpec,
-    url: &str,
-    temp_path: &Path,
-    final_path: &Path,
-) -> Result<(), String> {
-    crate::network_policy::check_download()?;
-    let resume_from: u64 = std::fs::metadata(temp_path).map(|m| m.len()).unwrap_or(0);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60 * 30))
-        // Without this, a black-holed connection sits in the handshake until
-        // the 30-minute body timeout instead of failing fast enough to retry.
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .redirect(crate::network_policy::redirect_policy())
-        .build()
-        .map_err(|e| format!("HTTP client init failed: {e}"))?;
-
-    let mut response = send_with_retry(&client, url, resume_from)?;
-
-    let status = response.status();
-    let already_have: u64 = if status == reqwest::StatusCode::PARTIAL_CONTENT {
-        resume_from
-    } else if status.is_success() {
-        // Server ignored Range. Start over.
-        if temp_path.exists() {
-            let _ = std::fs::remove_file(temp_path);
-        }
-        0
+fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
+    if cancel.load(Ordering::Acquire) {
+        Err("Runtime setup cancelled".into())
     } else {
-        return Err(format!("Download failed: HTTP {status}"));
-    };
-
-    let remaining = response
-        .content_length()
-        .unwrap_or(spec.approx_bytes.saturating_sub(already_have));
-    let total = already_have + remaining;
-    if total == 0 {
-        return Err("Download has zero total size".into());
+        Ok(())
     }
-
-    let mut dest_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(temp_path)
-        .map_err(|e| format!("Could not open download target: {e}"))?;
-    dest_file
-        .seek(SeekFrom::Start(already_have))
-        .map_err(|e| format!("Could not seek in download target: {e}"))?;
-
-    // If we're resuming, emit a single progress event so the UI jumps to
-    // the current position.
-    if already_have > 0 {
-        let pct = (already_have * 100 / total) as u32;
-        emit_event(app, spec, RuntimePhase::Downloading, pct, 0.0, None, None);
-    }
-
-    let started = Instant::now();
-    let mut last_emit = Instant::now();
-    let mut downloaded: u64 = already_have;
-    let mut buffer = vec![0u8; 64 * 1024];
-
-    loop {
-        let n = response
-            .read(&mut buffer)
-            .map_err(|e| format!("Read failed: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        dest_file
-            .write_all(&buffer[..n])
-            .map_err(|e| format!("Write failed: {e}"))?;
-        downloaded += n as u64;
-        if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
-            let elapsed = started.elapsed().as_secs_f32().max(0.001);
-            let speed_mbps = ((downloaded - already_have) as f32 / 1_048_576.0) / elapsed;
-            let pct = (downloaded * 100 / total) as u32;
-            emit_event(
-                app,
-                spec,
-                RuntimePhase::Downloading,
-                pct,
-                speed_mbps,
-                None,
-                None,
-            );
-            last_emit = Instant::now();
-        }
-    }
-    let _ = dest_file.flush();
-    let _ = dest_file.sync_all();
-
-    // Atomic-ish rename so a partial file never shows up as the "final"
-    // archive on next launch.
-    if final_path.exists() {
-        let _ = std::fs::remove_file(final_path);
-    }
-    std::fs::rename(temp_path, final_path)
-        .map_err(|e| format!("Could not finalize download: {e}"))?;
-
-    Ok(())
 }
 
 pub fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
@@ -763,6 +827,7 @@ fn digest_file(path: &Path) -> Result<String, String> {
 fn smoke_command(
     mut command: std::process::Command,
     timeout: std::time::Duration,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     use std::process::Stdio;
     #[cfg(windows)]
@@ -778,6 +843,11 @@ fn smoke_command(
         .spawn()
         .map_err(|e| format!("Runtime smoke check failed to start: {e}"))?;
     loop {
+        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Runtime check cancelled".into());
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 return if status.success() {
@@ -803,19 +873,45 @@ fn smoke_command(
     }
 }
 
-fn smoke_version(binary: &Path) -> Result<(), String> {
+/// Verify the selected generation before any consumer downloads model weights.
+pub(crate) fn verify_active(
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<String, String> {
+    let _launch = super::runtime_inventory::launch_guard()?;
+    let binary = llama_server_bin();
+    if !binary.is_file() {
+        return Err("Install and verify the runtime before downloading model weights.".into());
+    }
+    let root = crate::platform::PlatformSys::get_app_dir().join("bin");
+    let generation = super::runtime_inventory::active_manifest(&root)
+        .map(|manifest| manifest.id)
+        .unwrap_or_else(|| "legacy-or-custom".into());
+    if generation != "legacy-or-custom"
+        && !std::env::var(ENV_OVERRIDE_BIN).is_ok_and(|path| !path.is_empty())
+    {
+        super::runtime_inventory::verify_generation(&root, &generation)?;
+    }
+    smoke_version(&binary, cancel)?;
+    Ok(generation)
+}
+
+pub(crate) fn smoke_version(
+    binary: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
     let mut command = std::process::Command::new(binary);
     command.arg("--version");
     if let Some(dir) = binary.parent() {
         command.current_dir(dir);
     }
-    smoke_command(command, std::time::Duration::from_secs(10))
+    smoke_command(command, std::time::Duration::from_secs(10), cancel)
 }
 
 fn stage_archive(
     archive: &Path,
     root: &Path,
     spec: &LlamaRuntimeSpec,
+    cancel: Option<&AtomicBool>,
 ) -> Result<super::runtime_inventory::RuntimeManifest, String> {
     use super::runtime_inventory::{RuntimeFile, RuntimeManifest};
     // This helper also verifies integrity when exercised outside the downloader.
@@ -832,8 +928,8 @@ fn stage_archive(
     std::fs::create_dir(&staging).map_err(|e| e.to_string())?;
     let outcome = (|| {
         let binary = match spec.archive_kind {
-            ArchiveKind::Zip => extract_zip(archive, &staging, &spec.binary_basename)?,
-            ArchiveKind::TarGz => extract_tar_gz(archive, &staging, &spec.binary_basename)?,
+            ArchiveKind::Zip => extract_zip(archive, &staging, &spec.binary_basename, cancel)?,
+            ArchiveKind::TarGz => extract_tar_gz(archive, &staging, &spec.binary_basename, cancel)?,
         };
         make_executable(&binary)?;
         #[cfg(target_os = "macos")]
@@ -843,9 +939,12 @@ fn stage_archive(
                 .arg(&binary)
                 .output();
         }
-        smoke_version(&binary)?;
+        smoke_version(&binary, cancel)?;
         let mut files = vec![];
         for entry in std::fs::read_dir(&staging).map_err(|e| e.to_string())? {
+            if let Some(cancel) = cancel {
+                check_cancel(cancel)?;
+            }
             let entry = entry.map_err(|e| e.to_string())?;
             if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
                 return Err("Runtime generation contains a non-file payload".into());
@@ -896,7 +995,9 @@ fn promote_for_context(
         .map_err(|_| "Wait for the active dictation before activating a runtime.".to_string())?;
     if !matches!(
         *ctx.state_enum.read(),
-        crate::state::AppStateEnum::Ready | crate::state::AppStateEnum::Idle
+        crate::state::AppStateEnum::Ready
+            | crate::state::AppStateEnum::Idle
+            | crate::state::AppStateEnum::Error
     ) {
         return Err("Runtime is staged; finish the active dictation before activating it.".into());
     }
@@ -976,6 +1077,65 @@ pub fn get_runtime_inventory() -> Vec<super::runtime_inventory::RuntimeEntry> {
     entries
 }
 
+/// Removal owns session admission and the download-registration lock until all
+/// managed launch paths are deactivated. Custom executables remain user-owned.
+pub fn remove_runtime(ctx: &AppContext, root: &Path) -> Result<(), String> {
+    if std::env::var(ENV_OVERRIDE_BIN).is_ok_and(|value| !value.is_empty()) {
+        return Err("Clear REFLOW_LLAMA_BIN before removing the managed writing runtime.".into());
+    }
+    let _session = ctx
+        .session_operation
+        .try_lock()
+        .map_err(|_| "Finish the active operation before removing the writing runtime")?;
+    if !matches!(
+        *ctx.state_enum.read(),
+        crate::state::AppStateEnum::Ready
+            | crate::state::AppStateEnum::Idle
+            | crate::state::AppStateEnum::Error
+    ) {
+        return Err("Finish the active dictation before removing the writing runtime.".into());
+    }
+    let downloads = ctx.runtime_download.lock();
+    if downloads.as_ref().is_some_and(RuntimeDownload::active)
+        || ctx
+            .active_intelligence_downloads
+            .lock()
+            .values()
+            .any(super::model_install::ModelDownload::active)
+    {
+        return Err(
+            "Finish or cancel active downloads before removing the writing runtime.".into(),
+        );
+    }
+    let maintenance = super::runtime_inventory::Maintenance::begin()?;
+    ctx.flow_runtime.shutdown();
+    if ctx.asr_runtime.lock().as_str() == "native" {
+        ctx.asr_handle.unload_model_blocking()?;
+    }
+    let _exclusive = maintenance.exclusive();
+    for name in [
+        "runtime-active.json",
+        "llama-server.kind",
+        super::runtime_inventory::binary_name(),
+    ] {
+        let path = root.join(name);
+        if path.exists() {
+            std::fs::remove_file(path)
+                .map_err(|error| format!("Could not remove runtime metadata: {error}"))?;
+        }
+    }
+    let generations = root.join("runtimes");
+    if let Ok(metadata) = std::fs::symlink_metadata(&generations) {
+        if metadata.file_type().is_symlink() {
+            std::fs::remove_file(generations)
+        } else {
+            std::fs::remove_dir_all(generations)
+        }
+        .map_err(|error| format!("Could not remove managed runtime generations: {error}"))?;
+    }
+    Ok(())
+}
+
 pub fn rollback_runtime(
     ctx: &AppContext,
 ) -> Result<Vec<super::runtime_inventory::RuntimeEntry>, String> {
@@ -985,7 +1145,10 @@ pub fn rollback_runtime(
     let root = PlatformSys::get_app_dir().join("bin");
     let expected_pointer = super::runtime_inventory::read_pointer(&root)?;
     let previous = super::runtime_inventory::rollback_target(&root)?;
-    smoke_version(&super::runtime_inventory::entry_binary(&root, &previous)?)?;
+    smoke_version(
+        &super::runtime_inventory::entry_binary(&root, &previous)?,
+        None,
+    )?;
     promote_for_context(ctx, || {
         if super::runtime_inventory::read_pointer(&root)? != expected_pointer {
             return Err(
@@ -1005,18 +1168,10 @@ pub fn repair_runtime(app: AppHandle, ctx: AppContext) -> Result<(), String> {
     let backend = ctx.settings_store.get().refinement.device;
     let spec =
         pick_runtime_spec(&backend).ok_or("No runtime package is available for this platform")?;
-    {
-        let mut active = ctx.active_runtime_downloads.lock();
-        if !active.insert(RUNTIME_LOCK_KEY.to_string()) {
-            return Err("A runtime download is already in progress".into());
-        }
-    }
-    let outcome = run_install_worker(&app, &ctx, &spec);
-    if let Err(error) = &outcome {
-        emit_error(&app, &spec, error.clone());
-    }
-    ctx.active_runtime_downloads.lock().remove(RUNTIME_LOCK_KEY);
-    outcome
+    let Some((attempt, cancel)) = claim_download(&ctx, &spec)? else {
+        return Ok(());
+    };
+    execute_download(&app, &ctx, &spec, &attempt, &cancel)
 }
 
 /// Extract a zip archive to `dest_dir`. Returns the path of the
@@ -1024,16 +1179,25 @@ pub fn repair_runtime(app: AppHandle, ctx: AppContext) -> Result<(), String> {
 /// Any companion DLLs in the same archive (e.g. `llama-server-impl.dll`
 /// on Windows) are extracted alongside the launcher so that the
 /// runtime can find them via the standard DLL search order.
-fn extract_zip(archive: &Path, dest_dir: &Path, binary_basename: &str) -> Result<PathBuf, String> {
+fn extract_zip(
+    archive: &Path,
+    dest_dir: &Path,
+    binary_basename: &str,
+    cancel: Option<&AtomicBool>,
+) -> Result<PathBuf, String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("Open zip: {e}"))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("Read zip: {e}"))?;
     let mut payload_names = std::collections::HashSet::new();
     let mut has_launcher = false;
     for index in 0..zip.len() {
+        if let Some(cancel) = cancel {
+            check_cancel(cancel)?;
+        }
         let entry = zip
             .by_index(index)
             .map_err(|e| format!("Zip entry {index}: {e}"))?;
-        let name = entry.name().rsplit('/').next().unwrap_or_default();
+        let entry_name = entry.name().map_err(|e| format!("Zip filename: {e}"))?;
+        let name = entry_name.rsplit('/').next().unwrap_or_default();
         if !is_runtime_payload(name) {
             continue;
         }
@@ -1056,8 +1220,14 @@ fn extract_zip(archive: &Path, dest_dir: &Path, binary_basename: &str) -> Result
     }
     let mut launcher: Option<PathBuf> = None;
     for i in 0..zip.len() {
+        if let Some(cancel) = cancel {
+            check_cancel(cancel)?;
+        }
         let mut entry = zip.by_index(i).map_err(|e| format!("Zip entry {i}: {e}"))?;
-        let entry_name = entry.name().to_string();
+        let entry_name = entry
+            .name()
+            .map_err(|e| format!("Zip filename: {e}"))?
+            .into_owned();
         let stripped = match entry_name.rsplit('/').next() {
             Some(s) => s.to_string(),
             None => continue,
@@ -1081,6 +1251,7 @@ fn extract_tar_gz(
     archive: &Path,
     dest_dir: &Path,
     binary_basename: &str,
+    cancel: Option<&AtomicBool>,
 ) -> Result<PathBuf, String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("Open tar.gz: {e}"))?;
     let gz = flate2::read::GzDecoder::new(file);
@@ -1092,6 +1263,9 @@ fn extract_tar_gz(
         .entries()
         .map_err(|e| format!("Read tar entries: {e}"))?
     {
+        if let Some(cancel) = cancel {
+            check_cancel(cancel)?;
+        }
         let mut entry = entry.map_err(|e| format!("Tar entry: {e}"))?;
         let path = entry
             .path()
@@ -1253,43 +1427,116 @@ fn sanitize_for_filename(s: &str) -> String {
 
 fn emit_event(
     app: &AppHandle,
-    spec: &LlamaRuntimeSpec,
+    ctx: &AppContext,
+    attempt: &str,
     phase: RuntimePhase,
     progress_pct: u32,
-    speed_mbps: f32,
     error: Option<String>,
     path: Option<String>,
 ) {
-    let event = RuntimeDownloadEvent {
-        version: PINNED_LLAMA_TAG.to_string(),
-        progress_pct,
-        speed_mbps,
-        phase,
-        error,
-        path,
-        approx_bytes: spec.approx_bytes,
-        kind_label: Some(spec.kind_label.clone()),
+    let snapshot = {
+        let mut job = ctx.runtime_download.lock();
+        job.as_mut()
+            .and_then(|job| job.update(attempt, phase, progress_pct, 0.0, error, path))
     };
-    let _ = app.emit("runtime:download-progress", event);
-}
-
-fn emit_error(app: &AppHandle, spec: &LlamaRuntimeSpec, error: String) {
-    let event = RuntimeDownloadEvent {
-        version: PINNED_LLAMA_TAG.to_string(),
-        progress_pct: 0,
-        speed_mbps: 0.0,
-        phase: RuntimePhase::Error,
-        error: Some(error),
-        path: None,
-        approx_bytes: spec.approx_bytes,
-        kind_label: Some(spec.kind_label.clone()),
-    };
-    let _ = app.emit("runtime:download-progress", event);
+    if let Some(snapshot) = snapshot {
+        let _ = app.emit("runtime:download-progress", snapshot);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn owned_download(attempt: &str) -> RuntimeDownload {
+        RuntimeDownload {
+            cancel: Arc::new(AtomicBool::new(false)),
+            snapshot: RuntimeDownloadEvent {
+                attempt_id: attempt.into(),
+                revision: 0,
+                version: PINNED_LLAMA_TAG.into(),
+                phase: RuntimePhase::Downloading,
+                progress_pct: 20,
+                speed_mbps: 1.0,
+                error: None,
+                path: None,
+                approx_bytes: 100,
+                kind_label: Some("CPU".into()),
+                downloaded_bytes: 20,
+                total_bytes: 100,
+            },
+        }
+    }
+
+    #[test]
+    fn runtime_job_rejects_stale_owners_and_never_revives_a_terminal_attempt() {
+        let mut job = owned_download("current");
+        assert!(job.request_cancel("old").is_err());
+        assert!(!job.cancel.load(Ordering::Acquire));
+        assert!(job
+            .update("old", RuntimePhase::Error, 0, 0.0, None, None)
+            .is_none());
+        job.request_cancel("current").unwrap();
+        let progress = job
+            .update("current", RuntimePhase::Extracting, 100, 0.0, None, None)
+            .unwrap();
+        assert_eq!(progress.phase, RuntimePhase::Cancelling);
+        job.update("current", RuntimePhase::Cancelled, 100, 0.0, None, None)
+            .unwrap();
+        assert!(!job.active());
+        assert!(job
+            .update("current", RuntimePhase::Complete, 100, 0.0, None, None)
+            .is_none());
+    }
+
+    #[test]
+    fn cancellation_and_activation_have_one_defined_commit_order() {
+        let mut job = owned_download("current");
+        job.request_cancel("current").unwrap();
+        assert_eq!(
+            job.update("current", RuntimePhase::Activating, 100, 0.0, None, None)
+                .unwrap()
+                .phase,
+            RuntimePhase::Cancelling
+        );
+        let mut job = owned_download("replacement");
+        job.update(
+            "replacement",
+            RuntimePhase::Activating,
+            100,
+            0.0,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(job.request_cancel("replacement").is_err());
+        assert!(!job.cancel.load(Ordering::Acquire));
+        job.update("replacement", RuntimePhase::Complete, 100, 0.0, None, None)
+            .unwrap();
+        assert!(!job.active());
+    }
+
+    #[tokio::test]
+    async fn removal_refuses_session_and_download_owners_before_touching_files() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-remove-runtime-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let incumbent = root.join("llama-server");
+        std::fs::write(&incumbent, "incumbent").unwrap();
+        let ctx = AppContext::bootstrap_test(root.join("test-settings"));
+        let admission = ctx.session_operation.lock().await;
+        assert!(remove_runtime(&ctx, &root)
+            .unwrap_err()
+            .contains("active operation"));
+        drop(admission);
+        *ctx.runtime_download.lock() = Some(owned_download("active"));
+        assert!(remove_runtime(&ctx, &root)
+            .unwrap_err()
+            .contains("download"));
+        assert_eq!(std::fs::read_to_string(incumbent).unwrap(), "incumbent");
+        drop(ctx);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn unusable_staged_launcher_preserves_the_active_pointer_and_cleans_staging() {
@@ -1313,7 +1560,7 @@ mod tests {
         let archive = root.join("invalid-launcher.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
         let binary = super::super::runtime_inventory::binary_name();
-        zip.start_file(binary, zip::write::FileOptions::default())
+        zip.start_file(binary, zip::write::SimpleFileOptions::default())
             .unwrap();
         zip.write_all(b"not an executable").unwrap();
         zip.finish().unwrap();
@@ -1326,7 +1573,7 @@ mod tests {
             approx_bytes: 1,
             kind_label: "CPU".into(),
         };
-        let result = stage_archive(&archive, &root, &spec);
+        let result = stage_archive(&archive, &root, &spec, None);
         let unchanged = std::fs::read(root.join("runtime-active.json")).unwrap() == pointer;
         let remaining = std::fs::read_dir(root.join("runtimes")).unwrap().count();
         let incumbent = std::fs::read(root.join(binary)).unwrap();
@@ -1352,7 +1599,7 @@ mod tests {
             command
         };
         let started = Instant::now();
-        let result = smoke_command(command, std::time::Duration::from_millis(100));
+        let result = smoke_command(command, std::time::Duration::from_millis(100), None);
         assert!(result.unwrap_err().contains("deadline"));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
@@ -1390,7 +1637,7 @@ mod tests {
         tar.append_link(&mut header, "libggml.so.1", "libggml.so.1.0")
             .unwrap();
         tar.into_inner().unwrap().finish().unwrap();
-        let result = extract_tar_gz(&archive, &dest, "llama-server");
+        let result = extract_tar_gz(&archive, &dest, "llama-server", None);
         let alias = std::fs::read(dest.join("libggml.so.1"));
         std::fs::remove_dir_all(root).unwrap();
         assert!(result.is_ok());
@@ -1410,12 +1657,12 @@ mod tests {
         let archive = root.join("unsafe.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
         for name in ["llama-server.exe", "..\\escaped.dll"] {
-            zip.start_file(name, zip::write::FileOptions::default())
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
                 .unwrap();
             zip.write_all(b"fixture").unwrap();
         }
         zip.finish().unwrap();
-        let result = extract_zip(&archive, &dest, "llama-server.exe");
+        let result = extract_zip(&archive, &dest, "llama-server.exe", None);
         let escaped = root.join("escaped.dll").exists();
         std::fs::remove_dir_all(root).unwrap();
         assert!(
@@ -1435,11 +1682,11 @@ mod tests {
         let archive = root.join("broken.zip");
         let file = std::fs::File::create(&archive).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        zip.start_file("ggml.dll", zip::write::FileOptions::default())
+        zip.start_file("ggml.dll", zip::write::SimpleFileOptions::default())
             .unwrap();
         zip.write_all(b"incomplete replacement").unwrap();
         zip.finish().unwrap();
-        let result = extract_zip(&archive, &dest, "llama-server.exe");
+        let result = extract_zip(&archive, &dest, "llama-server.exe", None);
         let preserved = std::fs::read(dest.join("ggml.dll")).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         assert!(result.is_err());
@@ -1447,11 +1694,6 @@ mod tests {
             preserved, b"working old runtime",
             "failed extraction destroyed a dependency of the active runtime"
         );
-    }
-
-    #[test]
-    fn runtime_lock_key_is_stable() {
-        assert_eq!(RUNTIME_LOCK_KEY, "llama-runtime");
     }
 
     /// A download failure has to name the *reason*, not just the URL. `reqwest`
@@ -1526,26 +1768,6 @@ mod tests {
     /// Exercises the real retry path against a port nothing listens on, so the
     /// failure is a genuine transport error rather than an HTTP status. The
     /// message must name the attempt count and carry the underlying cause.
-    #[test]
-    fn send_with_retry_preserves_transport_causes_and_rejects_unpinned_requests() {
-        let client = reqwest::blocking::Client::builder()
-            .connect_timeout(std::time::Duration::from_millis(250))
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .expect("client");
-        // A local refused connection is safe and exercises the cause chain.
-        let error = client
-            .get("http://127.0.0.1:1/nothing.zip")
-            .send()
-            .unwrap_err();
-        let cause = error_chain(&error);
-        assert!(cause.contains("127.0.0.1:1"));
-        assert!(cause.len() > error.to_string().len());
-        // Production retries must fail immediately for a blocked request.
-        let error = send_with_retry(&client, "http://127.0.0.1:1/nothing.zip", 0).unwrap_err();
-        assert!(error == crate::network_policy::OFFLINE_ERROR || error.contains("restricted"));
-    }
-
     #[test]
     fn archive_kind_detects_zip_vs_targz() {
         assert_eq!(

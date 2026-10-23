@@ -1,0 +1,13 @@
+    Updating crates.io index
+     Locking 10 packages to highest compatible versions
+    Updating chacha20 v0.10.1 -> v0.10.2
+    Updating crc32fast v1.5.0 -> v1.5.3
+    Updating log v0.4.33 -> v0.4.34
+      Adding nix v0.31.3
+    Updating rustls-webpki v0.103.14 -> v0.103.16
+      Adding typed-path v0.12.4
+    Updating webpki-roots v1.0.9 -> v1.0.10
+    Updating zip v0.6.6 -> v9.0.5
+      Adding zlib-rs v0.6.8
+      Adding zopfli v0.8.4
+note: pass `--verbose` to see 140 unchanged dependencies behind latest

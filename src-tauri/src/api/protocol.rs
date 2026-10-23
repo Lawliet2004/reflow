@@ -15,6 +15,9 @@ pub enum ClientMsg {
     Cancel,
 }
 
+// `Final` carries the whole metrics record, which is sent once per dictation;
+// boxing it would change every constructor for no runtime benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {

@@ -1,0 +1,2 @@
+cuda-bindings==13.4.4
+cuda-toolkit==13.0.3.0

@@ -3,6 +3,7 @@ import importlib.util
 import pathlib
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -32,6 +33,27 @@ class PhononTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"fermion": None}):
             with self.assertRaisesRegex(RuntimeError, "requirements-phonon.txt"):
                 phonon_runtime.require_dependencies()
+
+    def test_dependency_check_rejects_a_broken_concrete_model_api(self):
+        import phonon_runtime
+        transformers = types.ModuleType("transformers")
+        attempted = []
+        def missing(name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            attempted.append(name)
+            raise ImportError("Parakeet backend is unavailable")
+        transformers.__getattr__ = missing
+        fermion = types.ModuleType("fermion")
+        fermion.__path__ = []
+        speech = types.ModuleType("fermion._speech")
+        speech.engine_phonon2_cpu = object()
+        with mock.patch.dict(sys.modules, {"fermion": fermion, "fermion._speech": speech,
+                                          "zstandard": types.ModuleType("zstandard"), "transformers": transformers}), \
+                mock.patch("importlib.metadata.version", return_value="0.2.7"):
+            with self.assertRaisesRegex(RuntimeError, "requirements-phonon.txt"):
+                phonon_runtime.require_dependencies()
+        self.assertIn("ParakeetForTDT", attempted)
 
     def test_verified_install_preserves_forced_cpu_for_autoload(self):
         import hashlib

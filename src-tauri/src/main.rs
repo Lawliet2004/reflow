@@ -150,11 +150,12 @@ fn main() {
                         );
                         println!(
                             "                llm start {} ms | format {} ms | rewrite {} ms \
-                             (applied={})",
+                             (applied={}, fallback={})",
                             last.llm_startup_ms,
                             last.formatting_ms,
                             last.rewrite_ms,
-                            last.rewrite_applied
+                            last.rewrite_applied,
+                            last.rewrite_fallback_reason.as_deref().unwrap_or("none")
                         );
                         println!(
                             "                release→inserted {} ms | total {} ms | \

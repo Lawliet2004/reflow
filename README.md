@@ -2,7 +2,7 @@
 
 Local-first desktop dictation with a focused workspace for your words.
 
-**Version 0.4.0** adds Zipformer speech recognition, automatic dictionary learning, and task-based writing cleanup. This release also hardens startup privacy recovery, model-runtime activation, and audio session ownership. Read the [release notes](docs/release-0.4.0.md) and [backend audit](docs/backend-audit-0.4.0.md).
+**Version 0.6.0** improves first-run setup, verified offline speech dependencies, shortcuts, and transcript cleanup. Read the [release notes](docs/release-0.6.0.md) for changes and platform validation limits.
 
 ## ✨ Features & Architecture
 
@@ -26,7 +26,7 @@ Local-first desktop dictation with a focused workspace for your words.
 - **🌊 Voice Activity Detection (VAD)**:
   - RMS energy detection drives the audio-level display and configurable silence auto-stop. Capture forwards all audio rather than discarding non-speech frames.
   - The ASR runtime trims surrounding silence before decoding.
-- **⌨️ Push-to-talk**: hold a shortcut to record, then release to transcribe and insert. Regular combinations use the OS hotkey API on Windows and X11, or the desktop's GlobalShortcuts portal on Wayland. **Modifier-only combinations like Shift+Win are supported on Windows only**, through its low-level keyboard hook.
+- **⌨️ Push-to-talk**: hold a shortcut to record, then release to transcribe and insert. Double-press within half a second to keep recording hands-free, then press the shortcut again to stop. For multi-key shortcuts, keep the modifiers held and double-tap the remaining key. Quick single taps wait for the double-tap window before stopping. Regular combinations use the OS hotkey API on Windows and X11, or the desktop's GlobalShortcuts portal on Wayland. **Modifier-only combinations like Ctrl+Shift, Ctrl+Win and Shift+Win** work through the keyboard hook on Windows. On KDE Plasma 6.1+ Wayland, select them in Reflow; they use tap-to-start/tap-to-stop because KDE activates them on release. Other Linux desktops still require a regular key.
 - **📋 Native Atomic Text Injection**:
   - High-speed clipboard injection with automatic user clipboard save & safe restoration.
   - Active window and process detection for context-aware profiles.
@@ -135,11 +135,11 @@ reflow/
 
 ### ASR runtime setup
 
-For a new installation, open the app and follow **Microphone → Hotkey → Speech model**. The speech step checks the operating system, processor, memory, graphics and free storage. Click **Download all dependencies** to install Python, an isolated environment and speech libraries. Then choose and download a speech model. **Download and set up** also runs both steps together. Neither path needs a terminal or system Python.
+For a new installation, open the app and follow **Microphone → Shortcut → Speech model**. The speech step checks the operating system, processor, memory, graphics and free storage. Click **Download all dependencies** to install Python, an isolated environment and speech libraries. Then choose and download a speech model. **Download and set up** also runs both steps together. Neither path needs a terminal or system Python.
 
 Compatible NVIDIA GPUs get matching CUDA libraries automatically: CUDA 13 for Turing or newer with a supporting driver, or CUDA 12.6 for supported older cards/drivers. Setup runs a GPU operation to verify acceleration. If compatibility cannot be established, it chooses CPU packages and explains why. AMD graphics are detected, but automatic AMD acceleration is not yet supported by the Python speech runtime; CPU dictation remains available. Intel Macs are offered Zipformer. Processor names and instruction support are reported directly rather than guessing a processor's age or promising performance.
 
-Allow roughly **5.5 GB** free storage for CPU dependencies or **15.4 GB** for NVIDIA dependencies, including download cache and temporary files; models need additional space. Setup shows its stage, supports cancellation and retry, upgrades its private package installer for resumable downloads, and reuses completed cached downloads. Airplane mode requires enabling downloads first. Your selected custom interpreter is preserved; clear it in Model settings to use the managed environment.
+Setup shows a conservative peak-storage budget for the selected engine/device and model, including the replacement environment, package cache, extraction, temporary files and model staging. Zipformer installs a torch-free package set; CPU preferences install CPU packages even on NVIDIA systems. Setup supports cancellation and retry and reuses completed cached downloads. Replacement environments are verified before activation, preserving the earlier working generation on failure. Airplane mode requires enabling downloads first. Your selected custom interpreter is preserved; clear it in Model settings to use the managed environment.
 
 Python is the default and remains the fallback option. On first launch, choose a speech model and click **Download and set up** (or **Allow downloads and set up** in Airplane mode). Reflow downloads a managed Python interpreter and speech packages, then downloads the selected model automatically. Progress and cancellation are available during runtime installation; a failed setup can be retried. The environment persists across app launches. This works for both development launches and packaged installations.
 
@@ -151,7 +151,7 @@ python3 -m venv .venv
 npm run tauri dev
 ```
 
-Binaries inside the checkout, including local release builds, discover its `.venv` automatically; activation is optional. A configured user runtime can take precedence. An activated `VIRTUAL_ENV` takes precedence over automatic environments, and `REFLOW_PYTHON=/absolute/path/to/python` explicitly selects an interpreter for either development or installed builds. On Windows, the checkout environment's interpreter is `.venv\Scripts\python.exe`.
+Binaries inside the checkout, including local release builds, discover its `.venv` automatically; activation is optional. A configured user runtime can take precedence. The verified managed environment takes precedence over an inherited `VIRTUAL_ENV`, and `REFLOW_PYTHON=/absolute/path/to/python` explicitly selects an interpreter for either development or installed builds. On Windows, the checkout environment's interpreter is `.venv\Scripts\python.exe`.
 
 For an existing Windows Python installation, install into the interpreter Reflow finds on PATH:
 
@@ -181,7 +181,7 @@ Check [GitHub Releases](https://github.com/Lawliet2004/reflow/releases) for avai
 - **Windows**: download the `.msi` or NSIS `.exe` installer.
 - **Linux**: download the `.deb` package on Debian/Ubuntu, or the `.AppImage` on other distributions.
 
-macOS installers are gated until native dictation, shortcuts and startup behavior have been verified. Windows installers are currently unsigned and may show an unverified-publisher warning.
+macOS installers are published as previews; dictation, shortcuts and startup parity still require physical acceptance. Windows installers are currently unsigned and may show an unverified-publisher warning. macOS previews use ad-hoc signing when Apple signing/notarization secrets are unavailable and can trigger Gatekeeper prompts.
 
 Installers include the compiled application, speech scripts, language metadata and pinned requirements file. Users do not need Node.js, npm or Rust. On first launch, **Download and set up** installs the managed Python speech runtime and selected model through the GUI; internet and several GB of disk space are needed once. Python and model weights are downloaded during setup rather than bundled in the installer. The experimental native runtime is a separate download.
 
@@ -216,7 +216,7 @@ Linux notes:
 
 - Default hotkey is **Ctrl+Shift+Space** (Ctrl+Space is often taken by IBus/fcitx).
 - **X11**: global hotkey, overlay, and clipboard paste work. Terminals use **Ctrl+Shift+V**.
-- **Wayland shortcuts**: Reflow uses the desktop's GlobalShortcuts portal. Approve the desktop request, then use **Settings → General → Configure desktop shortcuts** to assign the dictation key if your desktop has not assigned it. Modifier-only shortcuts require a regular-key replacement on Linux. The Record button remains available while shortcut setup is pending.
+- **Wayland shortcuts**: Reflow uses the desktop's GlobalShortcuts portal. Approve the desktop request, then use **Settings → General → Configure desktop shortcuts** to assign the dictation key if your desktop has not assigned it. On KDE Plasma 6.1+ Wayland, modifier-only combinations such as Ctrl+Shift and Shift+Win work as tap-to-start/tap-to-stop shortcuts. Key-bearing shortcuts such as Ctrl+Space, Shift+Space and Ctrl+1 can use hold-to-talk. Other Linux desktops still require a regular key. The Record button remains available while shortcut setup is pending.
 - **Wayland paste**: automatic paste requires separate keyboard permission through the desktop's keyboard-only RemoteDesktop portal; Reflow requests no screen or pointer access. Use **Settings → General → Enable automatic paste** to set up access, or **Retry keyboard access** after denial or portal restart. If approval is pending, cancelled, or unavailable, the transcript stays on the clipboard for manual paste. KDE Wayland cannot reliably report the foreground app; choose **Output → Paste shortcut → Ctrl + Shift + V** for terminals.
 - **PipeWire inputs**: Audio settings list PipeWire inputs by name. **Automatic** uses a connected headset or Bluetooth mic when one is present, otherwise the built-in mic, and is resolved at the start of each recording. Recording a selected input uses `pw-record` (package `pipewire-bin`); **System default** follows the desktop's default input.
 - Data directory: `~/.local/share/reflow`
@@ -233,7 +233,7 @@ See [Linux runtime verification](docs/linux-runtime-verification.md) for tested 
 npm run tauri dev
 ```
 
-Build Linux packages with `node scripts/package.cjs`: `.deb` and AppImage. The helper finalizes AppImage launch hooks before hashing; direct Tauri bundles need this finalization step for native Wayland behavior. Runtime: a configured Python interpreter (`REFLOW_PYTHON`, Model settings → Python interpreter, a `reflow/python-runtime` environment, an activated environment, or Python on PATH) plus the pinned speech requirements, or the separately downloaded experimental native runtime and its models. Python and its packages are not bundled inside the AppImage. Pushing a version tag runs the GitHub Actions checks and creates a draft release with Windows and Linux installers. Publishing the draft is a separate release step.
+Build Linux packages with `node scripts/package.cjs`: `.deb` and AppImage. The helper finalizes AppImage launch hooks before hashing; direct Tauri bundles need this finalization step for native Wayland behavior. Runtime: a configured Python interpreter (`REFLOW_PYTHON`, Model settings → Python interpreter, a `reflow/python-runtime` environment, an activated environment, or Python on PATH) plus the pinned speech requirements, or the separately downloaded experimental native runtime and its models. Python and its packages are not bundled inside the AppImage. Pushing a version tag runs CI, creates a draft, builds Windows/Linux installers, macOS previews and the signed Android companion, verifies complete assets and provenance, then automatically publishes the release. There is no separate manual approval in the current workflow. Whether future releases should require manual approval remains a product-policy decision; this audit does not change publication behavior.
 
 ### macOS signing (CI)
 
@@ -332,3 +332,5 @@ Tests cover:
 ## 📄 License
 
 MIT License — free and open source.
+
+Speech runtime support floors: managed CPython 3.12 on x86_64 Windows 10/11, glibc Linux x86_64/ARM64 (glibc 2.28+ for torch, 2.27+ for the pinned Zipformer/numpy set), macOS 14+ Apple Silicon or macOS 10.15+ Intel for Zipformer. Qwen/Phonon require AVX2 on x86_64; Zipformer is the lightweight alternative. Windows ARM, 32-bit, musl and specialized Jetson stacks are not verified managed targets. Checked-in target/profile wheel locks and platform checks are applied before large downloads; these floors do not imply microphone, insertion, accuracy or performance acceptance on every platform.

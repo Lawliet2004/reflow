@@ -1,0 +1,13 @@
+WARN Retry attempt #0. Sleeping 1.758245213s before the next attempt
+WARN Retry attempt #0. Sleeping 1.438098357s before the next attempt
+WARN Retry attempt #0. Sleeping 1.109513915s before the next attempt
+WARN Retry attempt #0. Sleeping 1.284701113s before the next attempt
+WARN Retry attempt #1. Sleeping 1.748289602s before the next attempt
+WARN Retry attempt #1. Sleeping 1.433679544s before the next attempt
+WARN Retry attempt #1. Sleeping 1.994011191s before the next attempt
+WARN Retry attempt #1. Sleeping 3.145580909s before the next attempt
+WARN Retry attempt #2. Sleeping 3.226433032s before the next attempt
+WARN Retry attempt #2. Sleeping 2.483328272s before the next attempt
+WARN Retry attempt #2. Sleeping 4.813097564s before the next attempt
+WARN Retry attempt #2. Sleeping 4.878876784s before the next attempt
+Resolved 37 packages in 47.85s

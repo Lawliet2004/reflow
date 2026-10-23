@@ -1,0 +1,144 @@
+{
+  "recorded_at": "2026-10-23T05:54:22.502917+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "dirty_worktree": true,
+  "source_sha256": {
+    "model-runtime/phonon_runtime.py": "ee49aacbececee4ef71204d0d0688c012bc380add44b53506a3a30a46638b820",
+    "model-runtime/qwen3_asr_runtime.py": "b0940e72c70c31ef85f3cb0b7fed8101130a8998f4074f6743ff0aca729c5c4b",
+    "model-runtime/test_phonon.py": "667d38a5414e377f2e2ff965a98d3b6a8658e33c3d2febc3d2f600dfc3b56341",
+    "model-runtime/requirements-phonon.txt": "07639782de47d63979311c8672041bd9a76b9cc6f2927ec8cc772427ded921a1",
+    "model-runtime/locks/x86_64-unknown-linux-gnu-phonon-cpu.txt": "955613488154c27da95c466aaf7f468f6b7b6ba91002becbe4b3c4a6f000051a",
+    "scripts/runtime-packs.py": "1ba62d436e706b11ad365fbee95a76a4b82abecc1fe92d2e0c6b4ce97ca12376",
+    "scripts/test_runtime_packs.py": "c44f8f475da3b32efd4557fd047768811cc10d3af5cb147347625be7291137b3",
+    "scripts/verify_phonon.py": "9a1c3b481e43ff3012d8030112ef412c12afb89afa781acf15019d3ddaf9b030",
+    "src-tauri/src/asr/python_setup.rs": "ac8e7c6a26f362b82e28a18e6e0f15ea7fd3ea95af5443d3f7784af9ae1cb94c",
+    "src-tauri/src/asr/sidecar.rs": "1c3fed9318f7b72da8275cdc2487de2cfafaab6d77a1fb11a469dc9a252bd627",
+    "src-tauri/src/asr/runtime_pack.rs": "377ccfc9915cd14ab61011c8d90cdbe0cfc18d8eb1b8fb33404996efebf0f439",
+    "src-tauri/src/audio/resampler.rs": "c7a99524d7651e6be42a2f58792a25559b22e8e805bbe59b4f57bc40dbffff57",
+    "src-tauri/tests/phonon_live.rs": "485d437527dc7c0af6be286d8f8657bb55a08fa6a148f40b07f0c98cf6c4f061",
+    ".github/workflows/desktop-validation.yml": "690eed02988bcf9fff2ea10f9019315a3604be0b7c9bc0dff2d70ebcfdac35a5"
+  },
+  "checks": {
+    "rust": {
+      "passed": 983,
+      "failed": 0,
+      "ignored": 27,
+      "targets": 45
+    },
+    "clippy": "passed with -D warnings",
+    "python_tests": 45,
+    "builder_tests": 8,
+    "rust_format": "passed",
+    "repository_format": "passed",
+    "diff_check": "passed",
+    "actionlint": "1.7.12 passes all three workflows with ShellCheck disabled"
+  },
+  "log_sha256": {
+    "rust_all_targets": {
+      "path": "/tmp/reflow-phonon-final-rust-all.log",
+      "sha256": "41c670a30ed0a336b4e3e6e7f17c517ebe080cb78c1e6be6711ac1d39069ecbe"
+    },
+    "clippy_all_targets": {
+      "path": "/tmp/reflow-phonon-final-clippy.log",
+      "sha256": "958d5fdbe07c9029a60af27b398a7c0f333705f8494f0cb1a0b4453bd6302b8f"
+    },
+    "python_unittest": {
+      "path": "/tmp/reflow-phonon-python-all.log",
+      "sha256": "924ac925223122dc651432e23ef9e5ff166dad9f6476b03606ef5316392af453"
+    },
+    "builder_unittest": {
+      "path": "/tmp/reflow-phonon-builder-after.log",
+      "sha256": "76eb1dee601046d72e7b0cbcb205ecb475bb342456b71604e0dcafc1ab810889"
+    },
+    "builder_before": {
+      "path": "/tmp/reflow-phonon-builder-before.log",
+      "sha256": "3144bf98cbf9c8eb966d0e7cb7de8195b8cb17f5bceaaf49c45cefc27eb9da38"
+    },
+    "sidecar_before": {
+      "path": "/tmp/reflow-phonon-runtime-before.log",
+      "sha256": "82663d64b4dfdd87872ac6a9552a7d6189fe8052d55e8472c6dd251af9c18cce"
+    },
+    "pack_build": {
+      "path": "/tmp/reflow-phonon-cpu-pack-build-final.log",
+      "sha256": "76995d1147f7dfd29457402292c3d83443930112864ce5eb2022a62aadaf186d"
+    },
+    "offline_install": {
+      "path": "/tmp/reflow-phonon-pack-offline-final.log",
+      "sha256": "92c736b0c4bc152f72900bbcf31b25148d47d7d95c358b3b5c2b14c3a06ccf65"
+    },
+    "qwen_regression": {
+      "path": "/tmp/reflow-phonon-qwen-regression.log",
+      "sha256": "5fe22c500edf1ac233391d1148abc6d09b2b18fa1af2d2acb1c65a42fd62ab14"
+    },
+    "zipformer_regression": {
+      "path": "/tmp/reflow-phonon-zipformer-regression.log",
+      "sha256": "91a5b85a0528a6d01f417a1f0aa4f53cbcb3d75e4b31957b09bce4c48a26770a"
+    },
+    "fresh_int8": {
+      "path": "/tmp/reflow-phonon-fresh-default.log",
+      "sha256": "b06f5d369ae89f1d1fddc084e00a575bb35d8ce4df8ccbf152f48c8bdf10bd28"
+    },
+    "fresh_fp32": {
+      "path": "/tmp/reflow-phonon-fresh-fp32.log",
+      "sha256": "2592de5684c15c24f7ae7e222f2be0f26c4e27ef8d2d2aad79ba095f8a819b29"
+    },
+    "stereo_native": {
+      "path": "/tmp/reflow-phonon-stereo-native.log",
+      "sha256": "5e40e3f4efd66174a6b603b172026480a911971121d5c48f3fb41818035d2927"
+    },
+    "repository_format": {
+      "path": "/tmp/reflow-phonon-final-format.log",
+      "sha256": "0aaa94ebb7c9974eb24e337e82ec2e975a2ef4f381a45bd9bf78beefa50610f5"
+    }
+  },
+  "reused_evidence": {
+    "frontend": {
+      "provenance": "docs/verification/setup-recovery-provenance-2026-10-23.json",
+      "unchanged_source_hashes": 9,
+      "new_test_or_benchmark_run": false
+    },
+    "refinement": {
+      "provenance": "docs/verification/refinement-2026-10-23/paragraph-preservation/provenance.json",
+      "unchanged_source_hashes": 15,
+      "new_test_or_benchmark_run": false
+    }
+  },
+  "no_model_downloads": true,
+  "model_archive_sha256": "98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e",
+  "physical_acceptance": "deferred by user; not passed",
+  "ci": "authorized native build run; separate source snapshot; no release",
+  "pack": {
+    "target": "x86_64-unknown-linux-gnu",
+    "profile": "phonon",
+    "variant": "cpu",
+    "requirements_sha256": "955613488154c27da95c466aaf7f468f6b7b6ba91002becbe4b3c4a6f000051a",
+    "pip_lock_sha256": "a5156dc41a4a00784002d063a17d6fcdb3e6922dd650046fd907b80173a502a7",
+    "pbs_sha256": "f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5",
+    "schema": 1,
+    "asset": "speech-runtime-x86_64-unknown-linux-gnu-phonon-cpu.tar.gz",
+    "sha256": "80a6eb835b574612a6001d4c677c7e16582416c09c2084c429676b859adecc7b",
+    "bytes": 349482063,
+    "unpacked_bytes": 356707897,
+    "source_commit": "148ae33a9deba466dda58874419c9301b56b69db"
+  },
+  "artifact_sha256": {
+    "scratch-cleanup.json": "72288a766e13e565d8107c09dc7a8a7ba68e24d984e81e4cf9392cd6630b412d",
+    "license-summary.json": "12e1be45e7dd1cb359115fafce4c0bc85fee170dc7917d2c88719b859a850f30",
+    "descriptor.json": "2ac011212e93cf7288afeaee49e218241286f28c842edaa5fb48f4b6799f16a7",
+    "qwen-regression.json": "f2f8d0aa0daddeb36a8fa329a744d74bdb3b5069580520f0ed3781e56387cce0",
+    "speech.wav": "c634fa5b04a1d15e9ad830d15294c948bee6a424de6ac0b2b3d45c449a564118",
+    "audio-generation.json": "3dda95b639e0854517f6eadf79961a23ab8c0d548731514331989a47810188c8",
+    "stereo-native.json": "52fc8bd292ed3d401eb3f0d0c183fe669dc94f931c0aad047244a2f0f8689fa2",
+    "runtime-receipt.json": "51442243cf80d67e95383f8ba156f389ed3c80b6cd7b6ac6192238a6a62d67b0",
+    "right-channel-48k.wav": "7fde4282fd9158f39c9c73ca18179f334ca397db1414500589774c85435d9144",
+    "reference.txt": "21744d40253304a3415a5d0e2b60273f3202674cdc3c8791e60590ba20c9525d",
+    "fresh-runtime.json": "cf5bf7f3f563b1d3fd9e0405214c2fb9c73e50988b6a490af8895bc700f57b12",
+    "README.md": "8029644a27ae1005832e265b778b9e91e8763d7bafff9ec602873689abbeceae",
+    "existing-runtime.json": "eebb29ab0f4b9561ba261c98429ffc66c9c5233914d776fc57b7ea028f233886",
+    "manifest.json": "118b98df163840f9f806a2867628997b2bf462ac152f7735d951192785be1cc3",
+    "zipformer-regression.json": "0b9f2beee694d6376e8e18418d55a7f2595952558124a9e3079eaf7c5d15e505",
+    "build-check.json": "b0d3fcbba1d735a82e1d9f495202d75d7fcc8460856efca392e199d72e05a260",
+    "offline-install.json": "9f7cb039538a17577115dd3c6a71bdfe72203c2e95e88769a717f6fe033ad544"
+  },
+  "limits": "Synthetic CPU ASR samples on Linux, not an accuracy corpus. Forced fp32 is not automatic fallback proof. No CUDA or physical device/insertion/signing acceptance. Partial local catalog not published. Broader faults, advisories and writing-quality work remain."
+}

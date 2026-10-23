@@ -1,0 +1,15 @@
+{
+  "packages": 37,
+  "license_files": 213,
+  "upstream_supplements": [
+    {
+      "name": "tokenizers",
+      "version": "0.22.2",
+      "license": "Apache-2.0",
+      "source": [
+        "https://raw.githubusercontent.com/huggingface/tokenizers/f383101a26663708484cac0727792aad74f78234/LICENSE"
+      ]
+    }
+  ],
+  "distribution_review": "still required for release; this inventory is not approval"
+}

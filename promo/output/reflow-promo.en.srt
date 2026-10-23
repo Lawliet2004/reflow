@@ -1,0 +1,187 @@
+1
+00:00:00,314 --> 00:00:02,104
+Your next great idea shouldn't have
+
+2
+00:00:02,119 --> 00:00:03,225
+to wait for your keyboard.
+
+3
+00:00:03,534 --> 00:00:05,052
+What if your words could simply flow?
+
+4
+00:00:07,314 --> 00:00:08,066
+Meet Reflow.
+
+5
+00:00:08,387 --> 00:00:10,766
+Private, on-device dictation that turns
+
+6
+00:00:10,781 --> 00:00:12,040
+the way you speak into the
+
+7
+00:00:12,055 --> 00:00:13,114
+words you want to write.
+
+8
+00:00:14,338 --> 00:00:15,184
+Hold your shortcut.
+
+9
+00:00:15,494 --> 00:00:16,387
+Speak naturally.
+
+10
+00:00:16,708 --> 00:00:17,437
+Then release.
+
+11
+00:00:17,746 --> 00:00:19,960
+Reflow transcribes your words and inserts
+
+12
+00:00:19,975 --> 00:00:21,647
+them into the app you're already using.
+
+13
+00:00:21,956 --> 00:00:22,826
+Stay with the thought.
+
+14
+00:00:23,135 --> 00:00:23,817
+Keep your flow.
+
+15
+00:00:25,314 --> 00:00:27,163
+Leave the ums, repetitions,
+
+16
+00:00:27,260 --> 00:00:28,590
+and rough edges behind.
+
+17
+00:00:28,899 --> 00:00:30,606
+Choose a light cleanup, or use a
+
+18
+00:00:30,621 --> 00:00:32,670
+local language model to polish grammar
+
+19
+00:00:32,791 --> 00:00:35,100
+and shape longer thoughts into clear paragraphs.
+
+20
+00:00:36,314 --> 00:00:37,114
+Draft an email.
+
+21
+00:00:37,423 --> 00:00:38,399
+Send a quick message.
+
+22
+00:00:38,708 --> 00:00:39,413
+Capture a note.
+
+23
+00:00:39,722 --> 00:00:40,828
+Choose a writing style for
+
+24
+00:00:40,843 --> 00:00:42,679
+the moment, with settings that adapt
+
+25
+00:00:42,694 --> 00:00:43,600
+to the way you work.
+
+26
+00:00:46,314 --> 00:00:48,222
+Names, technical terms, and the
+
+27
+00:00:48,236 --> 00:00:49,472
+words you use every day.
+
+28
+00:00:49,781 --> 00:00:51,040
+Add your vocabulary to the
+
+29
+00:00:51,055 --> 00:00:53,552
+dictionary, and turn spoken shortcuts into
+
+30
+00:00:53,567 --> 00:00:55,003
+the text you repeat most.
+
+31
+00:00:56,313 --> 00:00:57,277
+Already have a recording?
+
+32
+00:00:57,581 --> 00:00:59,836
+Import your audio, transcribe it locally,
+
+33
+00:00:59,988 --> 00:01:01,929
+and export text or subtitles.
+
+34
+00:01:02,233 --> 00:01:04,395
+Give your recordings a useful second life.
+
+35
+00:01:05,326 --> 00:01:06,574
+Keep ideas in Notes.
+
+36
+00:01:06,930 --> 00:01:08,637
+Find past dictations in History.
+
+37
+00:01:08,946 --> 00:01:10,712
+Search, pin, and pick up a
+
+38
+00:01:10,727 --> 00:01:11,998
+thought right where you left it.
+
+39
+00:01:14,326 --> 00:01:15,906
+Speech recognition and cleanup
+
+40
+00:01:15,921 --> 00:01:16,915
+run on your computer.
+
+41
+00:01:17,223 --> 00:01:19,859
+Download your models once, then dictate offline.
+
+42
+00:01:20,166 --> 00:01:21,090
+Your voice deserves a
+
+43
+00:01:21,105 --> 00:01:22,404
+workspace you can trust.
+
+44
+00:01:23,314 --> 00:01:25,517
+Less friction between thinking and writing.
+
+45
+00:01:25,826 --> 00:01:27,062
+More room for your ideas.
+
+46
+00:01:27,371 --> 00:01:27,864
+Reflow.
+
+47
+00:01:28,173 --> 00:01:28,901
+Speak freely.

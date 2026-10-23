@@ -90,3 +90,14 @@ fn native_cancel_finishes_while_the_server_withholds_its_response() {
         "cancelled decode must release its HTTP connection: {connection_closed:?}"
     );
 }
+
+#[test]
+fn model_download_cancel_only_invalidates_the_matching_installer() {
+    let mut engine = NativeAsrEngine::default();
+    engine.status.write().model_id = Some("native-0.6b".into());
+    engine.status.write().is_downloading = true;
+    assert!(engine.cancel_model_download("native-1.7b").is_err());
+    assert!(*engine.installation_active.lock());
+    engine.cancel_model_download("native-0.6b").unwrap();
+    assert!(!*engine.installation_active.lock());
+}

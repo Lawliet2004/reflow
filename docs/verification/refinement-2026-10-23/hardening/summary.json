@@ -1,0 +1,66 @@
+[
+  {
+    "run": "2048",
+    "cases": 50,
+    "applied": 40,
+    "contracts": 50,
+    "median_ms": 270.0,
+    "p95_ms": 416,
+    "peak_rss_mib": 760.3,
+    "device_vram_mib": 1238,
+    "fallback_reasons": {
+      "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved.": 5,
+      "LLM rewrite rejected: quoted text or literal code changed; original transcript preserved.": 2,
+      "LLM rewrite rejected: a number, amount, date, or version changed; original transcript preserved.": 1,
+      "LLM rewrite rejected: a technical identifier, command, path, or name changed; original transcript preserved.": 2
+    }
+  },
+  {
+    "run": "4096",
+    "cases": 50,
+    "applied": 40,
+    "contracts": 50,
+    "median_ms": 272.0,
+    "p95_ms": 415,
+    "peak_rss_mib": 760.6,
+    "device_vram_mib": 1264,
+    "fallback_reasons": {
+      "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved.": 5,
+      "LLM rewrite rejected: quoted text or literal code changed; original transcript preserved.": 2,
+      "LLM rewrite rejected: a number, amount, date, or version changed; original transcript preserved.": 1,
+      "LLM rewrite rejected: a technical identifier, command, path, or name changed; original transcript preserved.": 2
+    }
+  },
+  {
+    "run": "8192",
+    "cases": 50,
+    "applied": 40,
+    "contracts": 50,
+    "median_ms": 270.5,
+    "p95_ms": 419,
+    "peak_rss_mib": 760.4,
+    "device_vram_mib": 1316,
+    "fallback_reasons": {
+      "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved.": 5,
+      "LLM rewrite rejected: quoted text or literal code changed; original transcript preserved.": 2,
+      "LLM rewrite rejected: a number, amount, date, or version changed; original transcript preserved.": 1,
+      "LLM rewrite rejected: a technical identifier, command, path, or name changed; original transcript preserved.": 2
+    }
+  },
+  {
+    "run": "4096, temperature 0.15",
+    "cases": 50,
+    "applied": 39,
+    "contracts": 49,
+    "median_ms": 272.5,
+    "p95_ms": 419,
+    "peak_rss_mib": 760.5,
+    "device_vram_mib": 1264,
+    "fallback_reasons": {
+      "LLM rewrite rejected: content, relationships, uncertainty, or an unresolved repair changed; original transcript preserved.": 6,
+      "LLM rewrite rejected: quoted text or literal code changed; original transcript preserved.": 2,
+      "LLM rewrite rejected: a number, amount, date, or version changed; original transcript preserved.": 1,
+      "LLM rewrite rejected: a technical identifier, command, path, or name changed; original transcript preserved.": 2
+    }
+  }
+]

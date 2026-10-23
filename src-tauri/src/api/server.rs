@@ -29,6 +29,10 @@ use crate::session::{self, SessionError};
 mod socket_tests;
 
 pub fn current_status(ctx: &AppContext) -> ApiStatus {
+    current_status_for_host(ctx, None)
+}
+
+pub fn current_status_for_host(ctx: &AppContext, pairing_host: Option<&str>) -> ApiStatus {
     let settings = ctx.settings_store.get();
     let running = ctx.api_runtime.read().as_ref().map(|r| r.bind.clone());
     let identity = if settings.api_enabled {
@@ -49,13 +53,14 @@ pub fn current_status(ctx: &AppContext) -> ApiStatus {
     if settings.api_bind != "localhost" {
         addrs.extend(lan_ipv4_addrs());
     }
-    addrs.sort();
-    addrs.dedup();
+    // Preserve the route/interface ranking supplied by LAN discovery.
+    let mut seen = std::collections::HashSet::new();
+    addrs.retain(|address| seen.insert(address.clone()));
 
-    let host = addrs
-        .iter()
-        .find(|a| *a != "127.0.0.1")
-        .cloned()
+    let host = pairing_host
+        .filter(|host| addrs.iter().any(|addr| addr == host))
+        .map(str::to_owned)
+        .or_else(|| addrs.iter().find(|a| *a != "127.0.0.1").cloned())
         .unwrap_or_else(|| "127.0.0.1".into());
     let (pairing_code, expires, pair_uri_val, qr) =
         if let (Some(offer), Some(fingerprint)) = (offer, fingerprint.as_deref()) {
@@ -85,8 +90,10 @@ pub fn current_status(ctx: &AppContext) -> ApiStatus {
         devices: ctx.pairing.list_public(),
         warning: if let Err(error) = identity {
             error
+        } else if settings.api_enabled && running.is_none() {
+            "Phone listener is not running. Check that the port is free, then toggle phone access off and on. Allow Reflow through your firewall on a private network.".into()
         } else {
-            "Phone connections use encrypted HTTPS/WSS and the desktop certificate fingerprint from this pairing link. Older companions must be updated and paired again.".into()
+            "Use the same private Wi-Fi on phone and desktop. If pairing times out, select the desktop's Wi-Fi/Ethernet address below; pause VPN routing and check firewall or guest-Wi-Fi isolation. Phone connections use encrypted HTTPS/WSS and the desktop certificate fingerprint from this pairing link. Older companions must be updated and paired again.".into()
         },
     }
 }
@@ -889,7 +896,7 @@ async fn handle_socket(
                             break;
                         }
                     }
-                    Ok(DoryEvent::SessionFinished { session_id, raw, text, language, metrics }) if started == Some(session_id) && processing.is_none() => {
+                    Ok(DoryEvent::SessionFinished { session_id, raw, text, language, metrics, .. }) if started == Some(session_id) && processing.is_none() => {
                         started = None;
                         let _ = sink.send(Message::Text(send(ServerMsg::Final { raw, text, language, metrics }))).await;
                     }

@@ -256,12 +256,6 @@ impl ModelManifest {
         self.precisions.to_vec()
     }
 
-    /// `true` when `precision` can actually be loaded on `device`, under the
-    /// same CPU caveat as [`Self::supported_precisions_on`].
-    pub fn supports_load(&self, device: Device, precision: Precision) -> bool {
-        self.supported_precisions_on(device).contains(&precision)
-    }
-
     pub fn supports_language(&self, language: &str) -> bool {
         let want = language.trim().to_ascii_lowercase();
         if want.is_empty() || want == "auto" {
@@ -506,8 +500,12 @@ pub fn recommended_asr_model(available_ram_mb: f32, free_vram_mb: f32) -> &'stat
     let fits_gpu = free_vram_mb > manifest.estimated_vram_mb(Precision::Int8) + 384.0;
     if fits_cpu || fits_gpu {
         "1.7b"
-    } else {
+    } else if available_ram_mb > ASR_MODELS[0].estimated_cpu_ram_mb() + 1024.0
+        || free_vram_mb > ASR_MODELS[0].estimated_vram_mb(Precision::Int8) + 384.0
+    {
         "0.6b"
+    } else {
+        "zipformer-20m"
     }
 }
 
@@ -551,8 +549,13 @@ mod tests {
             recommended_asr_model(2048.0, manifest.estimated_vram_mb(Precision::Int8) + 512.0,),
             "1.7b"
         );
-        // A mid-range machine gets the small model.
-        assert_eq!(recommended_asr_model(4096.0, 512.0), "0.6b");
+        // Below Qwen's CPU peak plus headroom, offer a supported lightweight engine.
+        assert_eq!(recommended_asr_model(4096.0, 512.0), "zipformer-20m");
+        let small = asr_manifest("0.6b").unwrap();
+        assert_eq!(
+            recommended_asr_model(small.estimated_cpu_ram_mb() + 1025.0, 0.0),
+            "0.6b"
+        );
     }
 
     #[test]

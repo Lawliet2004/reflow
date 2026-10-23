@@ -1,0 +1,12 @@
+[
+  {
+    "device": "cpu",
+    "precision": "int8",
+    "backend": "Phonon-2 \u00b7 CPU int8 \u00b7 cpu: C encoder (packed one-dot int8) + C TDT loop, avx2 tier",
+    "load_seconds": 9.65342664718628,
+    "audio_seconds": 4.605,
+    "transcribe_seconds": 0.19369197799824178,
+    "text": "The application should work offline. Please keep my recordings private.",
+    "warnings": []
+  }
+]

@@ -1,0 +1,12 @@
+........Fetching 1 files:   0%|          | 0/1 [00:00<?, ?it/s]Fetching 1 files: 100%|██████████| 1/1 [00:00<00:00, 265.03it/s]
+......[17:57:15] [Qwen3-ASR Runtime] Downloading FermionResearch/Phonon-2 weights to /tmp/tmpe_1hosyl
+[17:57:15] [Qwen3-ASR Runtime] Model download complete and verified
+.......................[17:57:15] [Qwen3-ASR Runtime] Zipformer streaming decode failed: decoder failed
+[17:57:15] [Qwen3-ASR Runtime] final transcript (14 chars, lang=en)
+.[17:57:15] [Qwen3-ASR Runtime] Downloading csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17 weights to /tmp/tmph2_dcgmh
+[17:57:15] [Qwen3-ASR Runtime] Model download complete and verified
+.
+----------------------------------------------------------------------
+Ran 39 tests in 0.504s
+
+OK

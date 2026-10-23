@@ -115,6 +115,12 @@ export function DiagnosticsWaterfall({ className }: { className?: string }) {
           </Badge>
         </div>
 
+        {last?.rewrite_fallback_reason && (
+          <p className="text-xs text-muted">
+            Cleanup fallback: <code>{last.rewrite_fallback_reason}</code>
+          </p>
+        )}
+
         {/* Phase Bar */}
         <div className="h-4 w-full bg-base-2 rounded-full overflow-hidden flex">
           {phases.map(

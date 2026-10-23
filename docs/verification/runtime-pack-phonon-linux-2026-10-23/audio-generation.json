@@ -1,0 +1,12 @@
+{
+  "tool": "Installed FFmpeg flite filter, slt voice; no voice/model downloads",
+  "ffmpeg_version": "ffmpeg version 8.0.1-3ubuntu2 Copyright (c) 2000-2025 the FFmpeg developers",
+  "command": "ffmpeg -f lavfi -i flite=textfile=<reference.txt>:voice=slt -ar 16000 -ac 1 -c:a pcm_s16le speech.wav",
+  "sample_rate": 16000,
+  "channels": 1,
+  "bits_per_sample": 16,
+  "audio_seconds": 4.605,
+  "speech_sha256": "c634fa5b04a1d15e9ad830d15294c948bee6a424de6ac0b2b3d45c449a564118",
+  "reference_sha256": "21744d40253304a3415a5d0e2b60273f3202674cdc3c8791e60590ba20c9525d",
+  "script_sha256": "1244b16cef193661b3dedf5970e18f84f1ad455ac27a3d2c39a7eb28222b879d"
+}

@@ -1,0 +1,4 @@
+Qwen receipt alone installed=true weights_exist=false
+Zipformer zero-byte files installed=true
+CPU 256MiB free selection=1.7b device=Cpu error=None
+GPU driver present, unprobed speech runtime: device=Cpu

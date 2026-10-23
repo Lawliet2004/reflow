@@ -1,0 +1,16 @@
+[
+  { "type": "WordBoundary", "offset": 943330, "duration": 1886660, "text": "Less" },
+  { "type": "WordBoundary", "offset": 2947910, "duration": 3773750, "text": "friction" },
+  { "type": "WordBoundary", "offset": 6839580, "duration": 3537910, "text": "between" },
+  { "type": "WordBoundary", "offset": 10495410, "duration": 5306660, "text": "thinking" },
+  { "type": "WordBoundary", "offset": 17217080, "duration": 1061250, "text": "and" },
+  { "type": "WordBoundary", "offset": 18396250, "duration": 3773750, "text": "writing" },
+  { "type": "WordBoundary", "offset": 26061250, "duration": 1768750, "text": "More" },
+  { "type": "WordBoundary", "offset": 27947910, "duration": 2004580, "text": "room" },
+  { "type": "WordBoundary", "offset": 30070830, "duration": 1061250, "text": "for" },
+  { "type": "WordBoundary", "offset": 31250000, "duration": 1179160, "text": "your" },
+  { "type": "WordBoundary", "offset": 32547080, "duration": 5070830, "text": "ideas" },
+  { "type": "WordBoundary", "offset": 41509580, "duration": 4127500, "text": "Reflow" },
+  { "type": "WordBoundary", "offset": 49528330, "duration": 2358330, "text": "Speak" },
+  { "type": "WordBoundary", "offset": 52004580, "duration": 4009580, "text": "freely" }
+]

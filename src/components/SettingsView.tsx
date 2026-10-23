@@ -283,7 +283,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 runtimeDownloadActive={runtimeDownloadActive}
                 runtimeDownloadError={runtimeDownloadError}
                 onInstallRuntime={onInstallRuntime}
-                onRemoveRuntime={onRemoveRuntime}
               />
             )}
             {page === "dictionary" && (

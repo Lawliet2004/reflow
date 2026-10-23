@@ -1,0 +1,23 @@
+{
+  "context": 1024,
+  "input": "The app should work offline use SQLite for storage support dark mode and keep ram usage low.",
+  "production_safety_gate_applied": false,
+  "results": [
+    {
+      "instruction": "Format this as a bullet list, one requirement per bullet. Preserve the dictated words and details. Return only the edited text.",
+      "output": "- The app should work offline.\n- Use SQLite for storage support.\n- Support dark mode.\n- Keep RAM usage low."
+    },
+    {
+      "instruction": "Format this as a bullet list, one requirement per bullet. Keep the subject and modal verb in the lead-in. Preserve every requirement.",
+      "output": "- The app should work offline.\n- Use SQLite for storage support.\n- Support dark mode.\n- Keep RAM usage low."
+    },
+    {
+      "instruction": "Format this as a bullet list, one requirement per bullet. Keep the original words, including subject and modal verbs.",
+      "output": "- The app should work offline.\n- Use SQLite for storage support.\n- Support dark mode.\n- Keep RAM usage low."
+    },
+    {
+      "instruction": "Format this as a bullet list. Start with the original subject and modal verb, followed by one requirement per bullet.",
+      "output": "- The app should work offline.\n- Use SQLite for storage support.\n- Support dark mode.\n- Keep RAM usage low."
+    }
+  ]
+}

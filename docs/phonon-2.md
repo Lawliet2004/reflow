@@ -18,7 +18,7 @@ python -m pip install -r model-runtime/requirements-phonon.txt
 
 Reflow retains cancellation, silence-aligned segmentation, imports, subtitle exports and dictionary replacements. Phonon does not receive recognition hotword bias. Audio is buffered and decoded when recording ends, as with Reflow's other speech models. Faster-than-real-time processing does not imply live partial transcripts.
 
-The desktop CUDA adapter is distinct from Fermion's Docker CUDA runtime. AMD/Intel GPU, Vulkan and Apple MLX execution are not integrated for this model. The live checks below cover Windows; Linux execution is supported by the pinned runtime but has not been exercised in this verification.
+The desktop CUDA adapter is distinct from Fermion's Docker CUDA runtime. AMD/Intel GPU, Vulkan and Apple MLX execution are not integrated for this model. The live checks below cover Windows; Linux CPU execution is additionally covered by the 23 October fresh-runtime checkpoint below.
 
 ## Verified behavior
 
@@ -50,6 +50,12 @@ Add `--install` to download missing weights. The script respects Reflow's offlin
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml --test phonon_live -- --ignored --nocapture
 ```
+
+## Linux fresh-runtime checkpoint — 23 October 2026
+
+A verified model-free Phonon CPU pack installs offline and rejects a damaged lazy Parakeet API even when top-level imports succeed. A fresh environment decodes a 4.605-second English sample through actual Rust sidecar PCM transfer with packed int8 (227 ms decode) and forced fp32 (383 ms decode). The first cold-cache int8 load took 34.644 seconds; the later fp32 load took 23.068 seconds. A separate existing-environment check decodes right-channel-only 48 kHz stereo audio. See [source hashes, fixtures and limits](verification/runtime-pack-phonon-linux-2026-10-23/README.md). No model weights were downloaded.
+
+For CPU-only Rust verification set `REFLOW_PHONON_DEVICES=cpu`; the default still tests both CPU and CUDA. `REFLOW_PHONON_MODEL_DIR` selects an existing local model directory. `REFLOW_PHONON_EXPECT_PRECISION` can assert the expected `int8` or `fp32` path; `FERMION_P2_CPU=fp32` forces the upstream supported fp32 mode. These overrides do not prove automatic fallback on another CPU.
 
 ## Provenance and attribution
 

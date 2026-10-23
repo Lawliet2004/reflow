@@ -1,0 +1,22 @@
+{
+  "broken_lazy_api_rejected": false,
+  "bytes": 107344553,
+  "cancelled_repair": "pass",
+  "corrupt_cache": "pass",
+  "missing_cache": "pass",
+  "model_downloads": 0,
+  "native_desktop_or_asr_acceptance": false,
+  "network_journal_entries": 0,
+  "offline_install_ms": 17177,
+  "offline_repair": "pass",
+  "pack_sha256": "a41e50ae4e674a58a0ffcf6af372def05144711795f46f35d8cc63a0702b5cbf",
+  "profile": "zipformer-none",
+  "target": "x86_64-unknown-linux-gnu",
+  "simulated_appimage_environment": true,
+  "invalid_inherited_pythonhome_cleared": true,
+  "invalid_original_pythonhome_cleared": true,
+  "complete_test_seconds": 37.31,
+  "temporary_storage": "/home/papan/.cache/reflow-qwen-runtime-pack-verification/tmp",
+  "log_sha256": "c15d50b152761972bae5b42866d772616f644e78ddd9b2ba31a8a652ae1a6cc6",
+  "checkpoint": "Final-source after Linux tmpfs and Unix symlink preflight fix."
+}

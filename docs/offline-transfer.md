@@ -2,18 +2,21 @@
 
 Reflow starts with Offline mode on. Installed speech and writing models, local
 inference, history, file transcription, notes and the separately enabled local
-API continue to work. Model installation, runtime repair and automatic runtime
-recovery return `Offline mode is on` without starting a download. Calibration
+API continue to work. Missing artifacts return `Offline mode is on` without
+starting a download. Complete cached, hash-verified speech runtime packs can be
+installed or repaired locally by the backend; this does not yet establish the
+whole offline setup UI journey. Calibration
 uses installed weights and does not download anything.
 
 Turn Offline mode off in Advanced settings only when you want to install a
-model or repair a runtime. Each HTTPS request is limited to the pinned GitHub,
-Hugging Face and artifact CDN hosts. Turning Offline mode on during a transfer
+model or obtain a missing runtime. Release speech setup uses a complete
+[runtime pack](runtime-packs.md) with a local wheelhouse. Each HTTPS request is limited to the pinned GitHub,
+Hugging Face and artifact CDN hosts. Managed package setup additionally allows only pypi.org, files.pythonhosted.org, download.pytorch.org and download-r2.pytorch.org over HTTPS. It uses complete platform/profile locks with artifact hashes, binary wheels, an explicit index policy and no inherited pip configuration. System HTTPS proxy settings are honored while destination checks remain active. Turning Offline mode on during a transfer
 stops further body reads. Partial downloads can be resumed later.
 
 The read-only network journal records host, received body bytes and UTC timestamp
 in `<data directory>/network-journal.jsonl`. It includes request failures (zero
-bytes) and redirects. It excludes URLs, query strings, tokens, request content
+bytes) and redirects. Managed pip also journals received payload bytes through its guarded transport; completed cache hits create no outbound traffic entry. A force-killed process can lose the final in-flight request tally, so the journal is not a packet capture or a complete billing counter. It excludes URLs, query strings, tokens, request content
 and private file paths. Local speech/writing inference and incoming local API
 requests are not outbound internet connections and do not appear in this list.
 The view reads at most the newest 1,000 entries and 2 MiB of the journal.

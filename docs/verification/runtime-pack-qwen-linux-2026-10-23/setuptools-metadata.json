@@ -1,0 +1,19 @@
+{
+  "wheel": "setuptools-84.2.1-py3-none-any.whl",
+  "sha256": "ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2",
+  "root_metadata": ["setuptools-84.2.1.dist-info/METADATA"],
+  "nested_metadata": [
+    "setuptools/_vendor/autocommand-2.2.2.dist-info/METADATA",
+    "setuptools/_vendor/backports.tarfile-1.2.0.dist-info/METADATA",
+    "setuptools/_vendor/importlib_metadata-8.7.1.dist-info/METADATA",
+    "setuptools/_vendor/jaraco.text-4.0.0.dist-info/METADATA",
+    "setuptools/_vendor/jaraco_context-6.1.0.dist-info/METADATA",
+    "setuptools/_vendor/jaraco_functools-4.4.0.dist-info/METADATA",
+    "setuptools/_vendor/more_itertools-10.8.0.dist-info/METADATA",
+    "setuptools/_vendor/packaging-26.3.dist-info/METADATA",
+    "setuptools/_vendor/platformdirs-4.4.0.dist-info/METADATA",
+    "setuptools/_vendor/tomli-2.4.0.dist-info/METADATA",
+    "setuptools/_vendor/wheel-0.46.3.dist-info/METADATA",
+    "setuptools/_vendor/zipp-3.23.0.dist-info/METADATA"
+  ]
+}

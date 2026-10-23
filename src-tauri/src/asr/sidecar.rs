@@ -110,6 +110,16 @@ fn audio_chunks(samples: &[f32]) -> impl Iterator<Item = &[f32]> {
     samples.chunks(ASR_PUSH_CHUNK_SAMPLES)
 }
 
+/// The sidecar reports failures in-band: `{"status":"error","error":...}`.
+fn response_error(resp: &Value, fallback: &str) -> Option<String> {
+    (resp.get("status").and_then(Value::as_str) == Some("error")).then(|| {
+        resp.get("error")
+            .and_then(Value::as_str)
+            .unwrap_or(fallback)
+            .to_owned()
+    })
+}
+
 struct PipeWrite {
     payload: PipePayload,
     reply: std::sync::mpsc::Sender<Result<(), String>>,
@@ -210,8 +220,44 @@ impl SidecarWriter {
     }
 }
 
+struct SidecarProcess {
+    child: parking_lot::Mutex<Option<Child>>,
+    policy_available: AtomicBool,
+    policy_interrupted: AtomicBool,
+}
+
+impl SidecarProcess {
+    fn stop(&self) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut slot = self
+            .child
+            .try_lock_until(deadline)
+            .ok_or("Could not acquire the speech process before the stop deadline")?;
+        let Some(child) = slot.as_mut() else {
+            return Ok(());
+        };
+        if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+            if let Err(error) = child.kill() {
+                if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                    return Err(format!("Could not stop the speech process: {error}"));
+                }
+            }
+        }
+        loop {
+            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+                *slot = None;
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("The speech process did not exit before the stop deadline".into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
 pub struct Qwen3AsrSidecar {
-    child: Option<Child>,
+    process: Arc<SidecarProcess>,
     stdin: Option<Arc<parking_lot::Mutex<ChildStdin>>>,
     writer: Option<Arc<SidecarWriter>>,
     /// Lines produced by a dedicated reader thread. Reading through a channel
@@ -290,7 +336,11 @@ impl Default for Qwen3AsrSidecar {
 impl Qwen3AsrSidecar {
     pub fn new() -> Self {
         Self {
-            child: None,
+            process: Arc::new(SidecarProcess {
+                child: parking_lot::Mutex::new(None),
+                policy_available: AtomicBool::new(true),
+                policy_interrupted: AtomicBool::new(false),
+            }),
             stdin: None,
             writer: None,
             responses: None,
@@ -348,15 +398,15 @@ impl Qwen3AsrSidecar {
             } else {
                 "bin/python"
             };
-            let installed = crate::platform::PlatformSys::get_app_dir()
-                .join("python-runtime")
-                .join(interpreter)
-                .to_string_lossy()
-                .into_owned();
-            // An activated environment keeps first pick; otherwise the
-            // bundled interpreter is tried before PATH names.
-            let at = usize::from(std::env::var_os("VIRTUAL_ENV").is_some());
-            candidates.insert(at.min(candidates.len()), installed);
+            let installed = super::python_setup::managed_runtime_dir(
+                &crate::platform::PlatformSys::get_app_dir(),
+            )
+            .join(interpreter)
+            .to_string_lossy()
+            .into_owned();
+            // Prefer the environment setup actually installs over inherited
+            // activation; explicit overrides above remain authoritative.
+            candidates.insert(0, installed);
         }
         Self::select_python(&candidates, |candidate| {
             Self::bounded_python_probe(candidate, "import sys; print(sys.executable)")
@@ -514,32 +564,78 @@ impl Qwen3AsrSidecar {
     }
 
     pub(crate) fn bounded_python_probe(python: &str, code: &str) -> Option<Vec<u8>> {
+        Self::bounded_python_probe_for(python, code, Duration::from_secs(3))
+    }
+
+    pub(crate) fn bounded_python_probe_for(
+        python: &str,
+        code: &str,
+        timeout: Duration,
+    ) -> Option<Vec<u8>> {
+        use std::io::Read;
+        let directory = crate::platform::PlatformSys::get_cache_dir().join("python-probes");
+        std::fs::create_dir_all(&directory).ok()?;
+        let path = directory.join(format!("{}.log", uuid::Uuid::new_v4()));
+        let _output = super::python_setup::SetupOutput(path.clone());
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let output = options.open(&path).ok()?;
         let mut command = Command::new(python);
         #[cfg(target_os = "linux")]
-        crate::platform::process::host_environment(&mut command);
+        crate::platform::process::own_child(&mut command);
         command
             .args(["-c", code])
-            .stdout(Stdio::piped())
+            .env("PYTHONNOUSERSITE", "1")
+            .env_remove("PYTHONPATH")
+            .env_remove("PYTHONHOME")
+            .stdin(Stdio::null())
+            .stdout(output)
             .stderr(Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000);
         }
-        let mut child = command.spawn().ok()?;
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let child = command.spawn().ok()?;
+        drop(command);
+        let slot = std::sync::Mutex::new(Some(child));
+        let guard = super::python_setup::SetupChild(&slot);
+        let deadline = Instant::now() + timeout;
         loop {
-            match child.try_wait() {
+            if std::fs::metadata(&path).ok()?.len() > 65536 {
+                return None;
+            }
+            let status = slot.lock().ok()?.as_mut()?.try_wait();
+            match status {
                 Ok(Some(status)) => {
-                    let output = child.wait_with_output().ok()?;
-                    return status.success().then_some(output.stdout);
+                    // Stop descendants before reading; inherited output handles
+                    // must not extend a successful probe beyond its deadline.
+                    drop(guard);
+                    if !status.success() {
+                        return None;
+                    }
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(&path)
+                        .ok()?
+                        .take(65537)
+                        .read_to_end(&mut bytes)
+                        .ok()?;
+                    return (bytes.len() <= 65536).then_some(bytes);
                 }
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(20))
                 }
                 _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
                     return None;
                 }
             }
@@ -735,7 +831,7 @@ impl Qwen3AsrSidecar {
                         return Err(self.abandon_cancelled_transport());
                     }
                     let err = "ASR sidecar closed its output pipe".to_string();
-                    self.kill_child();
+                    let _ = self.kill_child();
                     self.record_crash_and_check_breaker(&err);
                     return Err(err);
                 }
@@ -750,7 +846,7 @@ impl Qwen3AsrSidecar {
     }
 
     fn abandon_cancelled_transport(&mut self) -> String {
-        self.kill_child();
+        let _ = self.kill_child();
         self.fallback("ASR did not acknowledge cancellation; reload the model to continue.");
         CANCELLED_TRANSPORT.into()
     }
@@ -765,20 +861,6 @@ impl Qwen3AsrSidecar {
         Ok(writer)
     }
 
-    /// Unload and cancellation retire the process to release its allocations.
-    /// A later load/install/probe must recreate the transport before writing.
-    fn ensure_initialized(&mut self) -> Result<(), String> {
-        let running = self
-            .child
-            .as_mut()
-            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-        if running && self.stdin.is_some() && self.responses.is_some() {
-            return Ok(());
-        }
-        self.kill_child();
-        self.initialize()
-    }
-
     fn write_until(
         &mut self,
         payload: PipePayload,
@@ -790,7 +872,7 @@ impl Qwen3AsrSidecar {
         let receiver = match writer.enqueue_payload(payload) {
             Ok(receiver) => receiver,
             Err(error) => {
-                self.kill_child();
+                let _ = self.kill_child();
                 self.record_crash_and_check_breaker(&error);
                 return Err(error);
             }
@@ -817,7 +899,7 @@ impl Qwen3AsrSidecar {
                     if watch_cancellation && writer.cancelled.load(Ordering::Acquire) {
                         return Err(self.abandon_cancelled_transport());
                     }
-                    self.kill_child();
+                    let _ = self.kill_child();
                     self.record_crash_and_check_breaker(&error);
                     return Err(error);
                 }
@@ -825,7 +907,7 @@ impl Qwen3AsrSidecar {
                     if watch_cancellation && writer.cancelled.load(Ordering::Acquire) {
                         return Err(self.abandon_cancelled_transport());
                     }
-                    self.kill_child();
+                    let _ = self.kill_child();
                     let error = "ASR sidecar writer closed before completing its frame".to_string();
                     self.record_crash_and_check_breaker(&error);
                     return Err(error);
@@ -840,7 +922,7 @@ impl Qwen3AsrSidecar {
                     // A partially written frame cannot be retried safely, even for
                     // read-only probes. Terminate first; do not lock the full pipe.
                     let error = engine_timeout_error(command, budget);
-                    self.kill_child();
+                    let _ = self.kill_child();
                     self.record_crash_and_check_breaker(&error);
                     return Err(error);
                 }
@@ -893,7 +975,7 @@ impl Qwen3AsrSidecar {
             err
         } else {
             log::error!("{err}; tearing down the sidecar to avoid a desynchronised pipe");
-            self.kill_child();
+            let _ = self.kill_child();
             self.record_crash_and_check_breaker(&err);
             err
         }
@@ -923,9 +1005,9 @@ impl Qwen3AsrSidecar {
              ASR runtime was stopped. Reload the model in Settings to try again.",
             TIMEOUT_MODEL_LOAD.as_secs() / 60
         );
-        self.kill_child();
+        let _ = self.kill_child();
         // A long load timeout is not a rapid crash-loop strike. The existing
-        // ensure_initialized path may start a fresh process on the next load.
+        // initialization path may start a fresh process on the next load.
         self.fallback(&error);
         self.status_cache.device = "none".into();
         self.status_cache.vram_mb = 0.0;
@@ -945,6 +1027,9 @@ impl Qwen3AsrSidecar {
     }
 
     pub fn record_crash_and_check_breaker(&mut self, reason: &str) {
+        if self.process.policy_interrupted.load(Ordering::Acquire) {
+            return;
+        }
         let now = std::time::Instant::now();
         self.crash_timestamps.push(now);
         let cutoff = now
@@ -983,17 +1068,22 @@ impl Qwen3AsrSidecar {
         self.status_cache.error = Some(reason.to_string());
     }
 
-    fn kill_child(&mut self) {
+    fn kill_child(&mut self) -> Result<(), String> {
         self.model_load_started_at = None;
+        self.load_in_flight = false;
+        self.status_cache.loaded = false;
+        self.status_cache.is_loading = false;
+        self.status_cache.is_downloading = false;
         if let Some(writer) = self.writer.take() {
             writer.closed.store(true, Ordering::Release);
         }
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        let retired = self.process.stop();
+        if let Err(error) = &retired {
+            log::error!("Could not retire the speech process: {error}");
         }
         self.stdin = None;
         self.responses = None;
+        retired
     }
 }
 
@@ -1028,6 +1118,17 @@ fn spawn_response_reader(
 }
 
 impl ASREngine for Qwen3AsrSidecar {
+    fn network_policy_signal(&self) -> Option<super::engine::NetworkPolicySignal> {
+        let process = Arc::clone(&self.process);
+        Some(Arc::new(move |available| {
+            process.policy_available.store(available, Ordering::Release);
+            if !available {
+                process.policy_interrupted.store(true, Ordering::Release);
+                process.stop()?;
+            }
+            Ok(())
+        }))
+    }
     fn set_progress_tracker(&mut self, tracker: super::engine::ProgressTracker) {
         self.progress = Some(tracker);
     }
@@ -1053,15 +1154,11 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return Ok(());
         }
-        self.ensure_initialized()?;
+        self.initialize()?;
         match self.send_command(json!({"cmd": "probe_cuda"})) {
             Ok(resp) => {
-                if resp.get("status") == Some(&Value::String("error".into())) {
-                    let err = resp
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("probe_cuda failed");
-                    return Err(err.to_string());
+                if let Some(err) = response_error(&resp, "probe_cuda failed") {
+                    return Err(err);
                 }
                 // The sidecar's main thread now blocks in the warm imports
                 // and cannot answer `status` until the probe lands. Treat
@@ -1075,6 +1172,26 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn initialize(&mut self) -> Result<(), String> {
+        if !self.process.policy_available.load(Ordering::Acquire) {
+            return Err(super::engine::NETWORK_POLICY_UNAVAILABLE.into());
+        }
+        let mut slot = self.process.child.lock();
+        let running = slot
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        if running && self.stdin.is_some() && self.responses.is_some() {
+            self.process
+                .policy_interrupted
+                .store(false, Ordering::Release);
+            return if self.process.policy_available.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err(super::engine::NETWORK_POLICY_UNAVAILABLE.into())
+            };
+        }
+        drop(slot);
+        // Never replace a handle whose previous process could not be retired.
+        self.kill_child()?;
         if self.is_circuit_breaker_open() {
             return Err(
                 "ASR sidecar circuit breaker is open (cooling down after crash loop).".into(),
@@ -1113,12 +1230,18 @@ impl ASREngine for Qwen3AsrSidecar {
         // few times before giving up on the real engine.
         for attempt in 1..=3 {
             let mut cmd = Command::new(&python);
+            // Restore launcher overrides before clearing Python-specific ones.
+            #[cfg(target_os = "linux")]
+            crate::platform::process::own_child(&mut cmd);
             cmd.arg("-u")
                 .arg(&script)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
                 .env("PYTHONUNBUFFERED", "1")
+                .env("PYTHONNOUSERSITE", "1")
+                .env_remove("PYTHONPATH")
+                .env_remove("PYTHONHOME")
                 .env(
                     "REFLOW_NETWORK_POLICY",
                     crate::platform::PlatformSys::get_app_dir().join("network-policy.json"),
@@ -1131,16 +1254,30 @@ impl ASREngine for Qwen3AsrSidecar {
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             }
 
-            #[cfg(target_os = "linux")]
-            crate::platform::process::own_child(&mut cmd);
-            match cmd.spawn() {
+            // The revocation signal never waits on the actor. Serialize the
+            // child handle with it, and recheck after spawn so delayed startup
+            // cannot escape a policy failure that observed an empty slot.
+            let mut slot = self.process.child.lock();
+            if !self.process.policy_available.load(Ordering::Acquire) {
+                return Err(super::engine::NETWORK_POLICY_UNAVAILABLE.into());
+            }
+            self.process
+                .policy_interrupted
+                .store(false, Ordering::Release);
+            let spawned = cmd.spawn();
+            match spawned {
                 Ok(mut child) => {
                     let stdin = child.stdin.take();
                     let responses = child.stdout.take().map(spawn_response_reader);
 
-                    self.child = Some(child);
+                    *slot = Some(child);
+                    drop(slot);
                     self.stdin = stdin.map(|stdin| Arc::new(parking_lot::Mutex::new(stdin)));
                     self.responses = responses;
+                    if !self.process.policy_available.load(Ordering::Acquire) {
+                        let _ = self.kill_child();
+                        return Err(super::engine::NETWORK_POLICY_UNAVAILABLE.into());
+                    }
 
                     // The sidecar answers ping before importing torch, so
                     // this returns in milliseconds and app startup stays fast.
@@ -1152,11 +1289,15 @@ impl ASREngine for Qwen3AsrSidecar {
                         }
                     }
                     log::warn!("Sidecar ping failed (attempt {attempt}/3); retrying…");
-                    self.kill_child();
+                    let _ = self.kill_child();
                 }
                 Err(err) => {
+                    drop(slot);
                     log::warn!("Could not spawn python sidecar (attempt {attempt}/3): {err}");
                 }
+            }
+            if !self.process.policy_available.load(Ordering::Acquire) {
+                return Err(super::engine::NETWORK_POLICY_UNAVAILABLE.into());
             }
             std::thread::sleep(std::time::Duration::from_millis(1500));
         }
@@ -1179,7 +1320,7 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return self.fallback_mock.load_model(model_dir, backend);
         }
-        self.ensure_initialized()?;
+        self.initialize()?;
 
         let manifest = ASR_MODELS
             .iter()
@@ -1200,14 +1341,10 @@ impl ASREngine for Qwen3AsrSidecar {
 
         match self.send_command(cmd) {
             Ok(resp) => {
-                if resp.get("status") == Some(&Value::String("error".into())) {
-                    let err = resp
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown model load error");
+                if let Some(err) = response_error(&resp, "Unknown model load error") {
                     self.load_in_flight = false;
                     self.model_load_started_at = None;
-                    return Err(err.to_string());
+                    return Err(err);
                 }
                 // "loading" | "ok" | "already-loading" — completion is
                 // observable through engine_status().
@@ -1229,6 +1366,15 @@ impl ASREngine for Qwen3AsrSidecar {
         }
     }
 
+    fn cancel_model_download(&mut self, model_id: &str) -> Result<(), String> {
+        let response =
+            self.send_command(json!({"cmd": "cancel_download", "model_id": model_id}))?;
+        if let Some(error) = response_error(&response, "Could not cancel model download") {
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn install_model_dir(&mut self, model_dir: &str, repo: &str) -> Result<(), String> {
         self.install_model_dir_with_options(model_dir, repo, "auto", "auto")
     }
@@ -1244,7 +1390,8 @@ impl ASREngine for Qwen3AsrSidecar {
         if self.use_fallback {
             return Err("ASR runtime unavailable".into());
         }
-        self.ensure_initialized()?;
+        self.initialize()?;
+        crate::network_policy::check_download()?;
         let manifest = ASR_MODELS
             .iter()
             .chain(std::iter::once(&PHONON_MODEL))
@@ -1271,12 +1418,8 @@ impl ASREngine for Qwen3AsrSidecar {
         });
         match self.send_command(cmd) {
             Ok(resp) => {
-                if resp.get("status") == Some(&Value::String("error".into())) {
-                    let err = resp
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown install error");
-                    return Err(err.to_string());
+                if let Some(err) = response_error(&resp, "Unknown install error") {
+                    return Err(err);
                 }
                 if matches!(
                     resp.get("status").and_then(Value::as_str),
@@ -1299,14 +1442,20 @@ impl ASREngine for Qwen3AsrSidecar {
         }
         // The process owns all model allocations. Killing it frees them without
         // waiting behind inference or a wedged input/output pipe.
-        self.kill_child();
+        let retired = self.kill_child();
         self.load_in_flight = false;
         self.streaming_partials = false;
-        self.status_cache = EngineStatus::default();
-        Ok(())
+        self.status_cache = match &retired {
+            Ok(()) => EngineStatus::default(),
+            Err(error) => EngineStatus::unavailable(error.clone()),
+        };
+        retired
     }
 
     fn is_model_loaded(&self) -> bool {
+        if !self.process.policy_available.load(Ordering::Acquire) {
+            return false;
+        }
         if self.use_fallback {
             return self.fallback_mock.is_model_loaded();
         }
@@ -1339,12 +1488,8 @@ impl ASREngine for Qwen3AsrSidecar {
 
         match self.send_command(cmd) {
             Ok(resp) => {
-                if resp.get("status") == Some(&Value::String("error".into())) {
-                    let err = resp
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("start_stream failed");
-                    return Err(err.to_string());
+                if let Some(err) = response_error(&resp, "start_stream failed") {
+                    return Err(err);
                 }
                 Ok(())
             }
@@ -1433,13 +1578,9 @@ impl ASREngine for Qwen3AsrSidecar {
         );
         match self.send_command_timeout(cmd, budget) {
             Ok(resp) => {
-                if resp.get("status") == Some(&Value::String("error".into())) {
-                    let err = resp
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Transcription failed");
+                if let Some(err) = response_error(&resp, "Transcription failed") {
                     log::error!("ASR stop_stream error: {err}");
-                    return Err(err.to_string());
+                    return Err(err);
                 }
                 if let Some(lang) = resp.get("language").and_then(|v| v.as_str()) {
                     if !lang.is_empty() {
@@ -1510,6 +1651,11 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn engine_status(&mut self) -> EngineStatus {
+        if !self.process.policy_available.load(Ordering::Acquire) {
+            self.status_cache =
+                EngineStatus::unavailable(super::engine::NETWORK_POLICY_UNAVAILABLE);
+            return self.status_cache.clone();
+        }
         if self.use_fallback {
             return self.fallback_mock.engine_status();
         }
@@ -1679,6 +1825,96 @@ impl Drop for Qwen3AsrSidecar {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_python_overrides_cannot_break_sidecar_startup_and_reload() {
+        let executable = std::env::current_exe().unwrap();
+        let result = crate::platform::process::output_env(
+            executable.to_str().unwrap(),
+            &[
+                "asr::sidecar::tests::loads_restart_the_transport_after_unload_or_process_exit",
+                "--exact",
+                "--nocapture",
+            ],
+            Duration::from_secs(20),
+            1024 * 1024,
+            &[
+                ("APPDIR", "/tmp/reflow-simulated-appimage"),
+                ("PYTHONHOME", "/nonexistent/reflow-inherited-python"),
+                (
+                    "REFLOW_APPIMAGE_ORIGINAL_PYTHONHOME",
+                    "/nonexistent/reflow-original-python",
+                ),
+            ],
+        )
+        .expect("isolated sidecar lifecycle must survive invalid launcher Python overrides");
+        assert!(result.contains("1 passed; 0 failed"));
+    }
+
+    #[test]
+    fn policy_revocation_reports_a_busy_owner_and_blocks_restart_until_repaired() {
+        let mut engine = Qwen3AsrSidecar::new();
+        let signal = engine.network_policy_signal().unwrap();
+        let process = Arc::clone(&engine.process);
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        *process.child.lock() = Some(
+            Command::new(python)
+                .args(["-c", "import time; time.sleep(30)"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut ownership = process.child.lock();
+        let started = Instant::now();
+        assert!(signal(false).unwrap_err().contains("deadline"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!process.policy_available.load(Ordering::Acquire));
+        assert!(engine.unload_model().unwrap_err().contains("deadline"));
+        assert!(
+            ownership.as_mut().unwrap().try_wait().unwrap().is_none(),
+            "failed retirement must retain ownership of the still-live process"
+        );
+        drop(ownership);
+        assert!(engine.initialize().unwrap_err().contains("network policy"));
+        signal(false).unwrap();
+        assert!(process.child.lock().is_none());
+        signal(true).unwrap();
+        assert!(process.policy_available.load(Ordering::Acquire));
+        assert!(!engine.is_model_loaded());
+    }
+
+    #[test]
+    fn dependency_health_deadline_reaps_a_hung_python_import() {
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        let start = Instant::now();
+        assert!(Qwen3AsrSidecar::bounded_python_probe_for(
+            python,
+            "import time; print('started', flush=True); time.sleep(10)",
+            Duration::from_millis(60),
+        )
+        .is_none());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(
+            Qwen3AsrSidecar::bounded_python_probe(python, "print('ready')")
+                .is_some_and(|output| output.starts_with(b"ready"))
+        );
+    }
+
+    #[test]
+    fn dependency_health_bounds_diagnostics_and_inherited_output_handles() {
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        let start = Instant::now();
+        let output = Qwen3AsrSidecar::bounded_python_probe_for(python,
+            "import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); print('ready')",
+            Duration::from_secs(2));
+        assert!(output.is_some_and(|bytes| bytes.starts_with(b"ready")));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(Qwen3AsrSidecar::bounded_python_probe(python, "print('x' * 100000)").is_none());
+        assert!(Qwen3AsrSidecar::bounded_python_probe(python, "raise SystemExit(7)").is_none());
+    }
+
     #[test]
     fn loads_restart_the_transport_after_unload_or_process_exit() {
         let root =
@@ -1703,23 +1939,36 @@ for line in sys.stdin:
         engine.set_resource_dir(root.clone());
         engine.set_skip_dep_check(true);
         engine.initialize().unwrap();
-        let first = engine.child.as_ref().unwrap().id();
+        let first = engine.process.child.lock().as_ref().unwrap().id();
+        engine.initialize().unwrap();
+        assert_eq!(engine.process.child.lock().as_ref().unwrap().id(), first);
         engine.load_model("fixture", "cpu").unwrap();
         assert!(engine.engine_status().loaded);
-        assert_eq!(engine.child.as_ref().unwrap().id(), first);
+        assert_eq!(engine.process.child.lock().as_ref().unwrap().id(), first);
+        engine.kill_child().unwrap();
+        assert!(
+            !engine.engine_status().loaded,
+            "retired transport cannot retain a cached ready state"
+        );
+        engine.load_model("fixture", "cpu").unwrap();
+        assert!(engine.engine_status().loaded);
         engine.unload_model().unwrap();
         engine.load_model("fixture", "cpu").unwrap();
         assert!(engine.engine_status().loaded);
-        let second = engine.child.as_ref().unwrap().id();
+        let second = engine.process.child.lock().as_ref().unwrap().id();
         assert_ne!(first, second);
-        engine.child.as_mut().unwrap().kill().unwrap();
-        engine.child.as_mut().unwrap().wait().unwrap();
+        {
+            let mut slot = engine.process.child.lock();
+            let child = slot.as_mut().unwrap();
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
         engine.load_model("fixture", "cpu").unwrap();
         assert!(engine.engine_status().loaded);
-        assert_ne!(second, engine.child.as_ref().unwrap().id());
+        assert_ne!(second, engine.process.child.lock().as_ref().unwrap().id());
         engine.unload_model().unwrap();
         engine.probe_cuda().unwrap();
-        assert!(engine.child.is_some());
+        assert!(engine.process.child.lock().is_some());
         engine.unload_model().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1988,7 +2237,7 @@ while True:
             .take()
             .map(|stdin| Arc::new(parking_lot::Mutex::new(stdin)));
         engine.responses = child.stdout.take().map(spawn_response_reader);
-        engine.child = Some(child);
+        *engine.process.child.lock() = Some(child);
         let handle = crate::asr::AsrHandle::spawn(Box::new(engine), 8);
         handle.start_stream_blocking(7, "en", &[]).unwrap();
         handle.push_audio_blocking(7, 0, &vec![0.25; 1000]).unwrap();
@@ -2082,5 +2331,18 @@ while True:
         assert!(pending.cuda_probe_pending);
         assert!(!answered_no.cuda_probe_pending);
         assert!(!pending.cuda_available && !answered_no.cuda_available);
+    }
+
+    #[test]
+    fn response_error_only_matches_error_status() {
+        let error = serde_json::json!({"status": "error", "error": "boom"});
+        assert_eq!(response_error(&error, "fallback").as_deref(), Some("boom"));
+        let missing = serde_json::json!({"status": "error"});
+        assert_eq!(
+            response_error(&missing, "fallback").as_deref(),
+            Some("fallback")
+        );
+        let ok = serde_json::json!({"status": "ok", "error": "ignored"});
+        assert_eq!(response_error(&ok, "fallback"), None);
     }
 }

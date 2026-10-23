@@ -1,0 +1,82 @@
+{
+  "recorded_at": "2026-10-23T01:33:17.410311+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "dirty_worktree": true,
+  "source_sha256": {
+    "src-tauri/src/asr/actor.rs": "0166bbdd42604897828b43c9db7a797b4cb9c3b27e66c41247bcefffbf8c55b5",
+    "src-tauri/src/asr/actor_policy_tests.rs": "2821652eb7962c1b80f726882f01418b203c6a436ccbb6526dc19cd8b5c02e96",
+    "src-tauri/src/asr/engine.rs": "14eddf67ec63ff4910fbaa6042798192840dc1e3303dea159bcfac4e19817c83",
+    "src-tauri/src/asr/python_setup.rs": "2fa7cbd0ba6871c86d3ff2b0d14fcd0114e4ce97a0bab100ad5b9e2c5d60da5c",
+    "src-tauri/src/asr/sidecar.rs": "1c3fed9318f7b72da8275cdc2487de2cfafaab6d77a1fb11a469dc9a252bd627",
+    "src-tauri/src/asr/sidecar_load_deadline_tests.rs": "b19a9ef0d3e2261b612512d79803f441eefa70d6a666117c03261c1a394b33ae",
+    "src-tauri/src/asr/sidecar_transport_tests.rs": "c68f1f84c63bf54146dce201eabec6a869010061dce56bf737aeb903a55346b6",
+    "src-tauri/src/commands/mod.rs": "3db783fec1a5e88e355fcb81d83c8d2dd695288191274ca80e7ea0e848d588ea",
+    "src-tauri/src/context.rs": "7486337672d9d7ded0d95f3fd12d7918e7d29b624c0b6ffab487fa90aaf86c78",
+    "src-tauri/src/network_policy.rs": "739b553e833c9605ce51c5524031019a445cbc6a37db6d89dd62b28434f8c87d",
+    "src-tauri/src/network_policy/download.rs": "eb4fcd88d821fea1b386f3f79100a2cc44fc0fa1a96d6ec68bdfbe4e645e8910",
+    "src-tauri/src/platform/persistence.rs": "ae78fb5342d5c064a2c63cedab5fb0c8f3f1c102fd950caea6886cd09b05bab9",
+    "src-tauri/src/platform/process.rs": "1efe81273c1c0cdc77ef84452186ee761eb22b09ff63cd0aca5d5865780a29b0"
+  },
+  "changed_previous_scoped_sources": ["src-tauri/src/network_policy.rs"],
+  "checks": {
+    "rust_all_targets": {
+      "command": "cargo test --locked --all-targets",
+      "passed": 982,
+      "failed": 0,
+      "ignored": 27,
+      "targets": 45,
+      "library_passed": 638,
+      "library_ignored": 16,
+      "exit_code": 0,
+      "log_sha256": "2ffffd91eb4f7e4fe8a31794446f93e42eed9434cd16a99c2ee566ba4456de3b"
+    },
+    "clippy_all_targets": {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log_sha256": "0e204c21f78a7f61c72b845f184668dd09b371e3fd1b18d154ab9a0b16f0eb01"
+    },
+    "focused_policy_before": {
+      "passed": 0,
+      "failed": 1,
+      "exit_code": 101,
+      "log_sha256": "b2095f34f531e4d8adc7436fe29a4d96a0abfd7680e6fcf3b5ae56649ddcdb9b"
+    },
+    "focused_policy_after": {
+      "passed": 9,
+      "failed": 0,
+      "exit_code": 0,
+      "log_sha256": "e5e8bd05a247d87234abb591f16f7a1a16c61644026efea803175b9978c370b5"
+    },
+    "offline_pack": {
+      "passed": 1,
+      "failed": 0,
+      "exit_code": 0,
+      "offline_install_ms": 16728,
+      "complete_test_seconds": 36.14,
+      "log_sha256": "ac82e71da49d27f327c9e2a08319f6208c83aa0521a77ac2d5551dd45139f9e5",
+      "result": "runtime-pack-linux-2026-10-23/policy-recovery-offline-install.json"
+    },
+    "rust_format": {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0
+    },
+    "repository_format": {
+      "command": "npm run format:check",
+      "exit_code": 0,
+      "log_sha256": "0aaa94ebb7c9974eb24e337e82ec2e975a2ef4f381a45bd9bf78beefa50610f5"
+    },
+    "diff_check": {
+      "command": "git diff --check",
+      "exit_code": 0
+    },
+    "frontend_scope": "No frontend/IPC source edited; nine captured source/test hashes rechecked unchanged from setup-recovery evidence. Prior 371-test/production-JS-build evidence reused; no new frontend run claimed."
+  },
+  "selected_source_lines_delta": 7011,
+  "no_model_downloads": true,
+  "published": false,
+  "scope": "One atomic gate distinguishes policy-save failure from deliberate offline mode; same admission constraints, pinned artifacts and lifecycle paths. Python setup preserves the reason. Controlled policy/transfer fixtures, full Rust and real local cached offline dependency installation; not packaged/native acceptance. Refinement pipeline unchanged; candidate punctuation instruction rejected.",
+  "refinement_evidence": "refinement-2026-10-23/paragraph-preservation/provenance.json",
+  "rejected_instruction_evidence": "refinement-2026-10-23/rejected-punctuation/provenance.json",
+  "verification_recorded_at": "2026-10-23T01:35:08.657280+00:00",
+  "offline_result_sha256": "f98edb738e4789035b9f593e8aff69c203980f665af3527e8848fac4a594489f"
+}

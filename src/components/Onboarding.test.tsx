@@ -1,500 +1,71 @@
+import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { api } from "../services/tauriApi";
+import * as bridge from "../services/tauriApi";
+import {
+  AppSettings,
+  MicrophoneHealth,
+  ModelStatus,
+  PythonSetupProgress,
+  SpeechSetupPlan,
+} from "../types";
+import {
+  readSetupCheckpoint,
+  writeSetupCheckpoint,
+  microphoneConfiguration,
+  shortcutConfiguration,
+  speechConfiguration,
+} from "../services/onboarding";
 import { Onboarding } from "./Onboarding";
 
-// Keep the recommendation probe from preselecting 0.6B underneath tests that
-// exercise the download flow — those tests pick their model explicitly.
-beforeEach(() => {
-  vi.spyOn(api, "recommendedAsrModel").mockResolvedValue("1.7b");
-  vi.spyOn(api, "getPythonRuntimeStatus").mockResolvedValue({
-    managed_installed: true,
-    receipt: null,
-    overridden: false,
-    setting_up: false,
-    python_available: true,
-    size_bytes: 0,
-    torch_variant: "cpu",
+let listeners: Map<string, Set<(payload: any) => void>>;
+let plan: SpeechSetupPlan;
+const healthy: MicrophoneHealth = {
+  device: "USB microphone",
+  duration_ms: 3000,
+  peak: 0.5,
+  rms: 0.1,
+  clipped_pct: 0,
+  dropped_chunks: 0,
+  assessment: "Healthy",
+};
+const runtime = {
+  managed_installed: true,
+  receipt: null,
+  overridden: false,
+  setting_up: false,
+  python_available: true,
+  size_bytes: 0,
+  torch_variant: "cpu",
+};
+const emit = (event: string, payload: unknown) =>
+  act(() => listeners.get(event)?.forEach((handler) => handler(payload)));
+
+beforeEach(async () => {
+  vi.spyOn(api, "verifySpeechRuntime").mockResolvedValue();
+  localStorage.removeItem("reflow.onboarding.v1");
+  localStorage.removeItem("reflow.onboarding.completed");
+  listeners = new Map();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    const set = listeners.get(event) ?? new Set();
+    set.add(handler);
+    listeners.set(event, set);
+    return () => {
+      set.delete(handler);
+    };
   });
-});
-
-it.each([
-  { id: "phonon-2", name: "Phonon-2", size: "164 MB" },
-  { id: "zipformer-20m", name: "Zipformer 20M INT8", size: "44 MB" },
-])("downloads $name during first-time setup after saving its runtime settings", async (model) => {
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  const initial = {
-    ...settings,
-    offline_mode: false,
-    asr: { ...settings.asr, runtime: "native" as const, precision: "int4" as const },
-  };
-  const missing = {
-    ...status,
-    installed: false,
-    loaded: false,
-    is_loading: false,
-    is_downloading: false,
-    error: null,
-  };
-  const save = vi.fn().mockResolvedValue(true);
-  const install = vi.spyOn(api, "installModel").mockResolvedValue();
-  const props = { onUpdateSettings: save, onComplete: vi.fn() };
-  const view = render(<Onboarding {...props} settings={initial} modelStatus={missing} />);
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.getByRole("button", { name: /Qwen3-ASR 0.6B/ })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /Qwen3-ASR 1.7B/ })).toBeInTheDocument();
-  const option = screen.getByRole("button", { name: new RegExp(model.name) });
-  expect(option).toHaveTextContent("English only");
-  expect(option).toHaveTextContent("CPU");
-  expect(option).toHaveTextContent(model.size);
-  fireEvent.click(option);
-  await waitFor(() => expect(screen.queryByText("Saving settings…")).not.toBeInTheDocument());
-  expect(save).toHaveBeenCalledExactlyOnceWith({
-    asr: { ...initial.asr, model: model.id, runtime: "python", precision: "auto" },
-  });
-  view.rerender(
-    <Onboarding
-      {...props}
-      settings={{ ...initial, ...save.mock.calls[0][0] }}
-      modelStatus={missing}
-    />,
-  );
-  expect(screen.getByRole("button", { name: new RegExp(model.name) })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
-  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(model.id));
-  view.rerender(
-    <Onboarding
-      {...props}
-      settings={{ ...initial, ...save.mock.calls[0][0] }}
-      modelStatus={{ ...missing, is_downloading: true, download_progress_pct: 35 }}
-    />,
-  );
-  expect(screen.getByText("Downloading 35%")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /Qwen3-ASR 0.6B/ })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
-});
-
-it("shows background download failures and permits retrying the selected speech model", async () => {
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  const install = vi.spyOn(api, "installModel").mockResolvedValue();
-  const props = {
-    settings: {
-      ...settings,
-      offline_mode: false,
-      asr: { ...settings.asr, model: "1.7b" as const },
-    },
-    onUpdateSettings: vi.fn(),
-    onComplete: vi.fn(),
-  };
-  const missing = {
-    ...status,
-    installed: false,
-    loaded: false,
-    is_downloading: false,
-    error: null,
-  };
-  const view = render(<Onboarding {...props} modelStatus={missing} />);
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
-  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith("1.7b"));
-  view.rerender(
-    <Onboarding
-      {...props}
-      modelStatus={{ ...missing, is_downloading: true, download_progress_pct: 1 }}
-    />,
-  );
-  expect(screen.getByText("Downloading 1%")).toBeInTheDocument();
-  view.rerender(
-    <Onboarding
-      {...props}
-      modelStatus={{ ...missing, error: "Downloads are restricted to pinned artifact hosts" }}
-    />,
-  );
-  expect(screen.getByRole("alert")).toHaveTextContent(
-    "Downloads are restricted to pinned artifact hosts",
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
-  await waitFor(() => expect(install).toHaveBeenCalledTimes(2));
-});
-
-it("asks for one-time download consent when airplane mode is on", async () => {
-  const settings = await api.getSettings();
-  expect(settings.offline_mode).toBe(true);
-  const status = await api.getModelStatus();
-  const save = vi.fn().mockResolvedValue(true);
-  const install = vi.spyOn(api, "installModel").mockResolvedValue();
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, installed: false, loaded: false }}
-      onUpdateSettings={save}
-      onComplete={vi.fn()}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.queryByRole("button", { name: "Download and set up" })).not.toBeInTheDocument();
-  const allow = screen.getByRole("button", { name: "Allow downloads and set up" });
-  fireEvent.click(allow);
-  await waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith({ offline_mode: false }));
-  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(settings.asr.model));
-});
-
-it("shows the consent card instead of a raw error when a download is rejected as offline", async () => {
-  const settings = { ...(await api.getSettings()), offline_mode: false };
-  const status = await api.getModelStatus();
-  vi.spyOn(api, "installModel").mockRejectedValue("Offline mode is on");
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, installed: false, loaded: false }}
-      onUpdateSettings={vi.fn()}
-      onComplete={vi.fn()}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
-  expect(
-    await screen.findByRole("button", { name: "Allow downloads and set up" }),
-  ).toBeInTheDocument();
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-});
-
-it("offers 'Set up later' when the model step cannot be completed", async () => {
-  const settings = { ...(await api.getSettings()), offline_mode: false };
-  const status = await api.getModelStatus();
-  const complete = vi.fn();
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, installed: false, loaded: false }}
-      onUpdateSettings={vi.fn()}
-      onComplete={complete}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "Set up later" }));
-  expect(complete).toHaveBeenCalledOnce();
-});
-
-it("finishes speech-only setup once recognition passes, without the retired LLM picker", async () => {
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  const save = vi.fn().mockResolvedValue(true);
-  const complete = vi.fn();
-  vi.spyOn(api, "testRecognition").mockResolvedValue({
-    text: "Ready to dictate",
-    language: "en",
-    health: {
-      device: "Mic",
-      duration_ms: 3000,
-      peak: 0.5,
-      rms: 0.1,
-      clipped_pct: 0,
-      dropped_chunks: 0,
-      assessment: "Healthy",
-    },
-  });
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, installed: true, loaded: true, is_loading: false }}
-      onUpdateSettings={save}
-      onComplete={complete}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.queryByRole("combobox", { name: "LLM model" })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Test recognition" }));
-  await screen.findByText("Ready to dictate");
-  await waitFor(() => expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled());
-  fireEvent.click(screen.getByRole("button", { name: "Finish" }));
-  expect(complete).toHaveBeenCalledOnce();
-});
-
-it("requires usable recognition rather than only installed weights before finishing", async () => {
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  const complete = vi.fn();
-  const test = vi
-    .spyOn(api, "testRecognition")
-    .mockRejectedValueOnce(new Error("No speech"))
-    .mockResolvedValueOnce({
-      text: "Hello world",
-      language: "en",
-      health: {
-        device: "Mic",
-        duration_ms: 3000,
-        peak: 0.5,
-        rms: 0.1,
-        clipped_pct: 0,
-        dropped_chunks: 0,
-        assessment: "Healthy",
-      },
-    });
-  const props = { settings, onUpdateSettings: vi.fn(), onComplete: complete };
-  const view = render(
-    <Onboarding {...props} modelStatus={{ ...status, installed: true, loaded: false }} />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
-  view.rerender(
-    <Onboarding
-      {...props}
-      modelStatus={{ ...status, installed: true, loaded: true, is_loading: false }}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Test recognition" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("No speech");
-  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "Test recognition" }));
-  expect(await screen.findByText("Hello world")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Finish" }));
-  expect(complete).toHaveBeenCalledOnce();
-  expect(test).toHaveBeenCalledTimes(2);
-});
-
-it("cannot reuse a successful recognition check while a new model selection is being saved", async () => {
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  const complete = vi.fn();
-  let resolve!: (saved: boolean) => void;
-  const save = vi.fn(
-    () =>
-      new Promise<boolean>((yes) => {
-        resolve = yes;
-      }),
-  );
-  const recognition = vi.spyOn(api, "testRecognition").mockResolvedValue({
-    text: "Working microphone",
-    language: "en",
-    health: {
-      device: "Mic",
-      duration_ms: 3000,
-      peak: 0.5,
-      rms: 0.1,
-      clipped_pct: 0,
-      dropped_chunks: 0,
-      assessment: "Healthy",
-    },
-  });
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, installed: true, loaded: true, is_loading: false }}
-      onUpdateSettings={save}
-      onComplete={complete}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Test recognition" }));
-  expect(await screen.findByText("Working microphone")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled();
-
-  // The parent may be waiting for queued disk persistence and still expose its old settings.
-  fireEvent.click(screen.getByRole("button", { name: /1.7B/ }));
-  expect(save).toHaveBeenCalledOnce();
-  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Test recognition" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "Finish" }));
-  fireEvent.click(screen.getByRole("button", { name: "Test recognition" }));
-  expect(complete).not.toHaveBeenCalled();
-  expect(recognition).toHaveBeenCalledOnce();
-  await act(async () => {
-    resolve(false);
-  });
-  expect(await screen.findByRole("alert")).toHaveTextContent(/save|saved/i);
-  // A failed selection must require a new recognition test, even if the old props remain.
-  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
-});
-
-it("blocks advancing from microphone selection while its settings write is pending", async () => {
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  let resolve!: (saved: boolean) => void;
-  const save = vi.fn(
-    () =>
-      new Promise<boolean>((yes) => {
-        resolve = yes;
-      }),
-  );
   vi.spyOn(api, "getAudioDevices").mockResolvedValue([
     { id: "usb", name: "USB microphone", is_default: true, sample_rate: 48000, channels: 1 },
   ]);
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={status}
-      onUpdateSettings={save}
-      onComplete={vi.fn()}
-    />,
-  );
-  await screen.findByRole("option", { name: /USB microphone/ });
-  fireEvent.change(screen.getByRole("combobox", { name: "Microphone" }), {
-    target: { value: "usb" },
-  });
-  expect(screen.getByRole("combobox", { name: "Microphone" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
-  await act(async () => {
-    resolve(true);
-  });
-  expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
-});
-
-it("preselects the recommended model when hardware does not fit the default", async () => {
-  vi.mocked(api.recommendedAsrModel).mockResolvedValue("0.6b");
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  // The preselect re-reads the backend rather than the mount-time snapshot —
-  // keep the mock's stored selection on the factory default for this test.
-  vi.spyOn(api, "getSettings").mockResolvedValue({
-    ...settings,
-    asr: { ...settings.asr, model: "1.7b" as const },
-  });
-  const save = vi.fn().mockResolvedValue(true);
-  render(
-    <Onboarding
-      settings={{ ...settings, asr: { ...settings.asr, model: "1.7b" as const } }}
-      modelStatus={{ ...status, installed: false, loaded: false }}
-      onUpdateSettings={save}
-      onComplete={vi.fn()}
-    />,
-  );
-  await waitFor(() =>
-    expect(save).toHaveBeenCalledWith(
-      expect.objectContaining({ asr: expect.objectContaining({ model: "0.6b" }) }),
-    ),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.getByRole("button", { name: /Qwen3-ASR 0.6B/ })).toHaveTextContent("Recommended");
-});
-
-it("confirms a shortcut press during the hotkey step and cancels the probe session", async () => {
-  const listeners = new Map<string, (payload: unknown) => void>();
-  const bridge = await import("../services/tauriApi");
-  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
-    listeners.set(event as string, handler as (payload: unknown) => void);
-    return () => {};
-  });
-  const cancel = vi.spyOn(api, "cancelRecording").mockResolvedValue();
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, installed: true, loaded: true, is_loading: false }}
-      onUpdateSettings={vi.fn()}
-      onComplete={vi.fn()}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.getByText(/Try your shortcut now/)).toBeInTheDocument();
-  await act(async () => listeners.get("app:state-changed")?.("RECORDING"));
-  expect(screen.getByText(/Shortcut works/)).toBeInTheDocument();
-  await waitFor(() => expect(cancel).toHaveBeenCalled());
-});
-
-it("sets up Python before downloading the selected model from one button", async () => {
-  const bridge = await import("../services/tauriApi");
-  const settings = { ...(await api.getSettings()), offline_mode: false };
-  const status = await api.getModelStatus();
-  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue({
-    managed_installed: false,
-    receipt: null,
-    overridden: false,
-    setting_up: false,
-    python_available: true,
-    size_bytes: 0,
-    torch_variant: "cpu",
-  });
-  let progress!: (value: import("../types").PythonSetupProgress) => void;
-  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
-    if (event === "python-runtime:setup-progress") progress = handler;
-    return () => {};
-  });
-  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
-  const install = vi.spyOn(api, "installModel").mockResolvedValue();
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, installed: false, loaded: false }}
-      onUpdateSettings={vi.fn()}
-      onComplete={vi.fn()}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
-  await waitFor(() => expect(setup).toHaveBeenCalledOnce());
-  expect(install).not.toHaveBeenCalled();
-  await act(async () => progress({ phase: "installing_packages" }));
-  expect(screen.getByText(/Installing speech packages/)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /Qwen3-ASR 0.6B/ })).toBeDisabled();
-  await act(async () => progress({ phase: "complete" }));
-  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(settings.asr.model));
-});
-
-it("offers retry after runtime setup fails and then continues to the model", async () => {
-  const bridge = await import("../services/tauriApi");
-  const settings = { ...(await api.getSettings()), offline_mode: false };
-  const status = await api.getModelStatus();
-  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue({
-    managed_installed: false,
-    receipt: null,
-    overridden: false,
-    setting_up: false,
-    python_available: false,
-    size_bytes: 0,
-    torch_variant: "cpu",
-  });
-  let progress!: (value: import("../types").PythonSetupProgress) => void;
-  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
-    if (event === "python-runtime:setup-progress") progress = handler;
-    return () => {};
-  });
-  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
-  const install = vi.spyOn(api, "installModel").mockResolvedValue();
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, installed: false, loaded: false }}
-      onUpdateSettings={vi.fn()}
-      onComplete={vi.fn()}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
-  await waitFor(() => expect(setup).toHaveBeenCalledOnce());
-  await act(async () => progress({ phase: "error", error: "Connection timed out" }));
-  expect(screen.getByRole("alert")).toHaveTextContent("Connection timed out");
-  expect(install).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Retry setup" }));
-  await waitFor(() => expect(setup).toHaveBeenCalledTimes(2));
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  await act(async () => progress({ phase: "complete" }));
-  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(settings.asr.model));
-});
-
-it("reuses dependency-only setup when the earlier model error still says Python is missing", async () => {
-  const bridge = await import("../services/tauriApi");
-  const settings = { ...(await api.getSettings()), offline_mode: false };
-  const status = await api.getModelStatus();
-  vi.spyOn(api, "getSpeechSetupPlan").mockResolvedValue({
+  vi.spyOn(api, "testMicrophone").mockResolvedValue(healthy);
+  vi.spyOn(api, "recommendedAsrModel").mockResolvedValue("1.7b");
+  vi.spyOn(api, "getPythonRuntimeStatus").mockResolvedValue(runtime);
+  vi.spyOn(api, "beginShortcutCapture").mockResolvedValue(71);
+  vi.spyOn(api, "endShortcutCapture").mockResolvedValue();
+  vi.spyOn(api, "verifyLlamaRuntime").mockResolvedValue("verified-generation");
+  vi.spyOn(api, "installModel").mockResolvedValue();
+  plan = {
     hardware: await api.getCapabilities(),
     architecture: "x86_64",
     cpu_has_avx2: true,
@@ -505,60 +76,359 @@ it("reuses dependency-only setup when the earlier model error still says Python 
     available_disk_bytes: 40e9,
     supported_models: ["0.6b", "1.7b", "phonon-2", "zipformer-20m"],
     blocker: null,
-  });
-  const runtime = {
-    managed_installed: false,
-    receipt: null,
-    overridden: false,
-    setting_up: false,
-    python_available: false,
-    size_bytes: 0,
-    torch_variant: "cpu",
   };
-  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue(runtime);
-  let progress!: (value: import("../types").PythonSetupProgress) => void;
-  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
-    if (event === "python-runtime:setup-progress") progress = handler;
-    return () => {};
-  });
-  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
-  const install = vi.spyOn(api, "installModel").mockResolvedValue();
-  render(
+  vi.spyOn(api, "getSpeechSetupPlan").mockImplementation(async () => structuredClone(plan));
+});
+
+function Harness({
+  initial,
+  status,
+  save,
+  complete,
+}: {
+  initial: AppSettings;
+  status: ModelStatus;
+  save: (changes: Partial<AppSettings>) => Promise<boolean>;
+  complete: (outcome: "completed" | "deferred") => void;
+}) {
+  const [settings, setSettings] = useState(initial);
+  return (
     <Onboarding
       settings={settings}
-      modelStatus={{ ...status, installed: false, loaded: false, failure_kind: "python_missing" }}
-      onUpdateSettings={vi.fn()}
-      onComplete={vi.fn()}
-    />,
+      modelStatus={status}
+      onComplete={complete}
+      onUpdateSettings={async (changes) => {
+        const ok = await save(changes);
+        if (ok) setSettings((old) => ({ ...old, ...changes }));
+        return ok;
+      }}
+    />
   );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  const dependencies = await screen.findByRole("button", { name: "Download all dependencies" });
-  await waitFor(() => expect(dependencies).toBeEnabled());
-  fireEvent.click(dependencies);
+}
+async function show(
+  options: {
+    initial?: AppSettings;
+    ready?: boolean;
+    save?: (changes: Partial<AppSettings>) => Promise<boolean>;
+  } = {},
+) {
+  const initial = options.initial ?? { ...(await api.getSettings()), offline_mode: false };
+  const base = await api.getModelStatus();
+  const status = {
+    ...base,
+    installed: options.ready ?? false,
+    loaded: options.ready ?? false,
+    is_loading: false,
+    is_downloading: false,
+    error: null,
+  };
+  const save = options.save ?? vi.fn().mockResolvedValue(true);
+  const complete = vi.fn();
+  let view!: ReturnType<typeof render>;
+  await act(async () => {
+    view = render(<Harness initial={initial} status={status} save={save} complete={complete} />);
+  });
+  return {
+    ...view,
+    initial,
+    status,
+    save,
+    complete,
+    statusChange: (changes: Partial<ModelStatus>) =>
+      view.rerender(
+        <Harness
+          initial={initial}
+          status={{ ...status, ...changes }}
+          save={save}
+          complete={complete}
+        />,
+      ),
+  };
+}
+const next = async () => {
+  await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Continue" })));
+};
+async function hardware() {
+  fireEvent.click(screen.getByRole("button", { name: "Test microphone" }));
+  await screen.findByText("Healthy");
+  await next();
+  fireEvent.click(screen.getByRole("button", { name: "Use the Record button instead" }));
+  await next();
+  await screen.findByText("Processor");
+}
+async function weights() {
+  await hardware();
+  await next();
+  await screen.findByText(/Dependencies ready/);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  await next();
+  await screen.findByRole("heading", { name: "Download your speech model" });
+}
+
+it("requires a usable microphone and supports retesting before continuing", async () => {
+  vi.mocked(api.testMicrophone).mockResolvedValueOnce({
+    ...healthy,
+    rms: 0.001,
+    assessment: "Signal is quiet",
+  });
+  await show();
+  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Test microphone" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Signal is quiet");
+  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Test microphone" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  await next();
+  expect(screen.getByRole("heading", { name: "Your dictation shortcut" })).toBeInTheDocument();
+});
+
+it("tests native shortcut liveness on a fresh install without ASR or recording", async () => {
+  const start = vi.spyOn(api, "startRecording");
+  await show();
+  fireEvent.click(screen.getByRole("button", { name: "Test microphone" }));
+  await screen.findByText("Healthy");
+  await next();
+  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Test shortcut" }));
+  await waitFor(() => expect(api.beginShortcutCapture).toHaveBeenCalledOnce());
+  emit("hotkey:capture", { id: 71, action: "dictate", pressed: true });
+  expect(screen.getByText(/Shortcut works/)).toBeInTheDocument();
+  expect(start).not.toHaveBeenCalled();
+  await next();
+  expect(screen.getByRole("heading", { name: "Check your computer" })).toBeInTheDocument();
+});
+
+it("distinguishes deferral from verified completion and resumes through dependency verification", async () => {
+  const view = await show();
+  await hardware();
+  await next();
+  await screen.findByText(/Dependencies ready/);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  await next();
+  fireEvent.click(screen.getByRole("button", { name: "Set up later" }));
+  expect(view.complete).toHaveBeenCalledWith("deferred");
+  expect(readSetupCheckpoint()).toMatchObject({
+    stage: 4,
+    outcome: "deferred",
+    shortcut: { mode: "button" },
+  });
+  view.unmount();
+  await show();
+  await screen.findByRole("heading", { name: "Prepare speech dependencies" });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+});
+
+it("explains a blocked speech profile and clears the blocker after a compatible selection", async () => {
+  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
+  plan.blocker = "This speech profile is unavailable here. Select Zipformer 20M.";
+  const save = vi.fn(async (changes: Partial<AppSettings>) => {
+    if (changes.asr?.model === "zipformer-20m") plan.blocker = null;
+    return true;
+  });
+  await show({ save });
+  await hardware();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Select Zipformer 20M");
+  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: /Zipformer 20M INT8/ }));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  expect(setup).not.toHaveBeenCalled();
+});
+
+it.each([
+  { id: "phonon-2", label: "Phonon-2", size: "164 MB" },
+  { id: "zipformer-20m", label: "Zipformer 20M INT8", size: "44 MB" },
+])(
+  "persists $label and its Python runtime before fetching its weights",
+  async ({ id, label, size }) => {
+    const base = await api.getSettings();
+    const view = await show({
+      initial: {
+        ...base,
+        offline_mode: false,
+        asr: { ...base.asr, runtime: "native", precision: "int4" },
+      },
+    });
+    await hardware();
+    const card = screen.getByRole("button", { name: new RegExp(label) });
+    expect(card).toHaveTextContent(size);
+    expect(card).toHaveTextContent("English only");
+    fireEvent.click(card);
+    await waitFor(() =>
+      expect(view.save).toHaveBeenCalledWith({
+        asr: { ...base.asr, model: id, runtime: "python", precision: "auto" },
+      }),
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    await next();
+    await screen.findByText(/Dependencies ready/);
+    await next();
+    fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
+    await waitFor(() => expect(api.installModel).toHaveBeenCalledExactlyOnceWith(id));
+    view.statusChange({ is_downloading: true, download_progress_pct: 35 });
+    expect(screen.getByText("Downloading 35%")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  },
+);
+
+it("installs dependencies as a separate stage before exposing a model download", async () => {
+  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue({ ...runtime, managed_installed: false });
+  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
+  await show();
+  await hardware();
+  await next();
+  fireEvent.click(await screen.findByRole("button", { name: "Download all dependencies" }));
   await waitFor(() => expect(setup).toHaveBeenCalledOnce());
-  expect(install).not.toHaveBeenCalled();
-  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue({ ...runtime, managed_installed: true });
-  await act(async () => progress({ phase: "complete" }));
-  expect(await screen.findByText(/Dependencies ready/)).toBeInTheDocument();
+  expect(api.installModel).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  emit("python-runtime:setup-progress", {
+    phase: "installing_packages",
+  } satisfies PythonSetupProgress);
+  expect(screen.getByText(/Installing speech packages/)).toBeInTheDocument();
+  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue(runtime);
+  emit("python-runtime:setup-progress", { phase: "complete" } satisfies PythonSetupProgress);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  await next();
   fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
-  await waitFor(() => expect(install).toHaveBeenCalledOnce());
+  await waitFor(() => expect(api.installModel).toHaveBeenCalledOnce());
   expect(setup).toHaveBeenCalledOnce();
 });
 
-it("does not ask a fresh install to test recording before its speech model is ready", async () => {
-  const settings = await api.getSettings();
-  const status = await api.getModelStatus();
-  render(
-    <Onboarding
-      settings={settings}
-      modelStatus={{ ...status, loaded: false, installed: false }}
-      onUpdateSettings={vi.fn()}
-      onComplete={vi.fn()}
-    />,
+it("reports a dependency failure and permits retry without fetching model weights", async () => {
+  vi.mocked(api.getPythonRuntimeStatus).mockResolvedValue({ ...runtime, managed_installed: false });
+  const setup = vi.spyOn(api, "setupPythonRuntime").mockResolvedValue();
+  await show();
+  await hardware();
+  await next();
+  fireEvent.click(await screen.findByRole("button", { name: "Download all dependencies" }));
+  await waitFor(() => expect(setup).toHaveBeenCalledOnce());
+  emit("python-runtime:setup-progress", { phase: "error", error: "Connection timed out" });
+  expect(await screen.findByRole("alert")).toHaveTextContent("Connection timed out");
+  expect(api.installModel).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Retry dependency setup" }));
+  await waitFor(() => expect(setup).toHaveBeenCalledTimes(2));
+});
+
+it("offers a one-time download choice in airplane mode and respects a failed settings write", async () => {
+  const initial = { ...(await api.getSettings()), offline_mode: true };
+  const save = vi.fn().mockResolvedValue(false);
+  await show({ initial, save });
+  await weights();
+  fireEvent.click(screen.getByRole("button", { name: "Allow downloads and set up" }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith({ offline_mode: false }));
+  expect(api.installModel).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent(/could not be saved/);
+});
+
+it("surfaces background download failure and can retry or cancel the selected download", async () => {
+  const cancel = vi.spyOn(api, "cancelModelDownload").mockResolvedValue();
+  const view = await show();
+  await weights();
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
+  await waitFor(() => expect(api.installModel).toHaveBeenCalledOnce());
+  view.statusChange({ is_downloading: true, download_progress_pct: 1 });
+  fireEvent.click(screen.getByRole("button", { name: "Cancel model download" }));
+  expect(cancel).toHaveBeenCalledWith(view.initial.asr.model);
+  view.statusChange({ error: "Downloads are restricted to pinned artifact hosts" });
+  expect(screen.getByRole("alert")).toHaveTextContent("pinned artifact hosts");
+  fireEvent.click(screen.getByRole("button", { name: "Download and set up" }));
+  await waitFor(() => expect(api.installModel).toHaveBeenCalledTimes(2));
+});
+
+it("requires a real dictation and explicit delivery choice to finish speech-only setup", async () => {
+  const copy = vi.spyOn(api, "copyText").mockResolvedValue();
+  const view = await show({ ready: true });
+  await weights();
+  await next();
+  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
+  fireEvent.change(screen.getByRole("textbox", { name: "Try dictation here" }), {
+    target: { value: "Typed manually" },
+  });
+  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Record a sentence" })).toBeEnabled(),
   );
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  expect(screen.queryByText(/Try your shortcut/)).not.toBeInTheDocument();
-  expect(screen.getByText("You can change this later in Settings.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+  emit("app:state-changed", "RECORDING");
+  emit("injection:result", {
+    session_id: 11,
+    pasted: false,
+    fallback_copy: true,
+    message: "Copy required",
+  });
+  emit("transcript:source", { session_id: 11, dictation: true, final_text: "Hello world" });
+  expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Set up later" })).toBeDisabled();
+  emit("app:state-changed", "READY");
+  fireEvent.click(screen.getByRole("button", { name: "Copy transcript and use clipboard mode" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled());
+  expect(copy).toHaveBeenCalledWith("Hello world");
+  expect(view.save).toHaveBeenCalledWith({ output_action: { type: "copy" } });
+  fireEvent.click(screen.getByRole("button", { name: "Finish" }));
+  expect(view.complete).toHaveBeenCalledWith("completed");
+  expect(readSetupCheckpoint()).toMatchObject({ outcome: "completed", delivery: "clipboard" });
+});
+
+it("does not advance while microphone settings are being saved and invalidates its prior test", async () => {
+  let resolve!: (ok: boolean) => void;
+  const save = vi.fn(
+    () =>
+      new Promise<boolean>((yes) => {
+        resolve = yes;
+      }),
+  );
+  await show({ save });
+  fireEvent.click(screen.getByRole("button", { name: "Test microphone" }));
+  await screen.findByText("Healthy");
+  fireEvent.change(screen.getByRole("combobox", { name: "Microphone" }), {
+    target: { value: "usb" },
+  });
+  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  await act(async () => resolve(true));
+  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+});
+
+it.each([
+  { model: "0.6b", label: "Qwen3-ASR 0.6B" },
+  { model: "zipformer-20m", label: "Zipformer 20M" },
+])("shows and applies a compatible $model recommendation", async ({ model, label }) => {
+  vi.mocked(api.recommendedAsrModel).mockResolvedValue(model);
+  const base = await api.getSettings();
+  const initial = { ...base, language: "en", asr: { ...base.asr, model: "1.7b" } };
+  vi.spyOn(api, "getSettings").mockResolvedValue(initial);
+  const view = await show({ initial });
+  await waitFor(() =>
+    expect(view.save).toHaveBeenCalledWith(
+      expect.objectContaining({ asr: expect.objectContaining({ model }) }),
+    ),
+  );
+  await hardware();
+  expect(screen.getByRole("button", { name: new RegExp(label) })).toHaveTextContent("Recommended");
+});
+
+it("does not silently replace a non-English choice with Zipformer", async () => {
+  vi.mocked(api.recommendedAsrModel).mockResolvedValue("zipformer-20m");
+  const base = await api.getSettings();
+  const initial = { ...base, language: "hi", asr: { ...base.asr, model: "1.7b" } };
+  vi.spyOn(api, "getSettings").mockResolvedValue(initial);
+  const view = await show({ initial });
+  await hardware();
+  expect(view.save).not.toHaveBeenCalled();
+});
+
+it("rechecks saved runtime progress and sends unavailable microphones back to input selection", async () => {
+  const initial = { ...(await api.getSettings()), microphone_device_id: "removed" };
+  writeSetupCheckpoint({
+    version: 1,
+    outcome: "deferred",
+    stage: 4,
+    microphone: microphoneConfiguration(initial),
+    shortcut: { configuration: shortcutConfiguration(initial), mode: "button" },
+    speech: speechConfiguration(initial),
+  });
+  await show({ initial });
+  expect(await screen.findByRole("alert")).toHaveTextContent("microphone is unavailable");
+  expect(screen.getByRole("heading", { name: "Choose a microphone" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
 });

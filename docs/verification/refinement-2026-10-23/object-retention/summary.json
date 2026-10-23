@@ -1,0 +1,82 @@
+{
+  "deterministic": {
+    "2048": {
+      "cases": 50,
+      "applied": 43,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 7,
+      "median_total_ms": 260.5,
+      "p95_total_ms": 406,
+      "median_prompt_tokens": 349.5,
+      "peak_server_rss_bytes": 798588928,
+      "peak_device_vram_mib": 1239
+    },
+    "4096": {
+      "cases": 50,
+      "applied": 43,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 7,
+      "median_total_ms": 262.5,
+      "p95_total_ms": 424,
+      "median_prompt_tokens": 349.5,
+      "peak_server_rss_bytes": 798466048,
+      "peak_device_vram_mib": 1265
+    },
+    "8192": {
+      "cases": 50,
+      "applied": 43,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 7,
+      "median_total_ms": 266.0,
+      "p95_total_ms": 409,
+      "median_prompt_tokens": 349.5,
+      "peak_server_rss_bytes": 798330880,
+      "peak_device_vram_mib": 1317
+    }
+  },
+  "temperature_015_at_4096": {
+    "cases": 50,
+    "applied": 42,
+    "coarse_contracts": 50,
+    "safety_fallbacks": 8,
+    "median_total_ms": 263.0,
+    "p95_total_ms": 406,
+    "median_prompt_tokens": 349.5,
+    "peak_server_rss_bytes": 798433280,
+    "peak_device_vram_mib": 1265
+  },
+  "paired_changes": [
+    {
+      "context": 2048,
+      "id": "technical_correction",
+      "input": "use react no actually svelte and connect it to postgres not mysql",
+      "before": "Use svelte and connect it to postgres not mysql.",
+      "after": "Use Svelte and connect it to PostgreSQL instead of MySQL."
+    },
+    {
+      "context": 4096,
+      "id": "technical_correction",
+      "input": "use react no actually svelte and connect it to postgres not mysql",
+      "before": "Use svelte and connect it to postgres not mysql.",
+      "after": "Use Svelte and connect it to PostgreSQL instead of MySQL."
+    },
+    {
+      "context": 8192,
+      "id": "technical_correction",
+      "input": "use react no actually svelte and connect it to postgres not mysql",
+      "before": "Use svelte and connect it to postgres not mysql.",
+      "after": "Use Svelte and connect it to PostgreSQL instead of MySQL."
+    }
+  ],
+  "remaining_substantive_cases": [
+    "ordinary_paragraph",
+    "email",
+    "requirements_modifiers",
+    "meeting_actions",
+    "two_topics",
+    "no_wait_request",
+    "long",
+    "long_corrected_requirements"
+  ],
+  "coarse_contract_warning": "Coarse contracts miss remaining naturalness and structure failures. SQLite/Python casing remains imperfect; 50/50 is not publication-quality acceptance."
+}

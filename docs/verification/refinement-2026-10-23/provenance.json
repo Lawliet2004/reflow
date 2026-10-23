@@ -1,0 +1,31 @@
+{
+  "recorded_at": "2026-10-22T20:47:24.394593+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "worktree": "modified; source hashes below identify the evaluated pipeline",
+  "source_sha256": {
+    "src-tauri/src/rewrite/prompt.rs": "576e6710e6e12bb88ab8f93afb3ec00637841dae3c3389ca0030543f9ff37136",
+    "src-tauri/src/rewrite/client.rs": "704eab7227f91f3b54143e535b0afbbef7d6d2879ad5321a211ce193fc2e9d43",
+    "src-tauri/src/rewrite/server.rs": "dd5c39f13349ecc116adc95d001c6ba1b28069b52bb38ee86f05f1d7e2c929a7",
+    "src-tauri/src/rewrite/safety.rs": "fc8e7013224a045a8e0962dd5353c0a4b63865a9a8371cb2c2ab48e9f8f8e72c",
+    "src-tauri/src/session.rs": "712f5b594e7d1d7091a9529f4337c8ba87064ed2d3f5f249ea6e13b86d549753",
+    "src-tauri/src/formatting/backtrack.rs": "d5b740bf02c8587948695e064e21b9bf7ebe553055f7058f6c6451eabc2db2f4",
+    "src-tauri/src/formatting/normalizers.rs": "dce22b601fa1fba202543fef39138f16bdc4201cd6f4585036a5e207eb7372fb",
+    "src-tauri/src/formatting/cleaner.rs": "a9703178d767a6aaf4f2c232a67993d3c938247b682c6bfb5edff089e95655f2",
+    "src-tauri/src/formatting/literals.rs": "d673ecb4ef83f62190bbfb887ddb5b1802a1dc52d386a6f6c7268e8adb520e37",
+    "src-tauri/src/settings/config.rs": "5c06792728a4287f277b48be46b00fcf19d52df425a57b75c930062203e63f6a",
+    "src-tauri/tests/refinement_benchmark.rs": "d4fa7b3f6e657b35b14e311c418e87856899d4d3db0c652f80fbab0c4cd2ed84",
+    "src-tauri/tests/fixtures/refinement_cases.json": "811e8157e8aa24c2352e67012b878b06c52feb839644bd8e8ed0f23d105008ef"
+  },
+  "model": {
+    "filename": "Qwen3.5-0.8B-Q4_K_M.gguf",
+    "size_bytes": 532517120,
+    "sha256": "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517"
+  },
+  "runtimes": {
+    "b11146-Vulkan-3558e001-8190-44ac-bb2c-72c7ac237b5f": "22de090746c114569367998ec930b28f27f12e078e593ff21175a54b409d26fe",
+    "b11146-CPU-011bd4e5-910b-4602-9bed-479ea90486fc": "22de090746c114569367998ec930b28f27f12e078e593ff21175a54b409d26fe"
+  },
+  "hardware": "Ryzen 5 7535HS, 16 GB RAM, NVIDIA RTX 2050 4 GB, Kubuntu",
+  "no_model_downloads": true,
+  "memory_note": "Server VmHWM is process peak RSS. NVIDIA VRAM is device-wide and includes other desktop/app allocations. Runs are not isolated timing trials."
+}

@@ -1,0 +1,13 @@
+Installed runtime: version 0.5.0-dev (build 11146, commit 7fe450e19)
+GNU 11.4.0 for Linux x86_64; Vulkan runtime.
+Model: Qwen3.5-0.8B-Q4_K_M.gguf
+Started on an ephemeral 127.0.0.1 port, --ctx-size 4096 --parallel 1 --n-gpu-layers 99 --jinja --reasoning off.
+/props default_generation_settings.n_ctx: 4096
+Synthetic user message: <transcript>hello world</transcript>
+/apply-template with enable_thinking=false ends with:
+<|im_start|>assistant\n<think>\n\n</think>\n\n
+/apply-template with enable_thinking=true ends with:
+<|im_start|>assistant\n<think>\n
+/v1/chat/completions with enable_thinking=false, temperature=.1, max_tokens=64:
+message={"role":"assistant","content":"Hello world"}; finish_reason=stop
+Conclusion: the pinned installed template honors enable_thinking=false by pre-closing the thinking block. The production launch additionally passes --reasoning off. No model reasoning content was returned by this synthetic probe.

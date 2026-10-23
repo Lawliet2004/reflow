@@ -139,6 +139,7 @@ fn synthetic_timer() -> LatencyTimer {
         rewrite_started_at: Some(at(5310)),
         rewrite_finished_at: Some(at(5800)),
         rewrite_applied: true,
+        rewrite_fallback_reason: None,
         injection_finished_at: Some(at(5850)),
         segments: vec![SegmentTimer {
             sequence_id: 0,

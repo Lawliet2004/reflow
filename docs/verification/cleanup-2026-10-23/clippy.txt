@@ -1,0 +1,3 @@
+    Blocking waiting for file lock on build directory
+    Checking reflow v0.5.0 (/home/papan/Desktop/Projects/reflow/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 44.38s

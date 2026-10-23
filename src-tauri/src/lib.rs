@@ -618,11 +618,14 @@ pub fn run() {
             commands::delete_custom_replacement,
             commands::get_model_status,
             asr::python_setup::get_python_runtime_status,
+            asr::python_setup::get_python_setup_progress,
+            asr::python_setup::verify_speech_runtime,
             asr::setup_plan::get_speech_setup_plan,
             asr::python_setup::setup_python_runtime,
             asr::python_setup::cancel_python_runtime_setup,
             asr::python_setup::remove_python_runtime,
             commands::install_model,
+            commands::cancel_model_download,
             commands::remove_model,
             commands::get_downloaded_models,
             commands::reload_model,
@@ -643,6 +646,8 @@ pub fn run() {
             commands::get_platform_info,
             commands::configure_global_shortcuts,
             commands::set_desktop_shortcut,
+            commands::begin_shortcut_capture,
+            commands::end_shortcut_capture,
             commands::get_desktop_integration_status,
             commands::request_keyboard_access,
             commands::retry_desktop_shortcuts,
@@ -661,9 +666,13 @@ pub fn run() {
             commands::get_intelligence_status,
             commands::get_intelligence_tiers,
             commands::install_intelligence_model,
+            commands::cancel_intelligence_download,
             commands::remove_intelligence_model,
             commands::install_llama_runtime,
             commands::remove_llama_runtime,
+            commands::verify_llama_runtime,
+            commands::get_runtime_download_status,
+            commands::cancel_runtime_download,
             commands::set_intelligence_tier,
             commands::get_polish_enabled,
             commands::set_polish_enabled,
@@ -790,10 +799,16 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     overlay::resize_overlay(&app, "preview");
                     let _ = app.emit("transcript:final", payload);
                 }
-                Ok(DoryEvent::SessionFinished { raw, text, .. }) => {
+                Ok(DoryEvent::SessionFinished {
+                    session_id,
+                    dictation,
+                    raw,
+                    text,
+                    ..
+                }) => {
                     let _ = app.emit(
                         "transcript:source",
-                        serde_json::json!({"raw":raw,"final_text":text}),
+                        serde_json::json!({"session_id":session_id,"dictation":dictation,"raw":raw,"final_text":text}),
                     );
                 }
                 Ok(DoryEvent::Injection(feedback)) => {

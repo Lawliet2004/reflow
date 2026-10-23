@@ -1,0 +1,4 @@
+Observed terminal excerpt from the disposable /tmp repair run (not a complete retained log):
+ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device
+called `Result::unwrap()` on an `Err` value: "There is not enough free storage to finish speech setup. Free some space and retry."
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 653 filtered out; finished in 116.13s

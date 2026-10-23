@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "packages": {
+    "tokenizers==0.22.2": {
+      "license": "Apache-2.0",
+      "file": "tokenizers-0.22.2.LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "source": "https://raw.githubusercontent.com/huggingface/tokenizers/f383101a26663708484cac0727792aad74f78234/LICENSE",
+      "upstream_tag": "v0.22.2",
+      "upstream_commit": "f383101a26663708484cac0727792aad74f78234",
+      "reason": "The pinned binary wheel omits License/License-Expression/License-File metadata and notice files. Retain the matching upstream source license; distribution review remains required."
+    },
+    "cuda-toolkit==12.6.3": {
+      "license": "LicenseRef-NVIDIA-CUDA-Toolkit-EULA",
+      "file": "cuda-toolkit-12.6.3.LICENSE",
+      "sha256": "676a5b14c2d308fb2ee868b12e20c266251a53a933a116a5b68a5413e9016af0",
+      "source": "https://docs.nvidia.com/cuda/archive/12.6.3/eula/index.html",
+      "reviewed_wheel_sha256": "79d8605baeb6c2f695761e0efb54bc62dbc3c9e32eb0742df7669c07befaa8f7",
+      "reason": "The pinned NVIDIA CUDA Toolkit meta-package wheel contains only distribution metadata, with no license fields or notice. Retain the unmodified official versioned Toolkit EULA. This prepares notices; distribution review remains required and no redistribution grant for every Toolkit component is inferred."
+    },
+    "cuda-toolkit==13.0.3.0": {
+      "license": "LicenseRef-NVIDIA-CUDA-Toolkit-EULA",
+      "file": "cuda-toolkit-13.0.3.0.LICENSE",
+      "sha256": "167c8c0cc86d2c921963aa272bd71b1966555ea50a1326c52bc5c3aff1257216",
+      "source": "https://docs.nvidia.com/cuda/archive/13.0.3/eula/index.html",
+      "reviewed_wheel_sha256": "d693caaa261214ddd7dbb60d68e71cbed884e68c2be7509778f3051da0b91c3f",
+      "reason": "The pinned NVIDIA CUDA Toolkit meta-package wheel contains only distribution metadata, with no license fields or notice. Retain the unmodified official versioned Toolkit EULA. This prepares notices; distribution review remains required and no redistribution grant for every Toolkit component is inferred."
+    }
+  }
+}

@@ -25,6 +25,44 @@ spec.loader.exec_module(runtime)
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_low_ram_blocks_each_cpu_engine_and_gpu_host_staging(self):
+        with mock.patch.object(runtime, "available_ram_mb", return_value=256):
+            for model in ("0.6b", "1.7b", "phonon-2", "zipformer-20m"):
+                with self.subTest(model=model), self.assertRaisesRegex(RuntimeError, "RAM"):
+                    runtime.admit_cpu_load("/missing", model)
+            with self.assertRaisesRegex(RuntimeError, "host RAM"):
+                runtime.admit_gpu_host_load()
+
+    def test_auto_gpu_fallback_checks_live_cpu_ram_before_loading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pathlib.Path(directory, "config.json").write_text("{}")
+            with mock.patch.object(runtime, "STATE", runtime.RuntimeState()), \
+                    mock.patch.object(runtime, "pick_device", return_value="cuda"), \
+                    mock.patch.object(runtime, "_unload_model_blocking"), \
+                    mock.patch.object(runtime, "_device_vram_mb", return_value={"free": 0, "total": 4096}), \
+                    mock.patch.object(runtime, "weights_bytes", return_value=4_000_000_000), \
+                    mock.patch.object(runtime, "available_ram_mb", return_value=256), \
+                    mock.patch.object(runtime, "admit_cpu_load", wraps=runtime.admit_cpu_load) as admission, \
+                    mock.patch.object(runtime, "_try_load") as loader:
+                runtime.load_model_blocking(directory, "auto")
+                admission.assert_called_once()
+                loader.assert_not_called()
+                self.assertFalse(runtime.STATE.loaded)
+
+    def test_explicit_gpu_does_not_run_cpu_fallback_when_vram_is_full(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pathlib.Path(directory, "config.json").write_text("{}")
+            with mock.patch.object(runtime, "STATE", runtime.RuntimeState()), \
+                    mock.patch.object(runtime, "pick_device", return_value="cuda"), \
+                    mock.patch.object(runtime, "_unload_model_blocking"), \
+                    mock.patch.object(runtime, "_device_vram_mb", return_value={"free": 0, "total": 4096}), \
+                    mock.patch.object(runtime, "weights_bytes", return_value=4_000_000_000), \
+                    mock.patch.object(runtime, "_try_load") as loader:
+                result = runtime.load_model_blocking(directory, "cuda")
+                self.assertFalse(result.get("loaded", False))
+                loader.assert_not_called()
+                self.assertFalse(runtime.STATE.loaded)
+
     def test_early_loading_ack_exposes_missing_models_and_worker_exceptions_in_status(self):
         original_handle = runtime.handle
         for dispatch_error in [None, FileNotFoundError("fixture dispatch failed")]:

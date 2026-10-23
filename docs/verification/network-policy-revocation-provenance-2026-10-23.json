@@ -1,0 +1,58 @@
+{
+  "recorded_at": "2026-10-23T01:06:44.878321+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "dirty_worktree": true,
+  "source_sha256": {
+    "src-tauri/src/asr/actor.rs": "0166bbdd42604897828b43c9db7a797b4cb9c3b27e66c41247bcefffbf8c55b5",
+    "src-tauri/src/asr/actor_policy_tests.rs": "2821652eb7962c1b80f726882f01418b203c6a436ccbb6526dc19cd8b5c02e96",
+    "src-tauri/src/asr/engine.rs": "14eddf67ec63ff4910fbaa6042798192840dc1e3303dea159bcfac4e19817c83",
+    "src-tauri/src/asr/sidecar.rs": "1c3fed9318f7b72da8275cdc2487de2cfafaab6d77a1fb11a469dc9a252bd627",
+    "src-tauri/src/asr/sidecar_transport_tests.rs": "c68f1f84c63bf54146dce201eabec6a869010061dce56bf737aeb903a55346b6",
+    "src-tauri/src/asr/sidecar_load_deadline_tests.rs": "b19a9ef0d3e2261b612512d79803f441eefa70d6a666117c03261c1a394b33ae",
+    "src-tauri/src/commands/mod.rs": "3db783fec1a5e88e355fcb81d83c8d2dd695288191274ca80e7ea0e848d588ea",
+    "src-tauri/src/context.rs": "7486337672d9d7ded0d95f3fd12d7918e7d29b624c0b6ffab487fa90aaf86c78",
+    "src-tauri/src/network_policy.rs": "0be459ca8bf551aed75f6a1de559c36b0c68bee01c9ca44d5764eb446d66412a",
+    "src-tauri/src/platform/process.rs": "1efe81273c1c0cdc77ef84452186ee761eb22b09ff63cd0aca5d5865780a29b0",
+    "src-tauri/src/platform/persistence.rs": "ae78fb5342d5c064a2c63cedab5fb0c8f3f1c102fd950caea6886cd09b05bab9"
+  },
+  "checks": {
+    "rust_all_targets": {
+      "passed": 979,
+      "failed": 0,
+      "ignored": 27,
+      "library_passed": 636,
+      "library_ignored": 16,
+      "exit_code": 0,
+      "log_sha256": "8b5d26bea382ee1a80a8be4fba1919a7af4dc8675f885bdebd66fa73e385ee2a"
+    },
+    "clippy_all_targets": {
+      "exit_code": 0,
+      "log_sha256": "0ee9f0fc2f7fbe66c4185680b56ad244d5a4ae4ca0a1bd1f269420ef01897429"
+    },
+    "cargo_fmt": {
+      "exit_code": 0
+    },
+    "offline_pack": {
+      "passed": 1,
+      "result_file": "runtime-pack-linux-2026-10-23/policy-revocation-offline-install.json"
+    },
+    "frontend": "Unchanged frontend/IPC; prior 371-test/build evidence retained in setup-recovery-provenance-2026-10-23.json.",
+    "refinement": "All measured pipeline source hashes still match object-retention/provenance.json; no new 200-case run was needed for this ASR-only change."
+  },
+  "appimage_regression": {
+    "before_exit_code": 101,
+    "before_fixture_seconds": 4.59,
+    "before_source_sha256": "d1863a8a233fb60edca6a5420ec76493687b024ab253e3cfe86d952cdda4ac22",
+    "before_log_sha256": "6be2998304777882542c5d28805e0d68c599640d79ac395b872755fbf49aa389",
+    "after_exit_code": 0,
+    "after_fixture_seconds": 0.18,
+    "after_log_sha256": "7300967985914f860f394db56f785dfc26fa30e13fedc02480c689355df595e7",
+    "integrated_test": "asr::sidecar::tests::appimage_python_overrides_cannot_break_sidecar_startup_and_reload",
+    "scope": "Model-free Python protocol fixture, not a real AppImage installer or ASR decode."
+  },
+  "selected_source_lines_delta": 6901,
+  "no_model_downloads": true,
+  "published": false,
+  "scope": "Controlled Linux backend process ownership/persistence-result injection and real offline worker acceptance. Full settings IPC/packaged GUI, native Windows/macOS and physical microphone/insertion remain unverified.",
+  "retirement_readiness_regression": "The lifecycle test checks that explicit transport retirement clears the internal loaded state before a new load."
+}

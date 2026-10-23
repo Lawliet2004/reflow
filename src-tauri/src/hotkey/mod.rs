@@ -1,4 +1,6 @@
+pub(crate) mod capture;
 pub(crate) mod dispatch_guard;
+pub(crate) mod gesture;
 pub mod hook;
 pub mod manager;
 

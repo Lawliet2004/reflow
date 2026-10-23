@@ -1,0 +1,6 @@
+WARNING:pip_audit._cli:--no-deps is supported, but users are encouraged to fully hash their pinned dependencies
+WARNING:pip_audit._cli:Consider using a tool like `pip-compile`: https://pip-tools.readthedocs.io/en/latest/#using-hashes
+Found 1 known vulnerability in 1 package
+Name       Version ID              Fix Versions
+---------- ------- --------------- ------------
+accelerate 1.14.0  PYSEC-2026-3804

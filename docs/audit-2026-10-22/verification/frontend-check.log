@@ -1,0 +1,27 @@
+
+> reflow@0.5.0 check
+> npm run lint && npm run format:check && tsc --noEmit && npm run test
+
+
+> reflow@0.5.0 lint
+> eslint .
+
+
+> reflow@0.5.0 format:check
+> prettier --check .
+
+Checking formatting...
+All matched files use Prettier code style!
+
+> reflow@0.5.0 test
+> vitest run
+
+
+ RUN  v4.1.12 /home/papan/Desktop/Projects/reflow
+
+
+ Test Files  52 passed (52)
+      Tests  315 passed (315)
+   Start at  20:10:48
+   Duration  23.14s (transform 10.20s, setup 17.61s, import 23.70s, tests 73.67s, environment 100.31s)
+

@@ -5,6 +5,7 @@ use qrcode::QrCode;
 
 pub fn lan_ipv4_addrs() -> Vec<String> {
     let mut addrs = Vec::new();
+    let routed = guessed_lan_ip();
     if let Ok(ifaces) = if_addrs::get_if_addrs() {
         for iface in ifaces {
             if iface.is_loopback() {
@@ -12,19 +13,48 @@ pub fn lan_ipv4_addrs() -> Vec<String> {
             }
             if let IpAddr::V4(v4) = iface.ip() {
                 if is_rfc1918(v4) {
-                    addrs.push(v4.to_string());
+                    addrs.push((
+                        interface_rank(&iface.name, &v4.to_string(), routed.as_deref()),
+                        v4.to_string(),
+                    ));
                 }
             }
         }
     }
     if addrs.is_empty() {
         if let Some(guess) = guessed_lan_ip() {
-            addrs.push(guess);
+            addrs.push((0, guess));
         }
     }
     addrs.sort();
     addrs.dedup();
-    addrs
+    addrs.into_iter().map(|(_, address)| address).collect()
+}
+
+fn interface_rank(name: &str, address: &str, routed: Option<&str>) -> u8 {
+    let name = name.to_ascii_lowercase();
+    if [
+        "docker",
+        "veth",
+        "virbr",
+        "br-",
+        "vmnet",
+        "vbox",
+        "tun",
+        "tap",
+        "wg",
+        "tailscale",
+        "utun",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+    {
+        3
+    } else if routed == Some(address) {
+        0
+    } else {
+        1
+    }
 }
 
 pub fn is_rfc1918(ip: Ipv4Addr) -> bool {
@@ -35,7 +65,10 @@ pub fn is_rfc1918(ip: Ipv4Addr) -> bool {
 fn guessed_lan_ip() -> Option<String> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
-    socket.local_addr().ok().map(|addr| addr.ip().to_string())
+    socket.local_addr().ok().and_then(|addr| match addr.ip() {
+        IpAddr::V4(ip) if is_rfc1918(ip) => Some(ip.to_string()),
+        _ => None,
+    })
 }
 
 pub fn pair_uri(host: &str, port: u16, code: &str, fingerprint: &str) -> String {
@@ -62,6 +95,18 @@ pub fn bind_ip(mode: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_lan_wins_over_docker_vm_and_vpn_even_if_vpn_owns_default_route() {
+        let wifi = interface_rank("wlan0", "192.168.1.2", Some("10.0.0.2"));
+        for interface in ["docker0", "veth123", "virbr0", "tun0", "wg0", "utun3"] {
+            assert!(wifi < interface_rank(interface, "10.0.0.2", Some("10.0.0.2")));
+        }
+        assert_eq!(
+            interface_rank("eth0", "192.168.1.2", Some("192.168.1.2")),
+            0
+        );
+    }
 
     #[test]
     fn rfc1918_ranges() {

@@ -78,6 +78,10 @@ pub struct LatencyMetrics {
     /// `true` when the Stage 2 LLM actually produced the injected text.
     #[serde(default)]
     pub rewrite_applied: bool,
+    /// Why the cleanup LLM was skipped or its output replaced by the
+    /// deterministic text (a reason code, never text). `None` when it applied.
+    #[serde(default)]
+    pub rewrite_fallback_reason: Option<String>,
     /// The headline number: key release to text in the target application.
     #[serde(default)]
     pub release_to_inserted_ms: u64,
@@ -112,6 +116,7 @@ impl Default for LatencyMetrics {
             formatting_ms: 0,
             rewrite_ms: 0,
             rewrite_applied: false,
+            rewrite_fallback_reason: None,
             release_to_inserted_ms: 0,
             total_duration_ms: 0,
             audio_duration_ms: 0,
@@ -341,6 +346,8 @@ pub struct LatencyTimer {
     /// was the text actually injected. A rewrite that ran and was rejected
     /// still contributes to `rewrite_ms` — it was on the critical path.
     pub rewrite_applied: bool,
+    /// Reason code for a skipped or rejected cleanup; see `LatencyMetrics`.
+    pub rewrite_fallback_reason: Option<&'static str>,
     pub injection_finished_at: Option<Instant>,
     pub segments: Vec<SegmentTimer>,
 }
@@ -471,6 +478,7 @@ impl LatencyTimer {
             ),
             rewrite_ms: delta(self.rewrite_started_at, self.rewrite_finished_at),
             rewrite_applied: self.rewrite_applied,
+            rewrite_fallback_reason: self.rewrite_fallback_reason.map(str::to_owned),
             release_to_inserted_ms: delta(self.speech_ended_at, self.injection_finished_at),
             total_duration_ms: delta(session_start, session_end),
             audio_duration_ms: audio_ms,
@@ -536,6 +544,8 @@ pub struct SystemMetrics {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelStatus {
+    #[serde(default)]
+    pub selected_model: String,
     pub installed: bool,
     pub loaded: bool,
     pub version: String,
@@ -584,6 +594,7 @@ impl Default for ModelStatus {
         // and loaded, or every consumer that falls back to it (web preview,
         // tests, early startup) reports a healthy engine that does not exist.
         Self {
+            selected_model: String::new(),
             installed: false,
             loaded: false,
             version: String::new(),
@@ -608,6 +619,8 @@ impl Default for ModelStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InjectionFeedback {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
     pub pasted: bool,
     pub fallback_copy: bool,
     pub paste_chord: String,
@@ -660,6 +673,7 @@ mod tests {
             rewrite_started_at: Some(at(5310)),
             rewrite_finished_at: Some(at(5800)),
             rewrite_applied: true,
+            rewrite_fallback_reason: Some("word_ratio"),
             injection_finished_at: Some(at(5850)),
             segments: vec![SegmentTimer {
                 sequence_id: 0,
@@ -702,6 +716,27 @@ mod tests {
         assert_eq!(m.rewrite_ms, 0);
         assert_eq!(m.audio_duration_ms, 0);
         assert_eq!(m.rtf, 0.0);
+    }
+
+    #[test]
+    fn the_fallback_reason_reaches_the_waterfall_and_survives_serde() {
+        let mut timer = synthetic_timer();
+        assert_eq!(
+            timer.to_metrics(0).rewrite_fallback_reason.as_deref(),
+            Some("word_ratio")
+        );
+        let json = serde_json::to_string(&timer.to_metrics(0)).unwrap();
+        let back: LatencyMetrics = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rewrite_fallback_reason.as_deref(), Some("word_ratio"));
+        // Reports persisted before this field existed still load.
+        let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("rewrite_fallback_reason");
+        let old: LatencyMetrics = serde_json::from_value(old).unwrap();
+        assert_eq!(old.rewrite_fallback_reason, None);
+        timer.reset();
+        assert_eq!(timer.to_metrics(0).rewrite_fallback_reason, None);
     }
 
     #[test]

@@ -8,23 +8,23 @@ use regex::Regex;
 /// mode, where there is no polish model. It is a closed, unambiguous list, so
 /// there is no reason to spend an LLM call on it.
 const PROPER_NOUNS: &[&str] = &[
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-    "january",
-    "february",
-    "april",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+    "January",
+    "February",
+    "April",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 /// Capitalise the closed set of always-capitalised words.
@@ -33,29 +33,25 @@ const PROPER_NOUNS: &[&str] = &[
 /// they are common verbs ("may I", "march on") and capitalising them would be
 /// wrong more often than right. Only unambiguous names are corrected.
 fn capitalize_proper_nouns(text: &str) -> String {
-    let mut out = text.to_string();
-    for name in PROPER_NOUNS {
-        let Ok(re) = Regex::new(&format!(r"(?i)\b{name}\b")) else {
-            continue;
-        };
-        let mut capitalized = String::with_capacity(name.len());
-        let mut chars = name.chars();
-        if let Some(first) = chars.next() {
-            capitalized.extend(first.to_uppercase());
-            capitalized.push_str(chars.as_str());
-        }
-        out = re
-            .replace_all(&out, |captures: &regex::Captures<'_>| {
-                let found = captures.get(0).unwrap();
-                if super::replacements::is_embedded_identifier(&out, found.start(), found.end()) {
-                    found.as_str().to_owned()
-                } else {
-                    capitalized.clone()
-                }
-            })
-            .into_owned();
-    }
-    out
+    static NAMES: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(&format!(r"(?i-u)\b(?:{})\b", PROPER_NOUNS.join("|"))).unwrap()
+    });
+    NAMES
+        .replace_all(text, |captures: &regex::Captures<'_>| {
+            let found = captures.get(0).unwrap();
+            if super::replacements::is_embedded_identifier(text, found.start(), found.end())
+                || super::literals::overlaps_literal(text, found.range())
+            {
+                found.as_str().to_owned()
+            } else {
+                PROPER_NOUNS
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(found.as_str()))
+                    .unwrap()
+                    .to_string()
+            }
+        })
+        .into_owned()
 }
 
 /// Conservative spoken-list cleanup. Does not rewrite prose number-words.
@@ -74,11 +70,58 @@ pub fn apply_normalizers(text: &str, dictation_mode: &str) -> String {
     // ordinary lowercase symbols there, and rewriting them would break code.
     if !matches!(mode.as_str(), "coding" | "developer_prompt") {
         out = capitalize_proper_nouns(&out);
+        out = punctuate_emphasis(&out);
     }
     let spaces = Regex::new(r"[ \t]+\n").expect("trail space");
     out = spaces.replace_all(&out, "\n").to_string();
     let multi = Regex::new(r" {2,}").expect("multi space");
     multi.replace_all(&out, " ").trim().to_string()
+}
+
+/// Repeated intensifiers carry emphasis, not an accidental stutter. Add only
+/// their separating commas outside quotes and identifiers; technical modes skip it.
+fn punctuate_emphasis(text: &str) -> String {
+    static REPEATS: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)\b(?:very|really)(?:[ \t]+(?:very|really))+\b").unwrap()
+    });
+    let out = REPEATS
+        .replace_all(text, |captures: &regex::Captures<'_>| {
+            let found = captures.get(0).unwrap();
+            let words = found.as_str().split_whitespace().collect::<Vec<_>>();
+            if words
+                .iter()
+                .any(|word| !word.eq_ignore_ascii_case(words[0]))
+                || super::literals::overlaps_literal(text, found.range())
+                || super::replacements::is_embedded_identifier(text, found.start(), found.end())
+            {
+                found.as_str().into()
+            } else {
+                words.join(", ")
+            }
+        })
+        .into_owned();
+    // A complete reporting clause makes repeated interjections unambiguous.
+    // Do not infer quotations inside longer clauses, repairs or existing literals.
+    static REPORTED: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i-u)^(he|she|they|we|i|you)[ \t]+(shouted|yelled|screamed)[ \t]+((?:no|yes)(?:[ \t]+(?:no|yes))+)[.!]?$" )
+            .unwrap()
+    });
+    let Some(captures) = REPORTED.captures(&out) else {
+        return out;
+    };
+    let words = captures[3].split_whitespace().collect::<Vec<_>>();
+    if words
+        .iter()
+        .any(|word| !word.eq_ignore_ascii_case(words[0]))
+    {
+        return out;
+    }
+    format!(
+        "{} {}, '{}!'",
+        &captures[1],
+        &captures[2],
+        capitalize_first(&words.join(", "))
+    )
 }
 
 fn word_key(w: &str) -> String {
@@ -144,9 +187,85 @@ fn is_ordinal(key: &str) -> bool {
 /// strictly sequential enumeration returns `None` so prose like "I have one
 /// cat and two dogs" passes through untouched.
 fn try_list(text: &str, prose: bool) -> Option<String> {
-    try_grouped_list(text, prose)
+    try_procedure(text)
+        .or_else(|| try_grouped_list(text, prose))
         .or_else(|| try_spoken_list(text, prose))
         .or_else(|| try_inventory_list(text, prose))
+}
+
+/// Explicit sequencing plus imperative actions establishes a procedure;
+/// sentence count alone never does. Quoted commands remain indivisible.
+fn try_procedure(text: &str) -> Option<String> {
+    if text.contains('\n') || !text.trim_start().to_lowercase().starts_with("first ") {
+        return None;
+    }
+    let marker = Regex::new(r"(?i)\b(first|then|after that|finally)\b").ok()?;
+    let markers = marker.find_iter(text).collect::<Vec<_>>();
+    if markers.len() < 3
+        || markers[0].start() != 0
+        || !markers.last()?.as_str().eq_ignore_ascii_case("finally")
+        || markers
+            .iter()
+            .any(|marker| super::literals::overlaps_literal(text, marker.range()))
+    {
+        return None;
+    }
+    let mut items = Vec::new();
+    for (index, marker) in markers.iter().enumerate() {
+        let end = markers
+            .get(index + 1)
+            .map_or(text.len(), |next| next.start());
+        let item = text[marker.end()..end]
+            .trim_matches(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';'));
+        let item = if index + 1 < markers.len() {
+            item.rsplit_once(char::is_whitespace)
+                .filter(|(_, last)| *last == "and")
+                .map_or(item, |(body, _)| body.trim_end())
+        } else {
+            item
+        };
+        let first = word_key(item.split_whitespace().next()?);
+        if !matches!(
+            first.as_str(),
+            "install"
+                | "create"
+                | "start"
+                | "back"
+                | "run"
+                | "verify"
+                | "restart"
+                | "save"
+                | "open"
+                | "close"
+                | "download"
+                | "check"
+                | "select"
+                | "choose"
+                | "copy"
+                | "paste"
+                | "connect"
+                | "test"
+                | "remove"
+                | "build"
+                | "deploy"
+                | "stop"
+                | "wait"
+                | "send"
+        ) {
+            return None;
+        }
+        let last = item.split_whitespace().next_back()?;
+        let command = first == "run" && item.split_whitespace().nth(1).is_some_and(looks_technical);
+        let item = capitalize_first(item);
+        // These are complete imperative steps, unlike inventory fragments.
+        // Keep unquoted command lines and technical/literal endings untouched.
+        items.push(if !command && last.chars().all(char::is_alphanumeric) {
+            super::punctuation::PunctuationInferer::infer_terminal_punctuation(&item)
+        } else {
+            item
+        });
+    }
+    Some(render_inventory("", &items, true, None))
 }
 
 fn try_grouped_list(text: &str, numbered: bool) -> Option<String> {
@@ -959,6 +1078,118 @@ fn capitalize_first(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_names_are_cased_in_prose_without_changing_literals_or_identifiers() {
+        assert_eq!(
+            apply_normalizers("start on friday in september and sunday.", "normal"),
+            "start on Friday in September and Sunday."
+        );
+        let literal = "keep \"friday\" and `monday` plus src/friday.rs my_january january.db friday://local sunday.log user@monday.example";
+        assert_eq!(apply_normalizers(literal, "normal"), literal);
+        let code = "monday friday sunday";
+        for mode in ["coding", "developer_prompt"] {
+            assert_eq!(apply_normalizers(code, mode), code);
+        }
+        let ambiguous = "we may march forward and react to a svelte design ſqlite ſunday";
+        assert_eq!(apply_normalizers(ambiguous, "normal"), ambiguous);
+    }
+
+    #[test]
+    fn emphasis_punctuation_keeps_repetitions_and_literal_bytes() {
+        assert_eq!(
+            apply_normalizers("This is very very very important", "normal"),
+            "This is very, very, very important"
+        );
+        for input in [
+            "He said 'very very important on friday'",
+            "`very very`",
+            "very_really very",
+            "very really",
+            "very\nvery",
+        ] {
+            assert_eq!(apply_normalizers(input, "normal"), input);
+        }
+        assert_eq!(apply_normalizers("very very", "coding"), "very very");
+        assert_eq!(
+            apply_normalizers("very very", "developer_prompt"),
+            "very very"
+        );
+    }
+
+    #[test]
+    fn reported_interjections_preserve_every_repetition_without_guessing_longer_speech() {
+        for (input, expected) in [
+            ("He shouted no no no.", "He shouted, 'No, no, no!'"),
+            ("she yelled yes yes", "she yelled, 'Yes, yes!'"),
+            ("They screamed NO NO!", "They screamed, 'NO, NO!'"),
+        ] {
+            assert_eq!(apply_normalizers(input, "normal"), expected);
+            assert_eq!(apply_normalizers(expected, "normal"), expected);
+        }
+        for input in [
+            "He shouted 'no no no.'",
+            "He shouted \"no no no\"",
+            "`he shouted no no no`",
+            "He shouted no no sorry I meant yes",
+            "He shouted no yes no",
+            "He shouted no no to the proposal",
+            "He said no no no",
+            "Do not delete it no no no",
+            "I want tea no no sorry I want coffee",
+            "He shouted no\nno",
+            "he_shouted no no",
+        ] {
+            assert_eq!(apply_normalizers(input, "normal"), input, "{input}");
+        }
+        for mode in ["coding", "developer_prompt"] {
+            let input = "He shouted no no no";
+            assert_eq!(apply_normalizers(input, mode), input);
+        }
+    }
+
+    #[test]
+    fn procedures_require_explicit_order_and_imperative_actions() {
+        let input = "first install Python then create a virtual environment after that install dependencies and finally start the server only if tests pass";
+        let output = apply_normalizers(input, "normal");
+        assert!(output.contains("1. Install Python"));
+        assert!(output.contains("4. Start the server only if tests pass"));
+        assert!(output.contains("3. Install dependencies.\n4."));
+        assert!(output.ends_with("4. Start the server only if tests pass."));
+        for input in [
+            "first I thought it was broken then I checked and finally I understood",
+            "first install the app then read `finally stop the server` and finally test it",
+            "We met first then talked and finally left",
+        ] {
+            assert_eq!(apply_normalizers(input, "normal"), input);
+        }
+    }
+
+    #[test]
+    fn procedure_endings_preserve_commands_literals_and_existing_punctuation() {
+        assert_eq!(
+            apply_normalizers("first install python then create a virtual environment after that install dependencies and finally start the server", "normal"),
+            "1. Install python.\n2. Create a virtual environment.\n3. Install dependencies.\n4. Start the server."
+        );
+        assert_eq!(
+            apply_normalizers(
+                "first copy /tmp/source.txt then run npm test and finally copy `final.txt`",
+                "normal"
+            ),
+            "1. Copy /tmp/source.txt\n2. Run npm test\n3. Copy `final.txt`"
+        );
+        assert_eq!(
+            apply_normalizers(
+                "first stop the server! then check the status? and finally save the changes.",
+                "normal"
+            ),
+            "1. Stop the server!\n2. Check the status?\n3. Save the changes."
+        );
+        assert_eq!(
+            apply_normalizers("1. apples, 2. bananas", "notes"),
+            "• Apples\n• Bananas"
+        );
+    }
 
     #[test]
     fn notes_mode_builds_a_list() {

@@ -17,6 +17,28 @@ use crate::profile::vram_reserve_mb;
 #[path = "orphan_tests.rs"]
 mod orphan_tests;
 
+fn native_attempt_admitted(
+    manifest: &crate::profile::manifest::ModelManifest,
+    caps: &Capabilities,
+    gpu: bool,
+    strict_gpu: bool,
+) -> bool {
+    let required_ram = if gpu {
+        manifest.overhead_mb + 1024.0
+    } else {
+        manifest.estimated_cpu_ram_mb() + 1024.0
+    };
+    let required_vram =
+        manifest.estimated_vram_mb(crate::profile::manifest::Precision::Int8) + 384.0;
+    (!strict_gpu || gpu)
+        && caps.ram.available_mb.is_finite()
+        && caps.ram.available_mb >= required_ram
+        && (!gpu
+            || caps
+                .primary_gpu()
+                .is_some_and(|device| device.free_vram_mb >= required_vram))
+}
+
 pub struct FlowModelSpec {
     pub id: &'static str,
     pub label: &'static str,
@@ -468,6 +490,11 @@ impl FlowRuntime {
         self.active_model.read().clone()
     }
 
+    /// Identifies the owned server for local resource measurements.
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.lock().as_ref().map(std::process::Child::id)
+    }
+
     pub fn active_mode(&self) -> Option<LlamaMode> {
         self.active_mode.read().clone()
     }
@@ -576,11 +603,9 @@ impl FlowRuntime {
         }
         // A context size of zero means "unset"; fall back to the shipped default
         // rather than handing llama-server an invalid flag.
-        let context_size = if context_size == 0 {
-            1024
-        } else {
-            context_size
-        };
+        // The cleanup prompt (rules plus examples) and a chunk's answer must
+        // fit together, so a smaller saved value is raised to the floor.
+        let context_size = context_size.max(super::client::MIN_CONTEXT_SIZE);
         let request = RuntimeRequest {
             flow_model: flow_model.to_string(),
             requested_mode: mode.clone(),
@@ -640,8 +665,30 @@ impl FlowRuntime {
         } else {
             vec![LlamaMode::Cpu]
         };
+        let native_manifest = self
+            .model_paths
+            .as_ref()
+            .and_then(|_| crate::profile::manifest::native_asr_manifest(flow_model));
+        let strict_gpu =
+            native_manifest.is_some() && matches!(compute_backend, "gpu" | "cuda" | "vulkan");
         let mut last_err: Option<FlowLaunchFailure> = None;
         for attempt in attempts {
+            if let Some(manifest) = native_manifest {
+                let caps = capabilities_uncached();
+                let admitted =
+                    native_attempt_admitted(manifest, &caps, attempt.is_gpu(), strict_gpu);
+                if !admitted {
+                    if attempt.is_gpu() && !strict_gpu {
+                        last_err = Some(FlowLaunchFailure::SpawnFailed(
+                            "GPU memory budget cannot be satisfied".into(),
+                        ));
+                        continue;
+                    }
+                    return Err(self.fail_ensure(FlowLaunchFailure::SpawnFailed(
+                        "Native speech load cannot satisfy the requested device or current memory budget. Close applications, choose CPU/Auto, or use Zipformer 20M.".into(),
+                    )));
+                }
+            }
             let layers_for_attempt = if attempt.is_gpu() {
                 Some(resolved_gpu_layers)
             } else {
@@ -912,8 +959,23 @@ impl FlowRuntime {
                 .map(|r| r.status().is_success())
                 .unwrap_or(false)
             {
+                let properties: serde_json::Value = http
+                    .get(format!("{url}/props"))
+                    .send()
+                    .and_then(reqwest::blocking::Response::error_for_status)
+                    .and_then(reqwest::blocking::Response::json)
+                    .map_err(|error| {
+                        FlowLaunchFailure::SpawnFailed(format!(
+                            "Could not verify active model context: {error}"
+                        ))
+                    })?;
+                let actual_context = active_context_size(&properties).ok_or_else(|| {
+                    FlowLaunchFailure::SpawnFailed(
+                        "The local server did not report a usable per-slot context window".into(),
+                    )
+                })?;
                 *self.active_model.write() = Some(flow_model.to_string());
-                *self.client.write() = client;
+                *self.client.write() = client.with_context_size(actual_context.min(context_size));
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(150));
@@ -928,6 +990,13 @@ impl FlowRuntime {
             stderr: self.stderr_ring.lock().tail(20),
         })
     }
+}
+
+fn active_context_size(properties: &serde_json::Value) -> Option<u32> {
+    let tokens = properties
+        .pointer("/default_generation_settings/n_ctx")?
+        .as_u64()?;
+    u32::try_from(tokens).ok().filter(|size| *size >= 256)
 }
 
 pub(crate) fn local_health_client() -> Result<reqwest::blocking::Client, reqwest::Error> {
@@ -1458,5 +1527,21 @@ mod tests {
             err.contains("not installed") || err.contains("missing") || err.contains("not found")
         );
         assert!(!runtime.status_ready());
+    }
+}
+
+#[cfg(test)]
+mod audit_admission_tests {
+    use super::*;
+    #[test]
+    fn native_cpu_fallback_rechecks_ram_and_respects_gpu_only() {
+        let manifest = &crate::profile::manifest::NATIVE_ASR_MODELS[0];
+        let mut caps = Capabilities::default();
+        caps.ram.available_mb = 256.0;
+        assert!(!native_attempt_admitted(manifest, &caps, false, false));
+        caps.ram.available_mb = 32000.0;
+        assert!(native_attempt_admitted(manifest, &caps, false, false));
+        assert!(!native_attempt_admitted(manifest, &caps, false, true));
+        assert!(!native_attempt_admitted(manifest, &caps, true, true));
     }
 }

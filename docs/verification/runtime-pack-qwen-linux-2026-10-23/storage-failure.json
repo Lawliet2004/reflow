@@ -1,0 +1,13 @@
+{
+  "scope": "Observed real /tmp capacity exhaustion in a disposable offline Qwen repair. The original full log and numeric pre-cleanup/pointer snapshot were not retained; do not use this excerpt alone as independent pointer-retention proof. A relative evidence-path error occurred after owned scratch cleanup; later evidence paths and final pass are explicit.",
+  "error": "[Errno 28] No space left on device",
+  "reported_recovery": "There is not enough free storage to finish speech setup. Free some space and retry.",
+  "tmp_usage_after_owned_cleanup": {
+    "total": 7958253568,
+    "used": 1077932032,
+    "free": 6880321536
+  },
+  "cleanup_scope": "Only failed /tmp/reflow-python-e2e-* directories containing this turn's unpublished Qwen pack receipt hash were reclaimed; no live matching process or unrelated fixture was removed.",
+  "rerun_storage": "/home/papan/.cache/reflow-qwen-runtime-pack-verification/tmp",
+  "preflight_bug": "sysinfo 0.33.1 excludes tmpfs unless linux-tmpfs is enabled; a /tmp path could therefore match the larger root disk. Added feature plus Unix canonical path lookup and a no-allocation statvfs comparison regression."
+}

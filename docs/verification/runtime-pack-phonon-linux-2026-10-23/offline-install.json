@@ -1,0 +1,22 @@
+{
+  "broken_lazy_api_rejected": true,
+  "bytes": 349482063,
+  "cancelled_repair": "pass",
+  "corrupt_cache": "pass",
+  "missing_cache": "pass",
+  "model_downloads": 0,
+  "native_desktop_or_asr_acceptance": false,
+  "network_journal_entries": 0,
+  "offline_install_ms": 55251,
+  "offline_repair": "pass",
+  "pack_sha256": "80a6eb835b574612a6001d4c677c7e16582416c09c2084c429676b859adecc7b",
+  "profile": "phonon-cpu",
+  "retained_app_dir": "/home/papan/.cache/reflow-phonon-runtime-pack-verification/tmp/reflow-python-e2e-2e849853-33b6-4194-bca0-3565274e8e43",
+  "retained_python": "/home/papan/.cache/reflow-phonon-runtime-pack-verification/tmp/reflow-python-e2e-2e849853-33b6-4194-bca0-3565274e8e43/python-generations/eb2016e9-a334-47de-bf9d-402a95d91bec/runtime/bin/python",
+  "target": "x86_64-unknown-linux-gnu",
+  "simulated_appimage_environment": true,
+  "invalid_inherited_pythonhome_cleared": true,
+  "invalid_original_pythonhome_cleared": true,
+  "complete_test_seconds": 126.73,
+  "log_sha256": "92c736b0c4bc152f72900bbcf31b25148d47d7d95c358b3b5c2b14c3a06ccf65"
+}

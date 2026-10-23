@@ -1,0 +1,14 @@
+{
+  "target": "x86_64-unknown-linux-gnu",
+  "profile": "phonon",
+  "variant": "cpu",
+  "requirements_sha256": "955613488154c27da95c466aaf7f468f6b7b6ba91002becbe4b3c4a6f000051a",
+  "pip_lock_sha256": "a5156dc41a4a00784002d063a17d6fcdb3e6922dd650046fd907b80173a502a7",
+  "pbs_sha256": "f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5",
+  "schema": 1,
+  "asset": "speech-runtime-x86_64-unknown-linux-gnu-phonon-cpu.tar.gz",
+  "sha256": "80a6eb835b574612a6001d4c677c7e16582416c09c2084c429676b859adecc7b",
+  "bytes": 349482063,
+  "unpacked_bytes": 356707897,
+  "source_commit": "148ae33a9deba466dda58874419c9301b56b69db"
+}

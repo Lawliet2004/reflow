@@ -1,0 +1,23 @@
+[
+  { "type": "WordBoundary", "offset": 1061250, "duration": 1415000, "text": "Keep" },
+  { "type": "WordBoundary", "offset": 2594160, "duration": 4245410, "text": "ideas" },
+  { "type": "WordBoundary", "offset": 6957500, "duration": 1061250, "text": "in" },
+  { "type": "WordBoundary", "offset": 8136660, "duration": 4599160, "text": "Notes" },
+  { "type": "WordBoundary", "offset": 17099160, "duration": 2476250, "text": "Find" },
+  { "type": "WordBoundary", "offset": 19693330, "duration": 2947910, "text": "past" },
+  { "type": "WordBoundary", "offset": 22759580, "duration": 5188750, "text": "dictations" },
+  { "type": "WordBoundary", "offset": 28065830, "duration": 825410, "text": "in" },
+  { "type": "WordBoundary", "offset": 29009580, "duration": 4363330, "text": "History" },
+  { "type": "WordBoundary", "offset": 37264160, "duration": 4599160, "text": "Search" },
+  { "type": "WordBoundary", "offset": 43867910, "duration": 3891660, "text": "pin" },
+  { "type": "WordBoundary", "offset": 50825410, "duration": 825410, "text": "and" },
+  { "type": "WordBoundary", "offset": 51768750, "duration": 1532910, "text": "pick" },
+  { "type": "WordBoundary", "offset": 53420000, "duration": 943330, "text": "up" },
+  { "type": "WordBoundary", "offset": 54481250, "duration": 471659, "text": "a" },
+  { "type": "WordBoundary", "offset": 55070830, "duration": 3655830, "text": "thought" },
+  { "type": "WordBoundary", "offset": 58844160, "duration": 1532910, "text": "right" },
+  { "type": "WordBoundary", "offset": 60495410, "duration": 1061250, "text": "where" },
+  { "type": "WordBoundary", "offset": 61674580, "duration": 943330, "text": "you" },
+  { "type": "WordBoundary", "offset": 62735830, "duration": 2712080, "text": "left" },
+  { "type": "WordBoundary", "offset": 65565830, "duration": 1415000, "text": "it" }
+]

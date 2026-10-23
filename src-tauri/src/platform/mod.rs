@@ -3,6 +3,7 @@ pub mod desktop;
 #[cfg(target_os = "linux")]
 pub(crate) mod kde_shortcuts;
 mod keys;
+pub(crate) mod persistence;
 #[cfg(target_os = "linux")]
 pub(crate) mod portal_request;
 #[cfg(target_os = "linux")]

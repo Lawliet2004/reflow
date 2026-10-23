@@ -47,7 +47,7 @@ fn auto_uses_small_asr_and_reserves_its_weights_before_llm() {
         false,
     );
     assert_eq!(result.asr_model, "0.6b");
-    assert_eq!(result.context_size, 1024);
+    assert_eq!(result.context_size, 4096);
     assert!(
         result.refinement_gpu_layers < 99,
         "both models cannot fully offload into this budget"
@@ -158,7 +158,9 @@ fn transient_free_vram_does_not_change_a_warm_runtime_request() {
 #[test]
 fn quantized_cpu_llm_is_not_budgeted_as_fp32_weights() {
     let mut caps = hardware();
-    caps.ram.available_mb = 2500.0;
+    // Fit quantized weights plus the new 4096-token workspace and OS reserve;
+    // an fp32-weight estimate would still reject this budget.
+    caps.ram.available_mb = 3000.0;
     let result = plan(
         &AppSettings {
             intelligence_tier: "smart_flow".into(),
@@ -190,4 +192,45 @@ fn custom_automatic_offload_budgets_the_resolved_writing_model() {
     let small = plan(&settings, &caps, &|_| true, &no_measurements, true, false);
     assert_eq!(large.refinement_model.as_deref(), Some("qwen3.5-2b"));
     assert!(large.refinement_gpu_layers < small.refinement_gpu_layers);
+}
+
+#[test]
+fn automatic_offload_honours_explicit_context_preferences() {
+    for context in [1024, 2048, 4096, 8192] {
+        let mut settings = AppSettings::default();
+        settings.refinement.context_size = context;
+        let result = plan(
+            &settings,
+            &hardware(),
+            &|_| true,
+            &no_measurements,
+            false,
+            false,
+        );
+        assert_eq!(result.context_size, context);
+        assert_eq!(settings.refinement.context_size, context);
+    }
+}
+
+#[test]
+fn increasing_context_consumes_memory_without_rewriting_preferences() {
+    let mut caps = hardware();
+    caps.ram.available_mb = 2700.0;
+    let mut settings = AppSettings {
+        intelligence_tier: "smart_flow".into(),
+        ..Default::default()
+    };
+    settings.refinement.context_size = 2048;
+    assert!(
+        plan(&settings, &caps, &|_| true, &no_measurements, true, false)
+            .refinement_model
+            .is_some()
+    );
+    settings.refinement.context_size = 8192;
+    assert!(
+        plan(&settings, &caps, &|_| true, &no_measurements, true, false)
+            .refinement_model
+            .is_none()
+    );
+    assert_eq!(settings.refinement.context_size, 8192);
 }

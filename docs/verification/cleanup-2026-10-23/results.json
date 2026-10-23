@@ -1,0 +1,25 @@
+{
+  "rust": {
+    "passed": 1003,
+    "failed": 0,
+    "ignored": 28
+  },
+  "frontend": {
+    "passed": 372,
+    "failed": 0
+  },
+  "clippy": "passed -D warnings",
+  "lint": {
+    "errors": 0,
+    "existing_warnings": 1
+  },
+  "typescript": "passed",
+  "real_model_eval": {
+    "passed": 13,
+    "total": 15,
+    "rewrite_ms_median": 169,
+    "rewrite_ms_mean": 427,
+    "deterministic_ms_max": 71
+  },
+  "validation_300_word_debug_ms": 1.852704
+}

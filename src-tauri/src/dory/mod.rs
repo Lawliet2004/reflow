@@ -53,6 +53,7 @@ pub enum DoryEvent {
     Final(StreamingTranscriptPayload),
     SessionFinished {
         session_id: u64,
+        dictation: bool,
         raw: String,
         text: String,
         language: String,

@@ -188,16 +188,8 @@ impl ResolvedProfile {
         self.refinement_model.is_none()
     }
 
-    pub fn reason_codes(&self) -> Vec<&str> {
-        self.reasons.iter().map(|r| r.code.as_str()).collect()
-    }
-
     pub fn has_reason(&self, code: &str) -> bool {
         self.reasons.iter().any(|r| r.code == code)
-    }
-
-    pub fn has_error(&self, code: &str) -> bool {
-        self.errors.iter().any(|e| e.code == code)
     }
 }
 
@@ -705,6 +697,83 @@ pub fn select_asr_load_for_runtime(
     caps: &Capabilities,
     measured: MeasuredLookup<'_>,
 ) -> AsrSelection {
+    let selection = select_asr_load_for_runtime_unchecked(
+        runtime,
+        preset,
+        requested_model,
+        requested_device,
+        requested_precision,
+        installed,
+        caps,
+        measured,
+    );
+    admit_selection(selection, requested_device, caps)
+}
+
+fn admit_selection(
+    mut selection: AsrSelection,
+    requested_device: &str,
+    caps: &Capabilities,
+) -> AsrSelection {
+    if selection.error.is_some() {
+        return selection;
+    }
+    let forced_gpu = matches!(
+        requested_device.trim().to_ascii_lowercase().as_str(),
+        "cuda" | "gpu" | "vulkan"
+    );
+    if forced_gpu && selection.device == Device::Cpu {
+        selection.error = Some(ProfileError::new("gpu_required", "GPU only could not be satisfied. Free GPU memory, install a compatible runtime/driver, or choose Auto or CPU.", requested_device, vec!["auto".into(), "cpu".into()]));
+        return selection;
+    }
+    let manifest = super::manifest::asr_manifest(selection.model_id)
+        .or_else(|| super::manifest::native_asr_manifest(selection.model_id));
+    if let Some(manifest) = manifest {
+        let required = if selection.device == Device::Cpu {
+            manifest.estimated_cpu_ram_mb() + 1024.0
+        } else {
+            // GPU loads still need host staging and interpreter memory.
+            manifest.overhead_mb + 1024.0
+        };
+        if !caps.ram.available_mb.is_finite() || caps.ram.available_mb < required {
+            selection.error = Some(ProfileError::new("insufficient_ram", format!("{} needs about {:.0} MB of available RAM including headroom; {:.0} MB is available. Close applications or select Zipformer 20M, then retry.", manifest.label, required, caps.ram.available_mb), manifest.id, vec!["zipformer-20m".into()]));
+        }
+    }
+    selection
+}
+
+pub fn select_asr_load(
+    preset: Preset,
+    requested_model: &str,
+    requested_device: &str,
+    requested_precision: &str,
+    installed: &dyn Fn(&str) -> bool,
+    caps: &Capabilities,
+    measured: MeasuredLookup<'_>,
+) -> AsrSelection {
+    let selection = select_asr_load_unchecked(
+        preset,
+        requested_model,
+        requested_device,
+        requested_precision,
+        installed,
+        caps,
+        measured,
+    );
+    admit_selection(selection, requested_device, caps)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_asr_load_for_runtime_unchecked(
+    runtime: &str,
+    preset: Preset,
+    requested_model: &str,
+    requested_device: &str,
+    requested_precision: &str,
+    installed: &dyn Fn(&str) -> bool,
+    caps: &Capabilities,
+    measured: MeasuredLookup<'_>,
+) -> AsrSelection {
     if requested_model == "phonon-2" {
         return select_phonon_load(
             preset,
@@ -801,7 +870,7 @@ pub fn select_asr_load_for_runtime(
     }
 }
 
-pub fn select_asr_load(
+fn select_asr_load_unchecked(
     preset: Preset,
     requested_model: &str,
     requested_device: &str,
@@ -931,7 +1000,12 @@ pub fn select_asr_load(
     // Largest installed model at or below the ceiling that fits the budget.
     let mut candidates: Vec<&'static ModelManifest> = ASR_MODELS
         .iter()
-        .filter(|m| m.params <= ceiling.params && installed(m.id))
+        .filter(|m| {
+            m.params <= ceiling.params
+                && (installed(m.id)
+                    || (m.id == requested.id
+                        && !ASR_MODELS.iter().any(|candidate| installed(candidate.id))))
+        })
         .collect();
     candidates.sort_by_key(|m| std::cmp::Reverse(m.params));
 
@@ -1305,6 +1379,79 @@ fn resolve_refinement(
                 ),
             ));
             (Some(manifest.id.to_string()), Device::Cpu, 0)
+        }
+    }
+}
+
+#[cfg(test)]
+mod audit_admission_tests {
+    use super::*;
+    #[test]
+    fn first_install_uses_discovered_cuda_before_any_weights_are_installed() {
+        let mut caps = Capabilities::default();
+        caps.ram.available_mb = 16000.0;
+        caps.gpus.push(crate::capability::GpuInfo {
+            index: 0,
+            name: "NVIDIA fixture".into(),
+            vendor: crate::capability::GpuVendor::Nvidia,
+            total_vram_mb: 12000.0,
+            free_vram_mb: 11000.0,
+            used_vram_mb: 1000.0,
+            driver_version: Some("fixture".into()),
+            compute_capability: Some("8.6".into()),
+        });
+        caps.cuda.torch_cuda_available = true;
+        let selection = select_asr_load(
+            Preset::Auto,
+            "0.6b",
+            "auto",
+            "auto",
+            &|_| false,
+            &caps,
+            &no_measurements,
+        );
+        assert_eq!(selection.device, Device::Cuda);
+        assert!(selection.error.is_none());
+    }
+
+    #[test]
+    fn all_engines_reject_low_ram_and_gpu_only_never_returns_cpu() {
+        let mut caps = Capabilities::default();
+        caps.ram.available_mb = 256.0;
+        for runtime in ["python", "native"] {
+            for model in ["0.6b", "1.7b", "zipformer-20m", "phonon-2"] {
+                let selected = select_asr_load_for_runtime(
+                    runtime,
+                    Preset::Auto,
+                    model,
+                    "cpu",
+                    "auto",
+                    &|_| true,
+                    &caps,
+                    &no_measurements,
+                );
+                assert_eq!(
+                    selected.error.as_ref().map(|e| e.code.as_str()),
+                    Some("insufficient_ram"),
+                    "{runtime}/{model}"
+                );
+            }
+        }
+        caps.ram.available_mb = 32000.0;
+        for model in ["0.6b", "zipformer-20m", "phonon-2"] {
+            let selected = select_asr_load(
+                Preset::Auto,
+                model,
+                "cuda",
+                "auto",
+                &|_| true,
+                &caps,
+                &no_measurements,
+            );
+            assert_eq!(
+                selected.error.as_ref().map(|e| e.code.as_str()),
+                Some("gpu_required")
+            );
         }
     }
 }

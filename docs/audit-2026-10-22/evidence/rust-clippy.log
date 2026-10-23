@@ -1,0 +1,11 @@
+    Checking reflow v0.5.0 (/home/papan/Desktop/Projects/reflow/src-tauri)
+error[E0432]: unresolved imports `reflow_lib::hotkey::hook::HookMode`, `reflow_lib::hotkey::hook::HotkeyStateMachine`
+  --> tests/long_form_tests.rs:16:52
+   |
+16 | use reflow_lib::hotkey::hook::{hands_free_engaged, HookMode, HotkeyStateMachine};
+   |                                                    ^^^^^^^^  ^^^^^^^^^^^^^^^^^^ no `HotkeyStateMachine` in `hotkey::hook`
+   |                                                    |
+   |                                                    no `HookMode` in `hotkey::hook`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `reflow` (test "long_form_tests") due to 1 previous error

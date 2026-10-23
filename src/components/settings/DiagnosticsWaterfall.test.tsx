@@ -17,6 +17,7 @@ vi.mock("../../services/tauriApi", () => ({
         formatting_ms: 5,
         rewrite_ms: 180,
         rewrite_applied: true,
+        rewrite_fallback_reason: "word_ratio",
         release_to_inserted_ms: 320,
         total_duration_ms: 1500,
         audio_duration_ms: 1200,
@@ -81,6 +82,7 @@ describe("DiagnosticsWaterfall", () => {
     expect(await screen.findByText("Live Latency & Diagnostics")).toBeInTheDocument();
     expect(await screen.findByText(/Last Dictation Timeline/)).toBeInTheDocument();
 
+    expect(await screen.findByText("word_ratio")).toBeInTheDocument();
     const resetBtn = screen.getByText("Reset History");
     fireEvent.click(resetBtn);
   });

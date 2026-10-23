@@ -1,0 +1,20 @@
+[
+  { "type": "WordBoundary", "offset": 943330, "duration": 2004580, "text": "Meet" },
+  { "type": "WordBoundary", "offset": 3065830, "duration": 4599160, "text": "Reflow" },
+  { "type": "WordBoundary", "offset": 11674580, "duration": 3891660, "text": "Private" },
+  { "type": "WordBoundary", "offset": 19221660, "duration": 5188750, "text": "on-device" },
+  { "type": "WordBoundary", "offset": 24528330, "duration": 5542500, "text": "dictation" },
+  { "type": "WordBoundary", "offset": 30188750, "duration": 1532910, "text": "that" },
+  { "type": "WordBoundary", "offset": 31839580, "duration": 3655830, "text": "turns" },
+  { "type": "WordBoundary", "offset": 35613330, "duration": 943330, "text": "the" },
+  { "type": "WordBoundary", "offset": 36674580, "duration": 1768750, "text": "way" },
+  { "type": "WordBoundary", "offset": 38561250, "duration": 1179160, "text": "you" },
+  { "type": "WordBoundary", "offset": 39858330, "duration": 4481250, "text": "speak" },
+  { "type": "WordBoundary", "offset": 45047080, "duration": 2004580, "text": "into" },
+  { "type": "WordBoundary", "offset": 47170000, "duration": 1061250, "text": "the" },
+  { "type": "WordBoundary", "offset": 48349160, "duration": 3184160, "text": "words" },
+  { "type": "WordBoundary", "offset": 51650830, "duration": 943330, "text": "you" },
+  { "type": "WordBoundary", "offset": 52712080, "duration": 1650830, "text": "want" },
+  { "type": "WordBoundary", "offset": 54481250, "duration": 589580, "text": "to" },
+  { "type": "WordBoundary", "offset": 55188750, "duration": 2947910, "text": "write" }
+]

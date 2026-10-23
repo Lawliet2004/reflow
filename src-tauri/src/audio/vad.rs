@@ -50,11 +50,6 @@ impl VoiceActivityDetector {
         self.config.energy_threshold = 0.04 - clamped * 0.035;
     }
 
-    pub fn set_silence_timeout_ms(&mut self, timeout_ms: u64, sample_rate: u32) {
-        self.config.silence_timeout_ms = timeout_ms;
-        self.silence_timeout_samples = ((timeout_ms as f32 / 1000.0) * sample_rate as f32) as usize;
-    }
-
     /// Process a chunk of 16kHz mono audio samples.
     /// Returns: (is_voice_active, should_auto_stop, rms_level)
     pub fn process_chunk(&mut self, chunk: &[f32]) -> (bool, bool, f32) {

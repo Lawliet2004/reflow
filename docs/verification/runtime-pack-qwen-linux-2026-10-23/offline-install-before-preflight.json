@@ -1,0 +1,20 @@
+{
+  "broken_lazy_api_rejected": true,
+  "bytes": 308489808,
+  "cancelled_repair": "pass",
+  "corrupt_cache": "pass",
+  "missing_cache": "pass",
+  "model_downloads": 0,
+  "native_desktop_or_asr_acceptance": false,
+  "network_journal_entries": 0,
+  "offline_install_ms": 50825,
+  "offline_repair": "pass",
+  "pack_sha256": "548fabff5ba36aa7c279eb5e6bd136f54c0415b73d8e1710ec9382ac5ef85f53",
+  "profile": "qwen-cpu",
+  "target": "x86_64-unknown-linux-gnu",
+  "simulated_appimage_environment": true,
+  "invalid_inherited_pythonhome_cleared": true,
+  "invalid_original_pythonhome_cleared": true,
+  "complete_test_seconds": 119.38,
+  "checkpoint": "Before the later tmpfs/canonical-path preflight fix; final-source rerun follows."
+}

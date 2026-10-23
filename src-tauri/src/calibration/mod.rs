@@ -348,7 +348,8 @@ pub async fn run(
     }
     let _operation = ctx
         .session_operation
-        .try_lock()
+        .clone()
+        .try_lock_owned()
         .map_err(|_| "Finish the current operation before calibrating.")?;
     if !matches!(
         *ctx.state_enum.read(),
@@ -370,10 +371,11 @@ pub async fn run(
     };
     let settings = ctx.settings_store.get();
     let result = async {
-        let (health, samples) = crate::audio::preflight::capture_sample(
+        let (health, samples, _operation) = crate::audio::preflight::capture_sample_with_admission(
             &settings,
             seconds,
             Some(std::sync::Arc::clone(&ctx.last_audio_level)),
+            _operation,
         )
         .await?;
         if health.peak < 0.001 || health.dropped_chunks > 0 || health.clipped_pct > 5.0 {

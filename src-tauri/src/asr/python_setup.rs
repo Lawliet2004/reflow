@@ -7,25 +7,18 @@
 //! background thread; progress is streamed to the UI via
 //! `python-runtime:setup-progress` events.
 
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::context::AppContext;
 use crate::platform::PlatformSys;
-
-/// Pinned python-build-standalone release (>= 7 days old when chosen).
-/// CPython 3.12.15, `install_only` tar.gz — plain gzip so no zstd dependency.
-const PBS_TAG: &str = "20261003";
-const PBS_PYTHON_VERSION: &str = "3.12.15";
-/// ensurepip ships pip 25.0, which cannot resume interrupted wheel downloads.
-const PIP_VERSION: &str = "26.2.2";
 
 const RUNTIME_DIR_NAME: &str = "python-runtime";
 const BASE_DIR_NAME: &str = "python-base";
@@ -34,6 +27,7 @@ const PROGRESS_EVENT: &str = "python-runtime:setup-progress";
 /// Internal sentinel — a cancelled run reports `cancelled`, not `error`.
 const CANCELLED: &str = "python runtime setup cancelled";
 
+#[derive(Deserialize)]
 pub struct PythonBuildPin {
     pub target: &'static str,
     pub asset: &'static str,
@@ -42,46 +36,24 @@ pub struct PythonBuildPin {
     pub approx_bytes: u64,
 }
 
-const PINS: &[PythonBuildPin] = &[
-    PythonBuildPin {
-        target: "x86_64-unknown-linux-gnu",
-        asset: "cpython-3.12.15+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
-        url: "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
-        sha256: "f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5",
-        approx_bytes: 66_924_371,
-    },
-    PythonBuildPin {
-        target: "aarch64-unknown-linux-gnu",
-        asset: "cpython-3.12.15+20261003-aarch64-unknown-linux-gnu-install_only.tar.gz",
-        url: "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-unknown-linux-gnu-install_only.tar.gz",
-        sha256: "95c01982c9fcb9d95b0acfdb5eb8a6e0099dd11edf062314a474228d93f2b765",
-        approx_bytes: 52_330_698,
-    },
-    PythonBuildPin {
-        target: "x86_64-apple-darwin",
-        asset: "cpython-3.12.15+20261003-x86_64-apple-darwin-install_only.tar.gz",
-        url: "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-apple-darwin-install_only.tar.gz",
-        sha256: "a8fd7a91852f19b6d959793ef41fad048631ccb2a334a9ecdf573255298f7978",
-        approx_bytes: 24_850_741,
-    },
-    PythonBuildPin {
-        target: "aarch64-apple-darwin",
-        asset: "cpython-3.12.15+20261003-aarch64-apple-darwin-install_only.tar.gz",
-        url: "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-apple-darwin-install_only.tar.gz",
-        sha256: "316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213",
-        approx_bytes: 25_146_462,
-    },
-    PythonBuildPin {
-        target: "x86_64-pc-windows-msvc",
-        asset: "cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz",
-        url: "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-pc-windows-msvc-install_only.tar.gz",
-        sha256: "4b6f0beebbb695a0f3ea237b8c3eaa5bd424f47a7bc25b2fbe3a43390c770f08",
-        approx_bytes: 46_509_797,
-    },
-];
+#[derive(Deserialize)]
+struct PythonBuilds {
+    pbs_tag: &'static str,
+    python_version: &'static str,
+    pip_version: &'static str,
+    pins: Vec<PythonBuildPin>,
+}
+
+fn python_builds() -> &'static PythonBuilds {
+    static BUILDS: std::sync::OnceLock<PythonBuilds> = std::sync::OnceLock::new();
+    BUILDS.get_or_init(|| {
+        serde_json::from_str(include_str!("../../../model-runtime/python-builds.json"))
+            .expect("checked-in Python build pins must be valid")
+    })
+}
 
 pub(crate) fn pin_for(target: &str) -> Option<&'static PythonBuildPin> {
-    PINS.iter().find(|pin| pin.target == target)
+    python_builds().pins.iter().find(|pin| pin.target == target)
 }
 
 pub(crate) fn target_triple() -> &'static str {
@@ -163,6 +135,7 @@ pub(crate) fn torch_variant(target: &str, nvidia_present: bool) -> TorchVariant 
 /// Extract `X.Y.Z` from a `name==X.Y.Z` pin line in requirements.txt. The
 /// managed environment installs torch from a platform index first, so the
 /// `-r` install later treats it as already satisfied.
+#[cfg(test)]
 pub(crate) fn pinned_version(requirements: &str, package: &str) -> Option<String> {
     let prefix = format!("{package}==");
     requirements.lines().map(str::trim).find_map(|line| {
@@ -176,6 +149,7 @@ pub(crate) fn pinned_version(requirements: &str, package: &str) -> Option<String
     })
 }
 
+#[cfg(test)]
 pub(crate) fn torch_version(requirements: &str) -> Option<String> {
     pinned_version(requirements, "torch")
 }
@@ -259,6 +233,14 @@ pub struct RuntimeReceipt {
     pub python_version: String,
     pub torch_variant: String,
     pub created_at: String,
+    #[serde(default)]
+    pub requirements_digest: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_pack_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,6 +253,7 @@ pub struct PythonRuntimeStatus {
     /// managed setup is pointless in that configuration.
     pub overridden: bool,
     pub setting_up: bool,
+    pub progress: Option<SetupProgressEvent>,
     /// Some interpreter `find_python` can already run (managed or otherwise).
     pub python_available: bool,
     /// Bytes reclaimable by `remove_python_runtime` (runtime + base dirs).
@@ -284,6 +267,10 @@ pub struct PythonRuntimeStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SetupProgressEvent {
+    pub attempt_id: String,
+    pub revision: u64,
+    pub model: String,
+    pub device: String,
     pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress_pct: Option<u32>,
@@ -293,29 +280,70 @@ pub struct SetupProgressEvent {
     pub error: Option<String>,
 }
 
+fn update_progress(
+    attempt_id: &str,
+    phase: &str,
+    progress_pct: Option<u32>,
+    detail: Option<String>,
+    error: Option<String>,
+) -> Option<SetupProgressEvent> {
+    let mut snapshot = SETUP_PROGRESS.lock().unwrap();
+    let progress = snapshot
+        .as_mut()
+        .filter(|progress| progress.attempt_id == attempt_id)?;
+    if matches!(progress.phase.as_str(), "complete" | "error" | "cancelled") {
+        return None;
+    }
+    progress.revision = progress.revision.saturating_add(1);
+    progress.phase = phase.into();
+    progress.progress_pct = progress_pct;
+    progress.detail = detail;
+    progress.error = error;
+    if matches!(phase, "complete" | "error" | "cancelled") {
+        SETUP_ACTIVE.store(false, Ordering::SeqCst);
+    }
+    Some(progress.clone())
+}
+
 fn emit_progress(
     app: &AppHandle,
+    attempt_id: &str,
     phase: &str,
     progress_pct: Option<u32>,
     detail: Option<String>,
     error: Option<String>,
 ) {
-    let _ = app.emit(
-        PROGRESS_EVENT,
-        SetupProgressEvent {
-            phase: phase.to_string(),
-            progress_pct,
-            detail,
-            error,
-        },
-    );
+    if let Some(progress) = update_progress(attempt_id, phase, progress_pct, detail, error) {
+        let _ = app.emit(PROGRESS_EVENT, progress);
+    }
 }
 
+fn claim_setup(model: &str, device: &str) -> Result<String, String> {
+    let mut snapshot = SETUP_PROGRESS.lock().unwrap();
+    if SETUP_ACTIVE.swap(true, Ordering::SeqCst) {
+        return Err("Speech runtime setup is already in progress.".into());
+    }
+    SETUP_CANCEL.store(false, Ordering::SeqCst);
+    let attempt_id = uuid::Uuid::new_v4().to_string();
+    let revision = snapshot
+        .as_ref()
+        .map_or(1, |previous| previous.revision.saturating_add(1));
+    *snapshot = Some(SetupProgressEvent {
+        attempt_id: attempt_id.clone(),
+        revision,
+        model: model.into(),
+        device: device.into(),
+        phase: "downloading".into(),
+        progress_pct: None,
+        detail: None,
+        error: None,
+    });
+    Ok(attempt_id)
+}
+
+static SETUP_PROGRESS: Mutex<Option<SetupProgressEvent>> = Mutex::new(None);
 static SETUP_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SETUP_CANCEL: AtomicBool = AtomicBool::new(false);
-/// Set once the worker deletes the previous `python-runtime` — only then is
-/// the runtime dir this attempt's to clean up on failure/cancel.
-static SETUP_CLAIMED_RUNTIME: AtomicBool = AtomicBool::new(false);
 /// The currently spawned child (venv/pip) so Cancel can kill it mid-run.
 static SETUP_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 
@@ -324,6 +352,88 @@ fn cancelled() -> Result<(), String> {
         Err(CANCELLED.to_string())
     } else {
         Ok(())
+    }
+}
+
+fn begin_activation(emit: SetupEmit) -> Result<(), String> {
+    {
+        // Cancellation and activation share the progress lock: whichever wins
+        // first determines whether the verified pointer may be committed.
+        let mut snapshot = SETUP_PROGRESS.lock().unwrap();
+        cancelled()?;
+        if SETUP_ACTIVE.load(Ordering::SeqCst) {
+            if let Some(progress) = snapshot.as_mut() {
+                progress.phase = "activating".into();
+                progress.revision = progress.revision.saturating_add(1);
+            }
+        }
+    }
+    emit("activating", Some(100), None, None);
+    Ok(())
+}
+
+/// A single atomic pointer selects an immutable base/venv pair. Never move a
+/// venv: its interpreter links, pyvenv.cfg and entrypoints contain absolute paths.
+pub(crate) fn managed_runtime_dir(app_dir: &Path) -> PathBuf {
+    std::fs::read_to_string(app_dir.join("python-active"))
+        .ok()
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .map(|id| app_dir.join("python-generations").join(id).join("runtime"))
+        .unwrap_or_else(|| app_dir.join(RUNTIME_DIR_NAME))
+}
+
+fn promote_generation(app_dir: &Path, id: &str) -> Result<(), String> {
+    crate::platform::persistence::write_atomic(&app_dir.join("python-active"), id.as_bytes())
+        .map_err(|e| format!("Could not activate verified speech runtime: {e}"))
+}
+
+pub(crate) fn dependency_profile(model: &str) -> &'static str {
+    match model {
+        "zipformer-20m" => "zipformer",
+        "phonon-2" => "phonon",
+        _ => "qwen",
+    }
+}
+
+fn requirements_digest(profile: &str, variant: TorchVariant) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(include_bytes!("../../../model-runtime/requirements.txt"));
+    digest.update(include_bytes!(
+        "../../../model-runtime/requirements-phonon.txt"
+    ));
+    digest.update(include_bytes!(
+        "../../../model-runtime/requirements-zipformer.txt"
+    ));
+    digest.update(include_bytes!("../../../model-runtime/managed_pip.py"));
+    digest.update(
+        super::dependency_locks::locked_requirements(
+            target_triple(),
+            profile,
+            variant.receipt_name(),
+        )
+        .unwrap_or("unsupported"),
+    );
+    digest.update(include_bytes!("../../../model-runtime/locks/pip.txt"));
+    digest.update(format!(
+        "{profile}:{}:{}:v2",
+        variant.receipt_name(),
+        python_builds().pip_version
+    ));
+    format!("{:x}", digest.finalize())
+}
+
+pub(crate) fn variant_for(
+    model: &str,
+    device: &str,
+    caps: &crate::capability::Capabilities,
+) -> TorchVariant {
+    if model == "zipformer-20m" {
+        TorchVariant::None_
+    } else if device == "cpu" {
+        torch_variant(target_triple(), false)
+    } else {
+        resolved_torch_variant_for(caps)
     }
 }
 
@@ -345,9 +455,58 @@ fn runtime_overridden(ctx: &AppContext) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn verify_installed_versions(interpreter: &Path, profile: &str, variant: TorchVariant) -> bool {
+    let Some(locked) = super::dependency_locks::locked_requirements(
+        target_triple(),
+        profile,
+        variant.receipt_name(),
+    ) else {
+        return false;
+    };
+    let pins: Vec<_> = locked
+        .lines()
+        .filter_map(|line| {
+            let (name, version) = line.split_once("==")?;
+            Some((name.trim(), version.trim().trim_end_matches('\\').trim()))
+        })
+        .collect();
+    let Ok(pins) = serde_json::to_string(&pins) else {
+        return false;
+    };
+    let prefix = serde_json::to_string(
+        &interpreter
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap_or(interpreter)
+            .to_string_lossy(),
+    )
+    .unwrap_or_default();
+    let code = format!("import importlib.metadata as m, json, sys, os; assert os.path.realpath(sys.prefix) == os.path.realpath({prefix}); pins=json.loads({pins:?}); assert all(m.version(name) == version for name,version in pins); print('ready')");
+    super::sidecar::Qwen3AsrSidecar::bounded_python_probe(&interpreter.to_string_lossy(), &code)
+        .is_some()
+}
+
+fn receipt_matches(receipt: &RuntimeReceipt, profile: &str, variant: TorchVariant) -> bool {
+    receipt.target == target_triple()
+        && receipt.profile == profile
+        && receipt.requirements_digest == requirements_digest(profile, variant)
+        && receipt.pbs_tag == python_builds().pbs_tag
+        && receipt.torch_variant == variant.receipt_name()
+}
+
 pub fn runtime_status(ctx: &AppContext) -> PythonRuntimeStatus {
+    runtime_status_for(ctx, None)
+}
+
+/// Progress polling must not probe Python or walk an environment being installed.
+#[tauri::command]
+pub fn get_python_setup_progress() -> Option<SetupProgressEvent> {
+    SETUP_PROGRESS.lock().unwrap().clone()
+}
+
+fn runtime_status_for(ctx: &AppContext, model: Option<&str>) -> PythonRuntimeStatus {
     let app_dir = PlatformSys::get_app_dir();
-    let runtime_dir = app_dir.join(RUNTIME_DIR_NAME);
+    let runtime_dir = managed_runtime_dir(&app_dir);
     let interpreter = runtime_dir.join(if cfg!(windows) {
         "Scripts\\python.exe"
     } else {
@@ -355,14 +514,42 @@ pub fn runtime_status(ctx: &AppContext) -> PythonRuntimeStatus {
     });
     let receipt = read_receipt(&runtime_dir);
     let overridden = runtime_overridden(ctx);
+    let mut settings = ctx.settings_store.get();
+    if let Some(model) = model {
+        settings.asr.model = model.into();
+    }
+    let profile = dependency_profile(&settings.asr.model);
+    let variant = variant_for(
+        &settings.asr.model,
+        &settings.asr.device,
+        &crate::capability::capabilities(),
+    );
+    let ready = receipt
+        .as_ref()
+        .is_some_and(|r| receipt_matches(r, profile, variant));
+    let managed_installed = !overridden
+        && interpreter.exists()
+        && ready
+        && verify_installed_versions(&interpreter, profile, variant);
+    let python_available = crate::asr::sidecar::Qwen3AsrSidecar::find_python().is_some();
+    let size_bytes = dir_size(&app_dir.join(RUNTIME_DIR_NAME))
+        + dir_size(&app_dir.join(BASE_DIR_NAME))
+        + dir_size(&app_dir.join("python-generations"));
+    // Python probes and directory scans can outlast an entire setup transition.
+    // Capture the job state after them, so the reply cannot retain a pre-probe phase.
+    let (setting_up, progress) = {
+        let snapshot = SETUP_PROGRESS.lock().unwrap();
+        (SETUP_ACTIVE.load(Ordering::SeqCst), snapshot.clone())
+    };
     PythonRuntimeStatus {
-        managed_installed: interpreter.exists() && receipt.is_some(),
+        managed_installed,
         receipt,
         overridden,
-        setting_up: SETUP_ACTIVE.load(Ordering::SeqCst),
-        python_available: crate::asr::sidecar::Qwen3AsrSidecar::find_python().is_some(),
-        size_bytes: dir_size(&runtime_dir) + dir_size(&app_dir.join(BASE_DIR_NAME)),
-        torch_variant: resolved_torch_variant().receipt_name().to_string(),
+        setting_up,
+        progress,
+        python_available,
+        size_bytes,
+        torch_variant: variant.receipt_name().to_string(),
     }
 }
 
@@ -376,6 +563,102 @@ pub async fn get_python_runtime_status(
         .map_err(|error| format!("Could not check speech dependencies: {error}"))
 }
 
+/// Exercise libraries without loading or downloading any model weights. The
+/// caller owns session admission so removal/setup cannot replace the interpreter.
+pub(crate) fn verify_speech_runtime_inner(
+    ctx: &AppContext,
+    model: Option<&str>,
+) -> Result<(), String> {
+    if !matches!(
+        *ctx.state_enum.read(),
+        crate::state::AppStateEnum::Ready
+            | crate::state::AppStateEnum::Idle
+            | crate::state::AppStateEnum::Error
+    ) {
+        return Err("Finish dictation before checking speech dependencies.".into());
+    }
+    if SETUP_ACTIVE.load(Ordering::SeqCst) {
+        return Err("Speech dependency setup is still running. Wait for it to finish.".into());
+    }
+    let settings = ctx.settings_store.get().asr;
+    if settings.runtime != "python" {
+        return Err("The selected speech engine does not use Python.".into());
+    }
+    let status = runtime_status_for(ctx, model);
+    if !status.overridden && !status.managed_installed {
+        return Err(
+            "Install or repair speech dependencies before downloading a speech model.".into(),
+        );
+    }
+    let python = super::sidecar::Qwen3AsrSidecar::find_python()
+        .ok_or("The selected Python interpreter could not start. Check it in Model settings.")?;
+    let model = model.unwrap_or(&settings.model);
+    let variant = variant_for(model, &settings.device, &crate::capability::capabilities());
+    let quantized = matches!(settings.precision.as_str(), "auto" | "int4" | "int8")
+        && matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy);
+    let imports = verification_code(dependency_profile(model), variant, quantized);
+    // Report bounded diagnostics on stdout, including import/kernel failures.
+    // The probe deadline covers a hung native import as well as interpreter startup.
+    let code = format!(
+        "import json\ntry:\n exec({imports:?})\n print('REFLOW_HEALTH:'+json.dumps({{'ok':True}}))\nexcept Exception as e:\n print('REFLOW_HEALTH:'+json.dumps({{'error':type(e).__name__+': '+str(e)[:1000]}}))"
+    );
+    let output = super::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
+        &python,
+        &code,
+        std::time::Duration::from_secs(30),
+    )
+    .ok_or("The speech dependency check failed or exceeded 30 seconds. Repair dependencies or select another Python interpreter.")?;
+    let health = String::from_utf8_lossy(&output)
+        .lines()
+        .filter_map(|line| line.strip_prefix("REFLOW_HEALTH:"))
+        .next_back()
+        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .ok_or("The speech dependency check did not return a valid result.")?;
+    if health.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(format!(
+            "Speech dependencies could not run: {}. Repair the environment, or select CPU in Model settings if a graphics check failed.",
+            health.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error")
+        ));
+    }
+    if ctx.settings_store.get().asr != settings {
+        return Err("Speech settings changed during the dependency check. Check again.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn verify_speech_runtime(ctx: State<'_, AppContext>) -> Result<(), String> {
+    let context = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = context
+            .session_operation
+            .try_lock()
+            .map_err(|_| "Finish the current operation before checking speech dependencies.")?;
+        verify_speech_runtime_inner(&context, None)
+    })
+    .await
+    .map_err(|error| format!("Could not check speech dependencies: {error}"))?
+}
+
+fn verification_code(profile: &str, variant: TorchVariant, quantized: bool) -> String {
+    let imports = match profile {
+        "zipformer" => "import numpy, sherpa_onnx, httpx, huggingface_hub; assert numpy.ones(1).sum() == 1",
+        "phonon" => "import numpy, torch, fermion, scipy, soundfile, safetensors, zstandard, httpx, huggingface_hub; from fermion._speech import engine_phonon2_cpu; from transformers import ParakeetForTDT, ParakeetTDTConfig; assert torch.ones(1).sum().item() == 1",
+        _ => "import numpy, torch, transformers, huggingface_hub, httpx; from transformers import AutoProcessor, AutoModelForMultimodalLM, Qwen3ASRProcessor, Qwen3ASRForConditionalGeneration; assert torch.ones(1).sum().item() == 1",
+    };
+    let quantization = if profile == "qwen" && quantized {
+        "; import torchao, accelerate; from torchao.quantization import Int4WeightOnlyConfig, Int8WeightOnlyConfig; from transformers import TorchAoConfig"
+    } else {
+        ""
+    };
+    let gpu = if matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy) {
+        "; assert torch.cuda.is_available(), 'GPU unavailable; update your graphics driver'; x = torch.ones(1, device='cuda:0'); assert x.sum().item() == 1; torch.cuda.synchronize()"
+    } else {
+        ""
+    };
+    format!("{imports}{quantization}{gpu}")
+}
+
 #[tauri::command]
 pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Result<(), String> {
     if runtime_overridden(ctx.inner()) {
@@ -384,11 +667,8 @@ pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Resul
                 .into(),
         );
     }
-    if SETUP_ACTIVE.swap(true, Ordering::SeqCst) {
-        return Err("Speech runtime setup is already in progress.".to_string());
-    }
-    SETUP_CANCEL.store(false, Ordering::SeqCst);
-    SETUP_CLAIMED_RUNTIME.store(false, Ordering::SeqCst);
+    let selection = ctx.settings_store.get().asr;
+    let attempt_id = claim_setup(&selection.model, &selection.device)?;
     let app_clone = app.clone();
     let ctx_clone = ctx.inner().clone();
     std::thread::spawn(move || {
@@ -397,7 +677,7 @@ pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Resul
                     progress_pct: Option<u32>,
                     detail: Option<String>,
                     error: Option<String>| {
-            emit_progress(&app_clone, phase, progress_pct, detail, error);
+            emit_progress(&app_clone, &attempt_id, phase, progress_pct, detail, error);
         };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _operation = ctx_clone.session_operation.try_lock().map_err(|_| {
@@ -405,7 +685,9 @@ pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Resul
             })?;
             if !matches!(
                 *ctx_clone.state_enum.read(),
-                crate::state::AppStateEnum::Ready | crate::state::AppStateEnum::Idle
+                crate::state::AppStateEnum::Ready
+                    | crate::state::AppStateEnum::Idle
+                    | crate::state::AppStateEnum::Error
             ) {
                 return Err(
                     "Finish the current dictation before setting up speech dependencies.".into(),
@@ -416,14 +698,19 @@ pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Resul
             ctx_clone
                 .asr_handle
                 .shutdown_blocking(std::time::Duration::from_secs(10))?;
-            run_setup_worker(&emit, resource_dir.as_deref())
+            run_setup_worker_for(
+                &emit,
+                resource_dir.as_deref(),
+                &selection.model,
+                &selection.device,
+            )
         }))
         .unwrap_or_else(|panic| Err(setup_panic_error(panic)));
         // Order matters: clean up anything this attempt built, release the
         // setting_up flag, THEN publish the terminal event — a UI status
         // refetch triggered by the event must never observe setting_up=true.
         if let Some(mut child) = SETUP_CHILD.lock().unwrap().take() {
-            let _ = child.kill();
+            kill_setup_tree(&mut child);
         }
         match outcome {
             Ok(()) => {
@@ -440,37 +727,13 @@ pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Resul
                         log::warn!("Runtime installed; speech model reload deferred: {error}");
                     }
                 }
-                SETUP_CLAIMED_RUNTIME.store(false, Ordering::SeqCst);
-                SETUP_ACTIVE.store(false, Ordering::SeqCst);
-                emit_progress(&app_clone, "complete", Some(100), None, None);
+                emit_progress(&app_clone, &attempt_id, "complete", Some(100), None, None);
             }
             Err(err) if err == CANCELLED => {
-                // A killed child leaves a half-built venv — never let it be
-                // mistaken for a working interpreter. Only the runtime dir is
-                // removed when this attempt actually replaced it; a cancel
-                // before stage 3 leaves a pre-existing install intact.
-                if SETUP_CLAIMED_RUNTIME.load(Ordering::SeqCst) {
-                    if let Err(cleanup) =
-                        remove_managed_dir(&PlatformSys::get_app_dir().join(RUNTIME_DIR_NAME))
-                    {
-                        log::warn!("Could not clean up cancelled runtime setup: {cleanup}");
-                    }
-                }
-                SETUP_CLAIMED_RUNTIME.store(false, Ordering::SeqCst);
-                SETUP_ACTIVE.store(false, Ordering::SeqCst);
-                emit_progress(&app_clone, "cancelled", None, None, None);
+                emit_progress(&app_clone, &attempt_id, "cancelled", None, None, None);
             }
             Err(err) => {
-                if SETUP_CLAIMED_RUNTIME.load(Ordering::SeqCst) {
-                    if let Err(cleanup) =
-                        remove_managed_dir(&PlatformSys::get_app_dir().join(RUNTIME_DIR_NAME))
-                    {
-                        log::warn!("Could not clean up failed runtime setup: {cleanup}");
-                    }
-                }
-                SETUP_CLAIMED_RUNTIME.store(false, Ordering::SeqCst);
-                SETUP_ACTIVE.store(false, Ordering::SeqCst);
-                emit_progress(&app_clone, "error", None, None, Some(err));
+                emit_progress(&app_clone, &attempt_id, "error", None, None, Some(err));
             }
         }
     });
@@ -479,7 +742,7 @@ pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Resul
 
 /// Kill the in-flight setup child *and* its children. pip spawns console
 /// helpers; killing only the direct child leaves them downloading.
-fn kill_setup_tree(child: &mut Child) {
+pub(super) fn kill_setup_tree(child: &mut Child) {
     #[cfg(windows)]
     {
         // No Job Object (Win32_System_JobObjects isn't enabled) — taskkill's
@@ -493,19 +756,37 @@ fn kill_setup_tree(child: &mut Child) {
     }
     #[cfg(unix)]
     {
-        // Spawned with process_group(0) — kill the whole group. The `--`
-        // separator is required by util-linux kill, which would otherwise
-        // parse `-<pgid>` as options.
-        let _ = Command::new("kill")
-            .args(["-KILL", "--", &format!("-{}", child.id())])
-            .output();
+        // process_group(0) gives this child its own group on Linux and macOS.
+        // Signal it directly; external kill utilities have differing options.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
     }
     let _ = child.kill();
     let _ = child.wait();
 }
 
 #[tauri::command]
-pub fn cancel_python_runtime_setup() -> Result<(), String> {
+pub fn cancel_python_runtime_setup(attempt_id: Option<String>) -> Result<(), String> {
+    let snapshot = SETUP_PROGRESS.lock().unwrap();
+    if attempt_id.as_ref().is_some_and(|id| {
+        !snapshot
+            .as_ref()
+            .is_some_and(|progress| &progress.attempt_id == id)
+    }) {
+        return Err("That speech setup attempt has already ended; refresh its status.".into());
+    }
+    if !SETUP_ACTIVE.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    if snapshot
+        .as_ref()
+        .is_some_and(|progress| progress.phase == "activating")
+    {
+        return Err(
+            "The verified speech runtime is being activated. Wait for setup to finish.".into(),
+        );
+    }
     SETUP_CANCEL.store(true, Ordering::SeqCst);
     // Kill in place: the worker still needs the Child slot to wait() the
     // exit status and observe the cancelled flag itself.
@@ -526,6 +807,10 @@ pub fn teardown_on_exit() {
 
 #[tauri::command]
 pub fn remove_python_runtime(ctx: State<'_, AppContext>) -> Result<u64, String> {
+    let _operation = ctx
+        .session_operation
+        .try_lock()
+        .map_err(|_| "Finish the current operation before removing the speech runtime.")?;
     if SETUP_ACTIVE.load(Ordering::SeqCst) {
         return Err("Speech runtime setup is in progress. Cancel it first.".into());
     }
@@ -540,7 +825,9 @@ pub fn remove_python_runtime(ctx: State<'_, AppContext>) -> Result<u64, String> 
         return Err("Finish the current dictation before removing the speech runtime.".into());
     }
     let app_dir = PlatformSys::get_app_dir();
-    let freed = dir_size(&app_dir.join(RUNTIME_DIR_NAME)) + dir_size(&app_dir.join(BASE_DIR_NAME));
+    let freed = dir_size(&app_dir.join(RUNTIME_DIR_NAME))
+        + dir_size(&app_dir.join(BASE_DIR_NAME))
+        + dir_size(&app_dir.join("python-generations"));
     // Stop the sidecar first: unload kills the child process and waits for
     // it to exit — on Windows the interpreter's exes/DLLs are locked while
     // the process lives, so deleting first would fail or half-delete.
@@ -549,16 +836,16 @@ pub fn remove_python_runtime(ctx: State<'_, AppContext>) -> Result<u64, String> 
         .map_err(|error| format!("Could not stop the speech runtime: {error}"))?;
     remove_managed_dir(&app_dir.join(RUNTIME_DIR_NAME))?;
     remove_managed_dir(&app_dir.join(BASE_DIR_NAME))?;
+    remove_managed_dir(&app_dir.join("python-generations"))?;
+    if app_dir.join("python-active").exists() {
+        std::fs::remove_file(app_dir.join("python-active")).map_err(|e| e.to_string())?;
+    }
     Ok(freed)
 }
 
 /// The variant this machine would install — the worker's actual decision,
 /// shared with `runtime_status` so the UI can describe the right package set.
 /// `REFLOW_TORCH_VARIANT` forces the wheel flavor (testing, debugging).
-pub(crate) fn resolved_torch_variant() -> TorchVariant {
-    resolved_torch_variant_for(&crate::capability::capabilities())
-}
-
 pub(crate) fn resolved_torch_variant_for(caps: &crate::capability::Capabilities) -> TorchVariant {
     match std::env::var("REFLOW_TORCH_VARIANT").as_deref() {
         Ok("cu130") => TorchVariant::Cuda,
@@ -641,8 +928,26 @@ fn setup_command_error(phase: &str, status: std::process::ExitStatus, detail: &s
 /// running Tauri app.
 type SetupEmit<'a> = &'a dyn Fn(&str, Option<u32>, Option<String>, Option<String>);
 
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn run_setup_worker(emit: SetupEmit, resource_dir: Option<&Path>) -> Result<(), String> {
-    crate::network_policy::check_download()?;
+    run_setup_worker_for(emit, resource_dir, "0.6b", "auto")
+}
+
+fn run_setup_worker_for(
+    emit: SetupEmit,
+    _resource_dir: Option<&Path>,
+    model: &str,
+    device: &str,
+) -> Result<(), String> {
+    run_setup_worker_from_pack(emit, model, device, None)
+}
+
+fn run_setup_worker_from_pack(
+    emit: SetupEmit,
+    model: &str,
+    device: &str,
+    pack_override: Option<super::runtime_pack::RuntimePackPin>,
+) -> Result<(), String> {
     cancelled()?;
 
     let app_dir = PlatformSys::get_app_dir();
@@ -651,8 +956,34 @@ pub(crate) fn run_setup_worker(emit: SetupEmit, resource_dir: Option<&Path>) -> 
     #[cfg(windows)]
     check_long_paths(&app_dir)?;
 
-    let variant = resolved_torch_variant();
-    let estimate = super::setup_plan::disk_estimate(variant);
+    let variant = variant_for(model, device, &crate::capability::capabilities_uncached());
+    super::setup_plan::platform_compatibility(variant)?;
+    if device == "cuda" && !matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy) {
+        return Err("GPU only requires a supported NVIDIA GPU and driver. Choose Auto or CPU, or update your driver.".into());
+    }
+    let locked = super::dependency_locks::locked_requirements(target_triple(), dependency_profile(model), variant.receipt_name()).ok_or("No verified binary dependency set for this platform and device. Select Zipformer 20M or CPU.")?;
+    let pack = match pack_override {
+        Some(pack) => Some(pack),
+        None => super::runtime_pack::selected(
+            target_triple(),
+            dependency_profile(model),
+            variant.receipt_name(),
+        )?,
+    };
+    if pack.as_ref().is_some_and(|pack| {
+        pack.target != target_triple()
+            || pack.profile != dependency_profile(model)
+            || pack.variant != variant.receipt_name()
+    }) {
+        return Err("The runtime pack does not match the selected speech configuration.".into());
+    }
+    if pack.is_none() {
+        crate::network_policy::check_download()?;
+    }
+    let estimate = super::setup_plan::peak_disk_estimate(variant, model).saturating_add(
+        pack.as_ref()
+            .map_or(0, |pack| pack.unpacked_bytes.saturating_add(pack.bytes)),
+    );
     crate::network_policy::check_disk_space(&app_dir, estimate)?;
 
     let pin = pin_for(target_triple()).ok_or_else(|| {
@@ -662,37 +993,73 @@ pub(crate) fn run_setup_worker(emit: SetupEmit, resource_dir: Option<&Path>) -> 
         )
     })?;
 
-    // Stage 1: download + verify the interpreter archive.
+    // Release builds fetch one complete reviewed pack. The index-based path is
+    // retained for development builds with the intentionally empty catalog.
     let cache_dir = PlatformSys::get_cache_dir();
     std::fs::create_dir_all(&cache_dir)
         .map_err(|e| format!("Could not create download cache dir: {e}"))?;
-    let partial = cache_dir.join(format!("{}.partial", pin.asset));
-    let archive = cache_dir.join(pin.asset);
-    download_archive(emit, pin, &partial, &archive)?;
+    crate::network_policy::check_disk_space(&cache_dir, estimate)?;
+    let archive = if let Some(pack) = &pack {
+        let archive = cache_dir.join(&pack.asset);
+        let partial = cache_dir.join(format!("{}.partial", pack.asset));
+        crate::network_policy::fetch_verified_blocking(
+            crate::network_policy::ArtifactDownload {
+                url: &pack.url,
+                sha256: &pack.sha256,
+                exact_bytes: Some(pack.bytes),
+                partial: &partial,
+                destination: &archive,
+            },
+            &SETUP_CANCEL,
+            |progress| {
+                emit(
+                    if progress.phase == "downloading" {
+                        "downloading"
+                    } else {
+                        "verifying"
+                    },
+                    progress.total.map(|total| {
+                        (progress.bytes as u128 * 100 / total.max(1) as u128).min(100) as u32
+                    }),
+                    Some("Preparing the speech runtime pack".into()),
+                    None,
+                )
+            },
+        )
+        .map_err(|error| {
+            if SETUP_CANCEL.load(Ordering::Acquire) {
+                CANCELLED.into()
+            } else {
+                error
+            }
+        })?;
+        archive
+    } else {
+        let partial = cache_dir.join(format!("{}.partial", pin.asset));
+        let archive = cache_dir.join(pin.asset);
+        download_archive(emit, pin, &partial, &archive)?;
+        archive
+    };
     cancelled()?;
-    crate::rewrite::runtime_install::verify_sha256(&archive, pin.sha256)?;
 
-    // Stage 2: extract the `python/` tree into python-base via a staging dir.
+    // New generation paths are final from birth; only the tiny pointer changes
+    // after verification. Failed/interrupted generations never shadow the old one.
+    let generation = uuid::Uuid::new_v4().to_string();
+    let generation_dir = app_dir.join("python-generations").join(&generation);
+    let base_dir = generation_dir.join("base");
+    let runtime_dir = generation_dir.join("runtime");
+    let payload_dir = generation_dir.join("payload");
+    std::fs::create_dir_all(&base_dir).map_err(|e| e.to_string())?;
+    let _cleanup = GenerationCleanup(generation_dir.clone(), app_dir.clone());
     emit("extracting", None, None, None);
-    let staging = app_dir.join(format!("{BASE_DIR_NAME}.staging"));
-    let base_dir = app_dir.join(BASE_DIR_NAME);
-    remove_managed_dir(&staging)?;
-    std::fs::create_dir_all(&staging)
-        .map_err(|e| format!("Could not create extract staging dir: {e}"))?;
-    extract_archive(&archive, &staging)?;
-    remove_managed_dir(&base_dir)?;
-    std::fs::rename(&staging, &base_dir)
-        .map_err(|e| format!("Could not move the extracted Python into place: {e}"))?;
+    if let Some(pack) = &pack {
+        super::runtime_pack::unpack(pack, &archive, &payload_dir, &SETUP_CANCEL)?;
+        extract_archive(&payload_dir.join("bootstrap").join(pin.asset), &base_dir)?;
+    } else {
+        extract_archive(&archive, &base_dir)?;
+    }
     cancelled()?;
-
-    // Stage 3: create the venv the sidecar discovers as python-runtime.
     emit("creating_env", None, None, None);
-    let runtime_dir = app_dir.join(RUNTIME_DIR_NAME);
-    // Only now does this attempt own the runtime directory — failures or
-    // cancels before this point must leave a previously installed
-    // python-runtime alone.
-    remove_managed_dir(&runtime_dir)?;
-    SETUP_CLAIMED_RUNTIME.store(true, Ordering::SeqCst);
     let base_python = base_dir.join("python").join(if cfg!(windows) {
         "python.exe"
     } else {
@@ -707,6 +1074,7 @@ pub(crate) fn run_setup_worker(emit: SetupEmit, resource_dir: Option<&Path>) -> 
             "venv".to_string(),
             runtime_dir.to_string_lossy().into_owned(),
         ],
+        false,
     )?;
     cancelled()?;
 
@@ -715,119 +1083,163 @@ pub(crate) fn run_setup_worker(emit: SetupEmit, resource_dir: Option<&Path>) -> 
     } else {
         "bin/python"
     });
-    // Upgrade the isolated venv's old ensurepip before large downloads.
-    // pip >=25.1 can resume an interrupted wheel instead of discarding it.
+    // Install the pinned pip before the selected speech packages.
     emit(
         "creating_env",
         None,
-        Some("Preparing resumable downloads".into()),
+        Some("Preparing speech libraries".into()),
         None,
     );
     let mut bootstrap_args = pip_install_args(&cache_dir.join("pip"), false);
-    bootstrap_args.extend(["--upgrade".into(), format!("pip=={PIP_VERSION}")]);
-    run_setup_command(emit, "creating_env", &venv_python, &bootstrap_args)?;
-    let install_args = pip_install_args(&cache_dir.join("pip"), true);
+    let bootstrap_path = generation_dir.join("pip-requirements.txt");
+    std::fs::write(
+        &bootstrap_path,
+        include_bytes!("../../../model-runtime/locks/pip.txt"),
+    )
+    .map_err(|e| e.to_string())?;
+    bootstrap_args.extend([
+        "--upgrade".into(),
+        "--require-hashes".into(),
+        "-r".into(),
+        bootstrap_path.to_string_lossy().into_owned(),
+    ]);
+    if pack.is_some() {
+        bootstrap_args.extend(local_wheel_args(&payload_dir));
+    }
+    run_setup_command(
+        emit,
+        "creating_env",
+        &venv_python,
+        &bootstrap_args,
+        pack.is_none(),
+    )?;
+    let mut install_args = pip_install_args(&cache_dir.join("pip"), true);
+    if pack.is_some() {
+        install_args.extend(local_wheel_args(&payload_dir));
+    }
     cancelled()?;
 
-    // Stage 4: torch from the platform index so NVIDIA machines get CUDA
-    // wheels and everyone else gets the far smaller CPU build.
-    let requirements = crate::asr::sidecar::Qwen3AsrSidecar::find_runtime_script(resource_dir)
-        .map(|script| script.with_file_name("requirements.txt"))
-        .filter(|path| path.exists());
-    let requirements =
-        requirements.ok_or("Could not locate the bundled model-runtime/requirements.txt")?;
-    let requirements_text = std::fs::read_to_string(&requirements)
-        .map_err(|e| format!("Could not read requirements.txt: {e}"))?;
-    if variant != TorchVariant::None_ {
-        crate::network_policy::check_download()
-            .map_err(|_| "Downloads were turned off before the torch stage.".to_string())?;
-        if let Some(version) = torch_version(&requirements_text) {
-            emit("installing_torch", None, None, None);
-            let mut args = install_args.clone();
-            args.push(format!("torch=={version}"));
-            if let Some(index) = variant.index_url() {
-                args.push("--index-url".to_string());
-                args.push(index.to_string());
-            }
-            run_setup_command(emit, "installing_torch", &venv_python, &args)?;
-            cancelled()?;
+    // Resolve nothing at installation time: exact versions and artifact hashes
+    // for the selected target/profile/device are part of the application build.
+    let selected_path = generation_dir.join("requirements.txt");
+    std::fs::write(&selected_path, locked).map_err(|e| e.to_string())?;
+    let mut args = install_args;
+    args.extend([
+        "--require-hashes".into(),
+        "--report".into(),
+        generation_dir
+            .join("package-report.json")
+            .to_string_lossy()
+            .into_owned(),
+        "-r".into(),
+        selected_path.to_string_lossy().into_owned(),
+    ]);
+    if pack.is_none() {
+        args.extend(["--index-url".into(), "https://pypi.org/simple".into()]);
+        if let Some(index) = variant.index_url() {
+            args.extend(["--extra-index-url".into(), index.into()]);
         }
     }
-
-    crate::network_policy::check_download()
-        .map_err(|_| "Downloads were turned off before the package stage.".to_string())?;
-    // Stage 5: the pinned speech dependencies. On torch-less platforms
-    // (x86_64 macOS) Qwen/Phonon requirements cannot be satisfied — install
-    // the sherpa-onnx (Zipformer) set instead.
-    emit("installing_packages", None, None, None);
-    if variant == TorchVariant::None_ {
-        let zipformer_reqs = requirements.with_file_name("requirements-zipformer.txt");
-        if !zipformer_reqs.exists() {
-            return Err(
-                "Could not locate the bundled model-runtime/requirements-zipformer.txt".into(),
-            );
-        }
-        // Downloads import httpx + huggingface_hub even on the torch-free
-        // path — install them pinned when requirements.txt names a version.
-        let mut args = install_args.clone();
-        args.push("numpy".to_string());
-        for package in ["httpx", "huggingface_hub"] {
-            match pinned_version(&requirements_text, package) {
-                Some(version) => args.push(format!("{package}=={version}")),
-                None => args.push(package.to_string()),
-            }
-        }
-        args.push("-r".to_string());
-        args.push(zipformer_reqs.to_string_lossy().into_owned());
-        run_setup_command(emit, "installing_packages", &venv_python, &args)?;
-    } else {
-        let mut args = install_args;
-        args.extend([
-            "-r".to_string(),
-            requirements.to_string_lossy().into_owned(),
-        ]);
-        run_setup_command(emit, "installing_packages", &venv_python, &args)?;
-    }
+    emit(
+        "installing_packages",
+        None,
+        Some(format!(
+            "Installing verified {} packages ({})",
+            dependency_profile(model),
+            variant.receipt_name()
+        )),
+        None,
+    );
+    run_setup_command(
+        emit,
+        "installing_packages",
+        &venv_python,
+        &args,
+        pack.is_none(),
+    )?;
     cancelled()?;
 
     // Stage 6: verify the modules the applicable models probe at startup.
     emit("verifying", None, None, None);
-    let verify_imports = if variant == TorchVariant::None_ {
-        "import numpy, sherpa_onnx, httpx, huggingface_hub"
-    } else {
-        "import numpy, torch, transformers, huggingface_hub, httpx, sherpa_onnx, torchao, fermion, scipy, soundfile, safetensors, zstandard, accelerate; a = torch.ones(1); assert a.sum().item() == 1"
-    };
+    let verify_imports = verification_code(
+        dependency_profile(model),
+        variant,
+        matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy),
+    );
     run_setup_command(
         emit,
         "verifying",
         &venv_python,
-        &["-c".to_string(), verify_imports.to_string()],
+        &["-c".to_string(), verify_imports],
+        false,
     )?;
-
-    // A CUDA import alone can succeed with an unusable driver or wheel.
-    // Dispatch a real operation before marking GPU dependencies ready.
-    if matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy) {
-        run_setup_command(emit, "verifying", &venv_python, &[
-            "-c".into(),
-            "import torch; assert torch.cuda.is_available(), 'GPU unavailable; update your graphics driver and retry'; x = torch.ones(1, device='cuda:0'); assert x.sum().item() == 1; torch.cuda.synchronize()".into(),
-        ])?;
-    }
     cancelled()?;
-    let python_version = pip_probe(&venv_python, &["--version"])
-        .and_then(|line| line.split_whitespace().nth(1).map(str::to_string))
-        .unwrap_or_else(|| PBS_PYTHON_VERSION.to_string());
+    run_setup_command(
+        emit,
+        "verifying",
+        &venv_python,
+        &["-m".into(), "pip".into(), "check".into()],
+        false,
+    )?;
+    let python_version = super::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
+        &venv_python.to_string_lossy(),
+        "import platform; print(platform.python_version())",
+        Duration::from_secs(3),
+    )
+    .and_then(|bytes| String::from_utf8(bytes).ok())
+    .map(|version| version.trim().to_string())
+    .ok_or("The speech interpreter version check failed. Retry dependency setup.")?;
+    if python_version != python_builds().python_version {
+        return Err(
+            "The speech interpreter does not match its reviewed version. Retry dependency setup."
+                .into(),
+        );
+    }
     let receipt = RuntimeReceipt {
-        pbs_tag: PBS_TAG.to_string(),
+        pbs_tag: python_builds().pbs_tag.to_string(),
         python_version,
         torch_variant: variant.receipt_name().to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
+        target: target_triple().into(),
+        profile: dependency_profile(model).into(),
+        requirements_digest: requirements_digest(dependency_profile(model), variant),
+        runtime_pack_sha256: pack.as_ref().map(|pack| pack.sha256.clone()),
     };
     let bytes = serde_json::to_vec_pretty(&receipt)
         .map_err(|e| format!("Could not serialize runtime receipt: {e}"))?;
-    std::fs::write(runtime_dir.join(RECEIPT_NAME), bytes)
-        .map_err(|e| format!("Could not write runtime receipt: {e}"))?;
+    let receipt_path = runtime_dir.join(RECEIPT_NAME);
+    let mut receipt_file = std::fs::File::create(&receipt_path).map_err(|e| e.to_string())?;
+    receipt_file.write_all(&bytes).map_err(|e| e.to_string())?;
+    receipt_file.sync_all().map_err(|e| e.to_string())?;
+    if pack.is_some() {
+        std::fs::copy(
+            payload_dir.join("licenses.json"),
+            runtime_dir.join("reflow-licenses.json"),
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::remove_dir_all(&payload_dir).map_err(|e| e.to_string())?;
+    }
 
+    begin_activation(emit)?;
+    promote_generation(&app_dir, &generation)?;
     Ok(())
+}
+
+fn local_wheel_args(payload: &Path) -> [String; 3] {
+    [
+        "--no-index".into(),
+        "--find-links".into(),
+        payload.join("wheelhouse").to_string_lossy().into_owned(),
+    ]
+}
+
+struct GenerationCleanup(PathBuf, PathBuf);
+impl Drop for GenerationCleanup {
+    fn drop(&mut self) {
+        if managed_runtime_dir(&self.1) != self.0.join("runtime") {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 }
 
 /// The venv's deep `Lib/site-packages` tree easily exceeds the classic
@@ -863,6 +1275,7 @@ fn check_long_paths(app_dir: &Path) -> Result<(), String> {
 }
 
 /// Small stdout capture used for pip capabilities and the receipt's Python version.
+#[cfg(all(test, target_os = "linux"))]
 fn pip_probe(program: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new(program);
     cmd.args(args);
@@ -881,32 +1294,6 @@ fn pip_probe(program: &Path, args: &[&str]) -> Option<String> {
         })
 }
 
-/// Download with resume + throttled progress events, following the same
-/// retry policy as the llama runtime downloader.
-enum DownloadMsg {
-    /// Response headers arrived: whether the server honored the Range resume,
-    /// how many bytes are already on disk, and how many remain.
-    Ready {
-        resumed: bool,
-        already_have: u64,
-        remaining: u64,
-    },
-    Chunk(Vec<u8>),
-    Done,
-    Failed(String),
-}
-
-/// Use the blocking client's timeout: it bounds each body read as well as
-/// waiting for headers. Passing an async `read_timeout` through ClientBuilder::from
-/// makes reqwest poll a Tokio timer on this plain thread and panic.
-fn python_download_client() -> Result<reqwest::blocking::Client, reqwest::Error> {
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .redirect(crate::network_policy::redirect_policy())
-        .build()
-}
-
 fn setup_panic_error(panic: Box<dyn std::any::Any + Send>) -> String {
     let reason = panic
         .downcast_ref::<String>()
@@ -923,165 +1310,39 @@ fn download_archive(
     partial: &Path,
     archive: &Path,
 ) -> Result<(), String> {
-    crate::network_policy::check_download()?;
-    // A verified previous download is kept in the cache for retries.
-    if let Ok(meta) = std::fs::metadata(archive) {
-        if meta.len() > 0
-            && crate::rewrite::runtime_install::verify_sha256(archive, pin.sha256).is_ok()
-        {
-            emit("downloading", Some(100), None, None);
-            return Ok(());
-        }
-        let _ = std::fs::remove_file(archive);
-    }
-    let resume_from: u64 = std::fs::metadata(partial).map(|m| m.len()).unwrap_or(0);
-    let url = pin.url.to_string();
-    let approx_bytes = pin.approx_bytes;
-
-    // Keep network I/O off the receiver so cancellation remains responsive.
-    // Bound the queue so a fast connection cannot buffer the archive in RAM.
-    let (msg_tx, msg_rx) = std::sync::mpsc::sync_channel::<DownloadMsg>(8);
-    let panic_tx = msg_tx.clone();
-    let _worker = std::thread::spawn(move || {
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let client = match python_download_client() {
-                Ok(client) => client,
-                Err(error) => {
-                    let _ = msg_tx.send(DownloadMsg::Failed(format!(
-                        "HTTP client init failed: {error}"
-                    )));
-                    return;
-                }
+    cancelled()?;
+    crate::network_policy::fetch_verified_blocking(
+        crate::network_policy::ArtifactDownload {
+            url: pin.url,
+            sha256: pin.sha256,
+            exact_bytes: Some(pin.approx_bytes),
+            partial,
+            destination: archive,
+        },
+        &SETUP_CANCEL,
+        |progress| {
+            let phase = if progress.phase == "downloading" {
+                "downloading"
+            } else {
+                "verifying"
             };
-            let mut response = match crate::rewrite::runtime_install::send_with_retry(
-                &client,
-                &url,
-                resume_from,
-            ) {
-                Ok(response) => response,
-                Err(error) => {
-                    let _ = msg_tx.send(DownloadMsg::Failed(error));
-                    return;
-                }
-            };
-            let status = response.status();
-            let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT;
-            if !resumed && !status.is_success() {
-                let _ = msg_tx.send(DownloadMsg::Failed(format!(
-                    "Download failed: HTTP {status}"
-                )));
-                return;
-            }
-            let already_have = if resumed { resume_from } else { 0 };
-            let remaining = response
-                .content_length()
-                .unwrap_or(approx_bytes.saturating_sub(already_have));
-            if msg_tx
-                .send(DownloadMsg::Ready {
-                    resumed,
-                    already_have,
-                    remaining,
-                })
-                .is_err()
-            {
-                return;
-            }
-            let mut buffer = vec![0u8; 64 * 1024];
-            loop {
-                match std::io::Read::read(&mut response, &mut buffer) {
-                    Ok(0) => {
-                        let _ = msg_tx.send(DownloadMsg::Done);
-                        return;
-                    }
-                    Ok(n) => {
-                        if msg_tx
-                            .send(DownloadMsg::Chunk(buffer[..n].to_vec()))
-                            .is_err()
-                        {
-                            return; // receiver dropped: cancelled
-                        }
-                    }
-                    Err(error) => {
-                        let _ = msg_tx.send(DownloadMsg::Failed(format!("Read failed: {error}")));
-                        return;
-                    }
-                }
-            }
-        }));
-        if let Err(panic) = outcome {
-            let _ = panic_tx.send(DownloadMsg::Failed(setup_panic_error(panic)));
+            emit(
+                phase,
+                progress.total.map(|total| {
+                    (progress.bytes as u128 * 100 / total.max(1) as u128).min(100) as u32
+                }),
+                None,
+                None,
+            );
+        },
+    )
+    .map_err(|error| {
+        if SETUP_CANCEL.load(Ordering::Acquire) {
+            CANCELLED.into()
+        } else {
+            error
         }
-    });
-
-    let mut file = None;
-    let mut last_emit = Instant::now();
-    loop {
-        match msg_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-            Ok(DownloadMsg::Ready {
-                resumed,
-                already_have,
-                remaining,
-            }) => {
-                if !resumed && partial.exists() {
-                    let _ = std::fs::remove_file(partial);
-                }
-                let total = already_have + remaining;
-                if total == 0 {
-                    return Err("Download has zero total size".into());
-                }
-                let mut opened = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(partial)
-                    .map_err(|e| format!("Could not open download target: {e}"))?;
-                opened
-                    .seek(SeekFrom::Start(already_have))
-                    .map_err(|e| format!("Could not seek in download target: {e}"))?;
-                emit(
-                    "downloading",
-                    Some((already_have * 100 / total) as u32),
-                    None,
-                    None,
-                );
-                file = Some((opened, already_have, total));
-            }
-            Ok(DownloadMsg::Chunk(chunk)) => {
-                let Some((file, downloaded, total)) = file.as_mut() else {
-                    return Err("Download stream started before headers".into());
-                };
-                file.write_all(&chunk)
-                    .map_err(|e| format!("Write failed: {e}"))?;
-                *downloaded += chunk.len() as u64;
-                if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
-                    emit(
-                        "downloading",
-                        Some((*downloaded * 100 / *total) as u32),
-                        None,
-                        None,
-                    );
-                    last_emit = Instant::now();
-                }
-            }
-            Ok(DownloadMsg::Done) => break,
-            Ok(DownloadMsg::Failed(error)) => return Err(error),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => cancelled()?,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("Download worker ended unexpectedly".into());
-            }
-        }
-        cancelled()?;
-    }
-    let Some((mut file, _, _)) = file else {
-        return Err("Download worker ended unexpectedly".into());
-    };
-    let _ = file.flush();
-    let _ = file.sync_all();
-    if archive.exists() {
-        let _ = std::fs::remove_file(archive);
-    }
-    std::fs::rename(partial, archive).map_err(|e| format!("Could not finalize download: {e}"))?;
-    Ok(())
+    })
 }
 
 /// Unpack the whole `python/` tree. tar's unpack refuses `..` components and
@@ -1090,8 +1351,13 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("Open tar.gz: {e}"))?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(gz);
-    tar.unpack(dest)
-        .map_err(|e| format!("Extract Python archive: {e}"))?;
+    for entry in tar.entries().map_err(|e| e.to_string())? {
+        cancelled()?;
+        entry
+            .map_err(|e| e.to_string())?
+            .unpack_in(dest)
+            .map_err(|e| format!("Extract Python archive: {e}"))?;
+    }
     let interpreter = dest.join("python").join(if cfg!(windows) {
         "python.exe"
     } else {
@@ -1103,25 +1369,162 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Spawn a child with its output streamed back to the UI as `detail` lines.
-/// The child is parked in SETUP_CHILD so Cancel can kill it; stderr is
-/// drained on a thread so both pipes merge without deadlock.
+/// Poll output independently of process lifetime. A child can close both output
+/// streams and still hang, or exit while a descendant keeps a pipe open. A
+/// bounded spool avoids either case leaving blocked reader threads behind.
+pub(super) struct SetupOutput(pub(super) PathBuf);
+impl Drop for SetupOutput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+pub(super) struct SetupChild<'a>(pub(super) &'a Mutex<Option<Child>>);
+impl Drop for SetupChild<'_> {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.lock().unwrap().take() {
+            kill_setup_tree(&mut child);
+        }
+    }
+}
+
+fn wait_setup_command(
+    emit: SetupEmit,
+    phase: &str,
+    output: &mut std::fs::File,
+    slot: &Mutex<Option<Child>>,
+    timeout: Duration,
+    interrupt: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    let _child = SetupChild(slot);
+    let started = Instant::now();
+    let mut last_emit = Instant::now();
+    let mut output_tail = std::collections::VecDeque::new();
+    let mut buffer = [0u8; 32768];
+    loop {
+        interrupt()?;
+        if started.elapsed() >= timeout {
+            return Err("Speech dependency setup timed out. Retry setup; the working runtime has been preserved.".into());
+        }
+        let status = slot
+            .lock()
+            .unwrap()
+            .as_mut()
+            .ok_or("Setup process was unexpectedly taken over")?
+            .try_wait()
+            .map_err(|e| format!("Could not check setup process: {e}"))?;
+        let size = output.metadata().map_err(|e| e.to_string())?.len();
+        if size > 32 * 1024 * 1024 {
+            return Err("Speech setup produced too much diagnostic output. Retry setup; technical details are in Open logs.".into());
+        }
+        // Keep the final diagnostics even when a short-lived child writes more
+        // than one polling buffer. Never collect an unbounded line or queue.
+        if status.is_some() {
+            let offset = output.stream_position().map_err(|e| e.to_string())?;
+            output
+                .seek(std::io::SeekFrom::Start(
+                    offset.max(size.saturating_sub(buffer.len() as u64)),
+                ))
+                .map_err(|e| e.to_string())?;
+        }
+        let count = output.read(&mut buffer).map_err(|e| e.to_string())?;
+        for line in String::from_utf8_lossy(&buffer[..count]).lines() {
+            if output_tail.len() == 12 {
+                output_tail.pop_front();
+            }
+            output_tail.push_back(line.chars().take(4096).collect::<String>());
+        }
+        if count > 0 && last_emit.elapsed() >= Duration::from_millis(250) {
+            if let Some(line) = output_tail.back() {
+                emit(
+                    phase,
+                    None,
+                    Some(package_progress_detail(line).unwrap_or_else(|| line.clone())),
+                    None,
+                );
+            }
+            last_emit = Instant::now();
+        }
+        if let Some(status) = status {
+            interrupt()?;
+            if !status.success() {
+                let detail = output_tail.into_iter().collect::<Vec<_>>().join("\n");
+                #[cfg(test)]
+                eprintln!("Setup child failure ({phase}): {detail}");
+                return Err(setup_command_error(phase, status, &detail));
+            }
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Spawn an owned child and stream bounded diagnostic output to the UI.
 fn run_setup_command(
     emit: SetupEmit,
     phase: &str,
     program: &Path,
     args: &[String],
+    network_required: bool,
 ) -> Result<(), String> {
     cancelled()?;
     let mut cmd = Command::new(program);
-    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Restore the host environment before clearing Python overrides: AppImage
+    // restoration must not reintroduce a caller's PYTHONHOME into managed Python.
+    #[cfg(target_os = "linux")]
+    crate::platform::process::own_child(&mut cmd);
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("PIP_") {
+            cmd.env_remove(key);
+        }
+    }
+    // Restoration can add keys absent from the app's current environment.
+    cmd.env_remove("PYTHONPATH")
+        .env_remove("PYTHONHOME")
+        .env_remove("VIRTUAL_ENV");
+    let temporary = PlatformSys::get_cache_dir().join("pip-temp");
+    std::fs::create_dir_all(&temporary).map_err(|e| e.to_string())?;
+    cmd.env(
+        "PIP_CONFIG_FILE",
+        if cfg!(windows) { "NUL" } else { "/dev/null" },
+    )
+    .env("PIP_INDEX_URL", "https://pypi.org/simple")
+    .env("TMPDIR", &temporary)
+    .env("TMP", &temporary)
+    .env("TEMP", &temporary)
+    .env("PYTHONNOUSERSITE", "1")
+    .env("HF_HUB_OFFLINE", "1")
+    .env("TRANSFORMERS_OFFLINE", "1");
+    if args.starts_with(&["-m".to_string(), "pip".to_string()]) {
+        cmd.arg("-c")
+            .arg(include_str!("../../../model-runtime/managed_pip.py"))
+            .args(&args[2..]);
+    } else {
+        cmd.args(args);
+    }
+    cmd.env(
+        "REFLOW_NETWORK_POLICY",
+        PlatformSys::get_app_dir().join("network-policy.json"),
+    );
+    let output_path = temporary.join(format!("setup-{}.log", uuid::Uuid::new_v4()));
+    let _output_cleanup = SetupOutput(output_path.clone());
+    let mut options = std::fs::OpenOptions::new();
+    options.append(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let output = options.open(&output_path).map_err(|e| e.to_string())?;
+    let mut reader = std::fs::File::open(&output_path).map_err(|e| e.to_string())?;
+    cmd.stdin(Stdio::null())
+        .stdout(output.try_clone().map_err(|e| e.to_string())?)
+        .stderr(output);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
-    #[cfg(target_os = "linux")]
-    crate::platform::process::own_child(&mut cmd);
     #[cfg(unix)]
     {
         // Own process group: cancelling or quitting can then kill pip and any
@@ -1129,11 +1532,11 @@ fn run_setup_command(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = cmd
+    let child = cmd
         .spawn()
         .map_err(|e| format!("Could not start {}: {e}", program.display()))?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    // Release the parent's output handles before removing the spool on Windows.
+    drop(cmd);
     {
         // Cancel can land between spawn and registration — re-check the flag
         // while still holding the slot lock and reap the just-spawned child.
@@ -1141,91 +1544,293 @@ fn run_setup_command(
         *slot = Some(child);
         if SETUP_CANCEL.load(Ordering::SeqCst) {
             if let Some(running) = slot.as_mut() {
-                let _ = running.kill();
+                kill_setup_tree(running);
             }
         }
     }
 
-    // Both pipes drain on reader threads into one channel so the main loop
-    // wakes on a timer, not on output — a quiet pip stage (long single file
-    // downloads) still answers cancel and airplane mode within ~500ms.
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    let mut readers = Vec::new();
-    let streams: [Option<Box<dyn std::io::Read + Send>>; 2] = [
-        stdout.map(|s| Box::new(s) as _),
-        stderr.map(|s| Box::new(s) as _),
-    ];
-    for stream in streams.into_iter().flatten() {
-        let tx = tx.clone();
-        readers.push(std::thread::spawn(move || {
-            for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
-                    return;
-                }
+    wait_setup_command(
+        emit,
+        phase,
+        &mut reader,
+        &SETUP_CHILD,
+        Duration::from_secs(
+            if phase == "installing_packages" || phase == "installing_torch" {
+                1800
+            } else {
+                120
+            },
+        ),
+        &|| {
+            cancelled()?;
+            if network_required {
+                crate::network_policy::check_download().map_err(|reason| {
+                    format!("Downloads stopped during setup: {reason} Setup cancelled.")
+                })
+            } else {
+                Ok(())
             }
-        }));
-    }
-    drop(tx);
-
-    let mut output_tail = std::collections::VecDeque::new();
-    let mut last_emit = Instant::now();
-    loop {
-        match rx.recv_timeout(std::time::Duration::from_millis(500)) {
-            Ok(line) => {
-                if output_tail.len() == 12 {
-                    output_tail.pop_front();
-                }
-                output_tail.push_back(line.clone());
-                if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
-                    let detail = package_progress_detail(&line).unwrap_or(line);
-                    emit(phase, None, Some(detail), None);
-                    last_emit = Instant::now();
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        // Cancel can land while the child still holds the lock slot.
-        if SETUP_CANCEL.load(Ordering::SeqCst) {
-            if let Some(child) = SETUP_CHILD.lock().unwrap().as_mut() {
-                kill_setup_tree(child);
-            }
-            return Err(CANCELLED.to_string());
-        }
-        // Airplane mode mid-install must kill pip promptly — a staged
-        // download ignores the cancel flag unless someone checks it.
-        if crate::network_policy::check_download().is_err() {
-            if let Some(child) = SETUP_CHILD.lock().unwrap().as_mut() {
-                kill_setup_tree(child);
-            }
-            return Err(
-                "Downloads were turned off mid-setup (airplane mode). Setup cancelled.".into(),
-            );
-        }
-    }
-    for reader in readers {
-        let _ = reader.join();
-    }
-
-    let child = SETUP_CHILD.lock().unwrap().take();
-    let Some(mut child) = child else {
-        cancelled()?;
-        return Err("Setup process was unexpectedly taken over".into());
-    };
-    let status = child
-        .wait()
-        .map_err(|e| format!("Could not wait for {}: {e}", program.display()))?;
-    cancelled()?;
-    if !status.success() {
-        let detail = output_tail.into_iter().collect::<Vec<_>>().join("\n");
-        return Err(setup_command_error(phase, status, &detail));
-    }
-    Ok(())
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn setup_process_fixture(
+        script: &str,
+        timeout: Duration,
+        stop_when_ready: Option<&str>,
+    ) -> Result<(), String> {
+        use std::os::unix::process::CommandExt;
+        let root =
+            std::env::temp_dir().join(format!("reflow-setup-process-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let output = std::fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(root.join("output"))
+            .unwrap();
+        let mut reader = std::fs::File::open(root.join("output")).unwrap();
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", script])
+            .current_dir(&root)
+            .stdin(Stdio::null())
+            .stdout(output.try_clone().unwrap())
+            .stderr(output)
+            .process_group(0);
+        let child = command.spawn().unwrap();
+        drop(command);
+        let slot = Mutex::new(Some(child));
+        let result = wait_setup_command(
+            &|_, _, _, _| {},
+            "installing_packages",
+            &mut reader,
+            &slot,
+            timeout,
+            &|| {
+                if root.join("ready").exists() {
+                    if let Some(reason) = stop_when_ready {
+                        return Err(reason.into());
+                    }
+                }
+                Ok(())
+            },
+        );
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "the child must be reaped on every return path"
+        );
+        #[cfg(target_os = "linux")]
+        if let Ok(pid) = std::fs::read_to_string(root.join("background.pid")) {
+            let stat = PathBuf::from("/proc").join(pid.trim()).join("stat");
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                let running = std::fs::read_to_string(&stat).is_ok_and(|s| {
+                    !s.rsplit_once(") ")
+                        .is_some_and(|(_, state)| state.starts_with('Z'))
+                });
+                if !running {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "owned descendant is still running"
+                );
+                std::thread::yield_now();
+            }
+        }
+        drop(reader);
+        std::fs::remove_dir_all(root).unwrap();
+        result
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closed_output_cannot_bypass_setup_deadline_or_interrupts() {
+        for reason in [None, Some(CANCELLED), Some("Offline mode is on")] {
+            let started = Instant::now();
+            let error = setup_process_fixture(
+                "touch ready; exec 1>&- 2>&-; exec sleep 30",
+                Duration::from_millis(300),
+                reason,
+            )
+            .unwrap_err();
+            assert!(error.contains(reason.unwrap_or("timed out")), "{error}");
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_output_does_not_hold_up_a_finished_setup_process() {
+        let started = Instant::now();
+        setup_process_fixture(
+            "sleep 30 & echo $! > background.pid; exit 0",
+            Duration::from_secs(2),
+            None,
+        )
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_output_is_bounded_and_failure_keeps_recovery_diagnostics() {
+        let error = setup_process_fixture(
+            "truncate -s 33554433 output; exec sleep 30",
+            Duration::from_secs(2),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("too much diagnostic output"));
+        let error = setup_process_fixture(
+            "printf 'Read timed out\\n' >&2; exit 7",
+            Duration::from_secs(2),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("download timed out"));
+    }
+
+    #[test]
+    fn health_checks_require_quantization_packages_only_for_quantized_qwen() {
+        for (profile, variant, quantized) in [
+            ("qwen", TorchVariant::Cpu, false),
+            ("qwen", TorchVariant::Pypi, false),
+            ("qwen", TorchVariant::Cuda, false),
+            ("phonon", TorchVariant::Cuda, true),
+            ("zipformer", TorchVariant::None_, false),
+        ] {
+            let check = verification_code(profile, variant, quantized);
+            assert!(!check.contains("torchao"));
+            assert!(!check.contains("accelerate"));
+        }
+        let quantized = verification_code("qwen", TorchVariant::Cuda, true);
+        assert!(quantized.contains("import torchao, accelerate"));
+        assert!(quantized.contains("torch.cuda.synchronize()"));
+        assert!(verification_code("phonon", TorchVariant::Cpu, false).contains("torch.ones(1)"));
+    }
+
+    #[test]
+    fn setup_claims_capture_configuration_and_stale_work_cannot_cancel_or_finish_a_retry() {
+        let first = claim_setup("zipformer-20m", "cpu").unwrap();
+        assert!(claim_setup("1.7b", "cuda").is_err());
+        let initial = get_python_setup_progress().unwrap();
+        assert_eq!(initial.model, "zipformer-20m");
+        assert_eq!(initial.device, "cpu");
+        let first_terminal = update_progress(&first, "complete", Some(100), None, None).unwrap();
+        assert!(first_terminal.revision > initial.revision);
+        let next = claim_setup("0.6b", "cpu").unwrap();
+        assert_ne!(first, next);
+        assert!(get_python_setup_progress().unwrap().revision > first_terminal.revision);
+        assert!(cancel_python_runtime_setup(Some(first.clone())).is_err());
+        assert!(!SETUP_CANCEL.load(Ordering::SeqCst));
+        assert!(
+            update_progress(&first, "error", None, None, Some("late failure".into())).is_none()
+        );
+        assert!(SETUP_ACTIVE.load(Ordering::SeqCst));
+        let current = update_progress(&next, "complete", Some(100), None, None).unwrap();
+        assert_eq!(current.attempt_id, next);
+        assert!(!SETUP_ACTIVE.load(Ordering::SeqCst));
+
+        let cancelled_attempt = claim_setup("zipformer-20m", "cpu").unwrap();
+        cancel_python_runtime_setup(Some(cancelled_attempt.clone())).unwrap();
+        assert_eq!(begin_activation(&|_, _, _, _| {}).unwrap_err(), CANCELLED);
+        update_progress(&cancelled_attempt, "cancelled", None, None, None).unwrap();
+        let committing = claim_setup("zipformer-20m", "cpu").unwrap();
+        begin_activation(&|_, _, _, _| {}).unwrap();
+        assert_eq!(
+            SETUP_PROGRESS.lock().unwrap().as_ref().unwrap().phase,
+            "activating"
+        );
+        assert!(cancel_python_runtime_setup(Some(committing.clone()))
+            .unwrap_err()
+            .contains("being activated"));
+        assert!(!SETUP_CANCEL.load(Ordering::SeqCst));
+        let terminal = update_progress(&committing, "complete", Some(100), None, None).unwrap();
+        assert!(update_progress(&committing, "verifying", None, None, None).is_none());
+        assert!(update_progress(
+            &committing,
+            "error",
+            None,
+            None,
+            Some("late failure".into())
+        )
+        .is_none());
+        let retained = get_python_setup_progress().unwrap();
+        assert_eq!(retained.phase, "complete");
+        assert_eq!(retained.revision, terminal.revision);
+        cancel_python_runtime_setup(Some(committing)).unwrap();
+        assert!(!SETUP_CANCEL.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn legacy_and_mismatched_receipts_require_repair() {
+        let legacy = serde_json::json!({"pbs_tag": python_builds().pbs_tag, "python_version": python_builds().python_version,
+            "torch_variant": "none", "created_at": "fixture"});
+        let mut receipt: RuntimeReceipt = serde_json::from_value(legacy).unwrap();
+        assert!(!receipt_matches(&receipt, "zipformer", TorchVariant::None_));
+        receipt.target = target_triple().into();
+        receipt.profile = "zipformer".into();
+        receipt.requirements_digest = requirements_digest("zipformer", TorchVariant::None_);
+        assert!(receipt_matches(&receipt, "zipformer", TorchVariant::None_));
+        assert!(!receipt_matches(&receipt, "qwen", TorchVariant::Cpu));
+        receipt.target = "different-target".into();
+        assert!(!receipt_matches(&receipt, "zipformer", TorchVariant::None_));
+        receipt.target = target_triple().into();
+        receipt.requirements_digest = "previous-requirements".into();
+        assert!(!receipt_matches(&receipt, "zipformer", TorchVariant::None_));
+    }
+
+    #[test]
+    fn failed_or_interrupted_generation_preserves_effective_base_and_runtime() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-generations-{}", uuid::Uuid::new_v4()));
+        let old = uuid::Uuid::new_v4().to_string();
+        let old_root = root.join("python-generations").join(&old);
+        std::fs::create_dir_all(old_root.join("runtime")).unwrap();
+        std::fs::write(old_root.join("base"), b"original interpreter").unwrap();
+        promote_generation(&root, &old).unwrap();
+        let failed = root
+            .join("python-generations")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(failed.join("runtime")).unwrap();
+        {
+            let _cleanup = GenerationCleanup(failed.clone(), root.clone());
+        }
+        assert!(!failed.exists());
+        assert_eq!(managed_runtime_dir(&root), old_root.join("runtime"));
+        assert_eq!(
+            std::fs::read(old_root.join("base")).unwrap(),
+            b"original interpreter"
+        );
+        // An interrupted pointer write is ignored on restart.
+        std::fs::write(root.join("python-active-interrupted.tmp"), b"partial").unwrap();
+        assert_eq!(managed_runtime_dir(&root), old_root.join("runtime"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lightweight_and_cpu_preferences_select_dependency_profiles() {
+        let caps = crate::capability::Capabilities::default();
+        assert_eq!(dependency_profile("zipformer-20m"), "zipformer");
+        assert_eq!(
+            variant_for("zipformer-20m", "auto", &caps),
+            TorchVariant::None_
+        );
+        assert_eq!(
+            variant_for("0.6b", "cpu", &caps),
+            torch_variant(target_triple(), false)
+        );
+        assert_ne!(
+            requirements_digest("qwen", TorchVariant::Cpu),
+            requirements_digest("zipformer", TorchVariant::None_)
+        );
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1284,40 +1889,6 @@ mod tests {
                 supports_resume
             );
         }
-    }
-
-    #[test]
-    fn python_download_reads_body_without_a_tokio_runtime() {
-        // A loopback response exercises the production client and streamed body
-        // on a plain OS thread, where the async read timeout used to panic.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            let mut request = [0; 4096];
-            std::io::Read::read(&mut socket, &mut request).unwrap();
-            socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\npython",
-                )
-                .unwrap();
-        });
-        std::thread::spawn(move || {
-            let mut response = python_download_client()
-                .unwrap()
-                .get(format!("http://{address}"))
-                .send()
-                .unwrap();
-            let mut body = Vec::new();
-            std::io::Read::read_to_end(&mut response, &mut body).unwrap();
-            assert_eq!(body, b"python");
-        })
-        .join()
-        .expect("blocking download must not panic");
-        server.join().unwrap();
     }
 
     #[test]
@@ -1436,12 +2007,177 @@ mod tests {
         //! real `~/.local/share/reflow` is untouched.
         use super::*;
 
+        #[test]
+        #[ignore = "local model-free pack acceptance; set REFLOW_TEST_RUNTIME_PACK_CATALOG and run this test alone"]
+        fn cached_runtime_pack_installs_offline_and_failed_repairs_preserve_it() {
+            let catalog_path = PathBuf::from(
+                std::env::var("REFLOW_TEST_RUNTIME_PACK_CATALOG").expect("provide a local catalog"),
+            );
+            let profile = std::env::var("REFLOW_TEST_RUNTIME_PACK_PROFILE")
+                .unwrap_or_else(|_| "zipformer".into());
+            let (model, variant) = match profile.as_str() {
+                "zipformer" => ("zipformer-20m", TorchVariant::None_),
+                "qwen" => ("0.6b", TorchVariant::Cpu),
+                "phonon" => ("phonon-2", TorchVariant::Cpu),
+                _ => panic!("provide a supported local CPU runtime-pack profile"),
+            };
+            let catalog = std::fs::read_to_string(&catalog_path).unwrap();
+            let pin = crate::asr::runtime_pack::selected_from(
+                &catalog,
+                target_triple(),
+                &profile,
+                variant.receipt_name(),
+            )
+            .unwrap()
+            .unwrap();
+            let source = catalog_path.parent().unwrap().join(&pin.asset);
+            let app_dir = scratch_app_dir();
+            crate::network_policy::configure(true, &app_dir).unwrap();
+            let cache = PlatformSys::get_cache_dir();
+            std::fs::create_dir_all(&cache).unwrap();
+            let cached = cache.join(&pin.asset);
+            std::fs::copy(&source, &cached).unwrap();
+            let started = Instant::now();
+            run_setup_worker_from_pack(&|_, _, _, _| {}, model, "cpu", Some(pin.clone())).unwrap();
+            let install_ms = started.elapsed().as_millis();
+            let incumbent = managed_runtime_dir(&app_dir);
+            let receipt = read_receipt(&incumbent).unwrap();
+            assert_eq!(
+                receipt.runtime_pack_sha256.as_deref(),
+                Some(pin.sha256.as_str())
+            );
+            assert!(receipt_matches(&receipt, &profile, variant));
+            assert!(incumbent.join("reflow-licenses.json").is_file());
+            assert!(!incumbent.parent().unwrap().join("payload").exists());
+            assert!(!app_dir.join("models").exists());
+            let python = incumbent.join("bin/python");
+            let health = crate::asr::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
+                &python.to_string_lossy(),
+                &format!(
+                    "{}; print('ready')",
+                    verification_code(&profile, variant, false)
+                ),
+                Duration::from_secs(30),
+            )
+            .expect("installed dependency pack must pass the production Python probe");
+            assert!(String::from_utf8_lossy(&health).contains("ready"));
+
+            let error = run_setup_worker_from_pack(
+                &|phase, _, _, _| {
+                    if phase == "extracting" {
+                        SETUP_CANCEL.store(true, Ordering::Release);
+                    }
+                },
+                model,
+                "cpu",
+                Some(pin.clone()),
+            )
+            .unwrap_err();
+            assert_eq!(error, CANCELLED);
+            SETUP_CANCEL.store(false, Ordering::Release);
+            assert_eq!(managed_runtime_dir(&app_dir), incumbent);
+            // A bad or missing cache must not attempt an online fallback in
+            // airplane mode, promote a generation or remove the working one.
+            std::fs::write(&cached, b"corrupt").unwrap();
+            for present in [true, false] {
+                if !present {
+                    std::fs::remove_file(&cached).unwrap();
+                }
+                let error =
+                    run_setup_worker_from_pack(&|_, _, _, _| {}, model, "cpu", Some(pin.clone()))
+                        .unwrap_err();
+                assert!(error.contains("Offline mode"), "{error}");
+                assert_eq!(managed_runtime_dir(&app_dir), incumbent);
+            }
+            std::fs::copy(&source, &cached).unwrap();
+            let lazy_module = match profile.as_str() {
+                "qwen" => Some("transformers.models.qwen3_asr.processing_qwen3_asr"),
+                "phonon" => Some("transformers.models.parakeet.modeling_parakeet"),
+                _ => None,
+            };
+            if let Some(lazy_module) = lazy_module {
+                // Break only this disposable runtime. Top-level imports still
+                // work, but the concrete processor needed by ASR must fail.
+                let module = crate::asr::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
+                    &python.to_string_lossy(),
+                    &format!("import importlib.util; print('REFLOW_ASR_MODULE:'+importlib.util.find_spec({lazy_module:?}).origin)"),
+                    Duration::from_secs(30),
+                ).unwrap();
+                let module = String::from_utf8_lossy(&module);
+                let module = PathBuf::from(
+                    module
+                        .lines()
+                        .find_map(|line| line.strip_prefix("REFLOW_ASR_MODULE:"))
+                        .unwrap(),
+                );
+                assert!(module
+                    .canonicalize()
+                    .unwrap()
+                    .starts_with(incumbent.canonicalize().unwrap()));
+                let original = std::fs::read_to_string(&module).unwrap();
+                // Keep definitions for Transformers' lazy export discovery.
+                std::fs::write(
+                    module,
+                    format!("{original}\nraise ImportError('Reflow fixture: lazy ASR API is unavailable')\n"),
+                )
+                .unwrap();
+                assert!(
+                    crate::asr::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
+                        &python.to_string_lossy(),
+                        "import torch, transformers; assert torch.ones(1).sum().item() == 1",
+                        Duration::from_secs(30),
+                    )
+                    .is_some()
+                );
+                let check = verification_code(&profile, variant, false);
+                let diagnostic = format!("try:\n exec({check:?})\n print('unexpected-ready')\nexcept ImportError:\n import sys, traceback\n traceback.print_exc(file=sys.stdout)");
+                let rejected = crate::asr::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
+                    &python.to_string_lossy(),
+                    &diagnostic,
+                    Duration::from_secs(30),
+                )
+                .unwrap();
+                assert!(String::from_utf8_lossy(&rejected)
+                    .contains("Reflow fixture: lazy ASR API is unavailable"));
+            }
+            run_setup_worker_from_pack(&|_, _, _, _| {}, model, "cpu", Some(pin.clone())).unwrap();
+            assert_ne!(managed_runtime_dir(&app_dir), incumbent);
+            assert!(
+                incumbent.join(RECEIPT_NAME).is_file(),
+                "repair retains the incumbent generation"
+            );
+            let journal = app_dir.join("network-journal.jsonl");
+            assert!(!journal.exists() || std::fs::metadata(journal).unwrap().len() == 0);
+            let keep = std::env::var("REFLOW_TEST_RUNTIME_PACK_KEEP").as_deref() == Ok("1");
+            println!(
+                "REFLOW_PACK_ACCEPTANCE:{}",
+                serde_json::json!({"target":target_triple(),"profile":format!("{profile}-{}",variant.receipt_name()),
+                "broken_lazy_api_rejected":lazy_module.is_some(),
+                "retained_app_dir":if keep {Some(&app_dir)} else {None},
+                "retained_python":if keep {Some(managed_runtime_dir(&app_dir).join("bin/python"))} else {None},
+                "pack_sha256":pin.sha256,"bytes":pin.bytes,"offline_install_ms":install_ms,
+                "cancelled_repair":"pass","corrupt_cache":"pass","missing_cache":"pass","offline_repair":"pass",
+                "network_journal_entries":0,"model_downloads":0,"native_desktop_or_asr_acceptance":false})
+            );
+            std::env::remove_var("REFLOW_APP_DIR");
+            if !keep {
+                let _ = std::fs::remove_dir_all(app_dir);
+            }
+        }
+
         fn scratch_app_dir() -> PathBuf {
-            // Stable name: the download cache is preserved across runs, so a
-            // dropped connection resumes instead of restarting 67 MB.
-            let dir = std::env::temp_dir().join("reflow-python-e2e");
+            // Every acceptance run owns its application data. A previously verified
+            // archive may be copied in to avoid repeating the bootstrap transfer.
+            let dir =
+                std::env::temp_dir().join(format!("reflow-python-e2e-{}", uuid::Uuid::new_v4()));
             std::env::set_var("REFLOW_APP_DIR", &dir);
             crate::network_policy::configure(false, &dir).expect("go online");
+            if let Ok(archive) = std::env::var("REFLOW_TEST_PYTHON_ARCHIVE") {
+                let pin = pin_for(target_triple()).expect("supported target");
+                let cache = PlatformSys::get_cache_dir();
+                std::fs::create_dir_all(&cache).unwrap();
+                std::fs::copy(archive, cache.join(pin.asset)).unwrap();
+            }
             dir
         }
 
@@ -1480,6 +2216,7 @@ mod tests {
                     "venv".to_string(),
                     venv.to_string_lossy().into_owned(),
                 ],
+                false,
             )
             .expect("venv creation");
             let venv_python = venv.join("bin/python");
@@ -1490,6 +2227,46 @@ mod tests {
 
             std::env::remove_var("REFLOW_APP_DIR");
             let _ = std::fs::remove_dir_all(&app_dir);
+        }
+
+        #[test]
+        #[ignore = "real network: installs a complete fresh lightweight profile in an isolated directory"]
+        fn managed_zipformer_clean_install_and_cancelled_repair() {
+            let app_dir = scratch_app_dir();
+            SETUP_CANCEL.store(false, Ordering::SeqCst);
+            let emit =
+                |phase: &str, _pct: Option<u32>, detail: Option<String>, _err: Option<String>| {
+                    eprintln!("{phase}: {}", detail.unwrap_or_default());
+                };
+            run_setup_worker_for(&emit, None, "zipformer-20m", "cpu")
+                .expect("fresh lightweight setup");
+            let old = managed_runtime_dir(&app_dir);
+            let python = old.join("bin/python");
+            assert!(verify_installed_versions(
+                &python,
+                "zipformer",
+                TorchVariant::None_
+            ));
+            let output = pip_probe(&python, &["-c", "import importlib.util; assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('transformers') is None; import numpy, sherpa_onnx; print('lightweight ready')"]);
+            assert_eq!(output.as_deref(), Some("lightweight ready"));
+            let cancel_at_verification =
+                |phase: &str, _pct: Option<u32>, _detail: Option<String>, _err: Option<String>| {
+                    if phase == "verifying" {
+                        SETUP_CANCEL.store(true, Ordering::SeqCst);
+                    }
+                };
+            let error = run_setup_worker_for(&cancel_at_verification, None, "zipformer-20m", "cpu")
+                .unwrap_err();
+            assert_eq!(error, CANCELLED);
+            assert_eq!(managed_runtime_dir(&app_dir), old);
+            assert!(verify_installed_versions(
+                &python,
+                "zipformer",
+                TorchVariant::None_
+            ));
+            SETUP_CANCEL.store(false, Ordering::SeqCst);
+            std::env::remove_var("REFLOW_APP_DIR");
+            eprintln!("Isolated acceptance directory: {}", app_dir.display());
         }
 
         #[test]
@@ -1507,10 +2284,10 @@ mod tests {
                     emits.lock().unwrap().push(phase.to_string());
                 };
             run_setup_worker(&emit, None).expect("full setup");
-            let runtime = app_dir.join(RUNTIME_DIR_NAME);
+            let runtime = managed_runtime_dir(&app_dir);
             assert!(runtime.join("bin/python").exists());
             let receipt = read_receipt(&runtime).expect("receipt written");
-            assert_eq!(receipt.pbs_tag, PBS_TAG);
+            assert_eq!(receipt.pbs_tag, python_builds().pbs_tag);
             assert_eq!(receipt.torch_variant, test_variant);
             let phases = emits.lock().unwrap().clone();
             // The terminal "complete" event is emitted by the command wrapper

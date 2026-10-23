@@ -1,0 +1,468 @@
+[
+  {
+    "id": "repeated_words",
+    "category": "repetition",
+    "text": "so so I think the frontend should should be faster",
+    "required": [["I think"], ["frontend"], ["faster"]],
+    "forbidden": ["so so", "should should"],
+    "layout": "prose"
+  },
+  {
+    "id": "tea_coffee",
+    "category": "repair",
+    "text": "I want tea no no sorry I want coffee",
+    "required": [["I want coffee"]],
+    "forbidden": ["tea", "no no", "sorry"],
+    "layout": "prose"
+  },
+  {
+    "id": "ordinary_paragraph",
+    "category": "prose",
+    "text": "hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today",
+    "required": [["project"], ["frontend"], ["yesterday"], ["backend"], ["today"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "independent_requirements",
+    "category": "structure",
+    "text": "the app should work offline use sqlite for storage support dark mode and keep ram usage low",
+    "required": [["offline"], ["SQLite"], ["dark mode"], ["RAM"]],
+    "forbidden": [],
+    "layout": "list"
+  },
+  {
+    "id": "sequential_steps",
+    "category": "structure",
+    "text": "first install python then create a virtual environment after that install dependencies and finally start the server",
+    "required": [["Python"], ["virtual environment"], ["dependencies"], ["server"]],
+    "forbidden": [],
+    "layout": "steps"
+  },
+  {
+    "id": "genuine_negation",
+    "category": "negation",
+    "text": "do not delete the database no seriously don't delete it",
+    "required": [["not delete"], ["database"], ["don't delete"]],
+    "forbidden": ["no seriously"],
+    "layout": "prose"
+  },
+  {
+    "id": "technical_correction",
+    "category": "repair",
+    "text": "use react no actually svelte and connect it to postgres not mysql",
+    "required": [["Svelte"], ["PostgreSQL", "Postgres"], ["not MySQL", "instead of MySQL"]],
+    "forbidden": ["React"],
+    "layout": "prose"
+  },
+  {
+    "id": "meaningful_very",
+    "category": "emphasis",
+    "text": "this is very very important",
+    "required": [["very"], ["important"]],
+    "forbidden": ["very important important"],
+    "layout": "prose"
+  },
+  {
+    "id": "reported_no",
+    "category": "emphasis",
+    "text": "he shouted no no no",
+    "required": [["shouted"], ["no"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "coffee_restart",
+    "category": "repair",
+    "text": "I want to no no no sorry I want coffee",
+    "required": [["I want coffee"]],
+    "forbidden": ["sorry", "no no", "I want to"],
+    "layout": "prose"
+  },
+  {
+    "id": "framework_wait",
+    "category": "repair",
+    "text": "Use React, no wait, use Svelte for the frontend.",
+    "required": [["Svelte"], ["frontend"]],
+    "forbidden": ["React"],
+    "layout": "prose"
+  },
+  {
+    "id": "deadline",
+    "category": "repair",
+    "text": "The deadline is Monday, sorry, Tuesday.",
+    "required": [["deadline"], ["Tuesday"]],
+    "forbidden": ["Monday"],
+    "layout": "prose"
+  },
+  {
+    "id": "multiword_restart",
+    "category": "repair",
+    "text": "I would like to book the morning train no wait I would like to book the evening train",
+    "required": [["book"], ["evening train"]],
+    "forbidden": ["morning train", "no wait"],
+    "layout": "prose"
+  },
+  {
+    "id": "multiple_repairs",
+    "category": "repair",
+    "text": "Send it Monday sorry Tuesday and use React no wait use Svelte",
+    "required": [["Tuesday"], ["Svelte"]],
+    "forbidden": ["Monday", "React", "sorry", "no wait"],
+    "layout": "prose"
+  },
+  {
+    "id": "number_revision",
+    "category": "repair",
+    "text": "order 5 actually 7 notebooks",
+    "required": [["7"], ["notebooks"]],
+    "forbidden": ["5"],
+    "layout": "prose"
+  },
+  {
+    "id": "price_literal",
+    "category": "literal",
+    "text": "the price is $125.50 do not change it",
+    "required": [["$125.50"], ["not"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "quoted_repetition",
+    "category": "literal",
+    "text": "Keep the exact phrase \"no no no\" in the title.",
+    "required": [["\"no no no\""], ["title"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "quoted_repair",
+    "category": "literal",
+    "text": "She wrote \"Monday sorry Tuesday\" on the board.",
+    "required": [["\"Monday sorry Tuesday\""], ["board"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "command",
+    "category": "literal",
+    "text": "run `git reset --soft HEAD~1` but do not run `git reset --hard`",
+    "required": [["`git reset --soft HEAD~1`"], ["not"], ["`git reset --hard`"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "identifier",
+    "category": "literal",
+    "text": "set retryCount to 3 and keep src/api/client.ts unchanged",
+    "required": [["retryCount"], ["3"], ["src/api/client.ts"], ["unchanged"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "uncertain_plan",
+    "category": "uncertainty",
+    "text": "I think maybe we could release on Friday if the tests pass",
+    "required": [["I think"], ["maybe"], ["Friday"], ["if"], ["tests"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "negated_requirement",
+    "category": "negation",
+    "text": "use postgres for storage but do not store passwords in plaintext",
+    "required": [["PostgreSQL", "Postgres"], ["not"], ["passwords"], ["plaintext"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "meaningful_had",
+    "category": "emphasis",
+    "text": "She had had enough of the delays",
+    "required": [["had had"], ["enough"], ["delays"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "meaningful_that",
+    "category": "emphasis",
+    "text": "I know that that approach works",
+    "required": [["that that"], ["approach"], ["works"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "phrase_repeat",
+    "category": "repetition",
+    "text": "we could ship we could ship the update tomorrow",
+    "required": [["we could ship"], ["update"], ["tomorrow"]],
+    "forbidden": ["ship we could"],
+    "layout": "prose"
+  },
+  {
+    "id": "question",
+    "category": "prose",
+    "text": "can you send the report before five tomorrow",
+    "required": [["report"], ["five"], ["tomorrow"], ["?"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "semicolon",
+    "category": "punctuation",
+    "text": "the train is late semi colon we can wait period",
+    "required": [["train"], ["late"], [";"], ["wait"]],
+    "forbidden": ["semi colon"],
+    "layout": "prose"
+  },
+  {
+    "id": "spoken_paragraph",
+    "category": "punctuation",
+    "text": "the north wing is ready period new paragraph the south wing still needs paint period",
+    "required": [["north wing"], ["ready"], ["south wing"], ["paint"]],
+    "forbidden": [],
+    "layout": ""
+  },
+  {
+    "id": "parentheses",
+    "category": "literal",
+    "text": "keep the flag --dry-run (default: false) when testing",
+    "required": [["--dry-run"], ["(default: false)"], ["testing"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "email",
+    "category": "prose",
+    "text": "Hi Noura the invoice is attached thanks Maya",
+    "required": [["Noura"], ["invoice"], ["attached"], ["Maya"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "requirements_modifiers",
+    "category": "structure",
+    "text": "use encrypted sqlite storage support offline dictation and offer an optional dark mode",
+    "required": [
+      ["encrypted"],
+      ["SQLite"],
+      ["offline"],
+      ["dictation"],
+      ["optional"],
+      ["dark mode"]
+    ],
+    "forbidden": [],
+    "layout": ""
+  },
+  {
+    "id": "not_sequence",
+    "category": "prose",
+    "text": "first I thought it was broken but then I checked the microphone and it worked",
+    "required": [["I thought"], ["microphone"], ["worked"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "meeting_actions",
+    "category": "structure",
+    "text": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday",
+    "required": [
+      ["Rahul"],
+      ["frontend"],
+      ["Friday"],
+      ["Priya"],
+      ["API"],
+      ["Saturday"],
+      ["before Monday"]
+    ],
+    "forbidden": [],
+    "layout": ""
+  },
+  {
+    "id": "two_topics",
+    "category": "prose",
+    "text": "The frontend is complete and the tests pass. On a different topic the office move is scheduled for Thursday and we still need boxes.",
+    "required": [["frontend"], ["tests"], ["office"], ["Thursday"], ["boxes"]],
+    "forbidden": [],
+    "layout": ""
+  },
+  {
+    "id": "technical_terms",
+    "category": "prose",
+    "text": "connect fast api to postgres and use redis for caching",
+    "required": [["FastAPI", "Fast API"], ["PostgreSQL", "Postgres"], ["Redis"], ["caching"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "first_person",
+    "category": "prose",
+    "text": "I want to build a small application that helps me write without sending audio to the cloud",
+    "required": [["I want"], ["small"], ["write"], ["without"], ["cloud"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "quote_code",
+    "category": "literal",
+    "text": "print `print(\"no no\")` exactly and keep the message \"actually use React\"",
+    "required": [["`print(\"no no\")`"], ["\"actually use React\""]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "date_version",
+    "category": "literal",
+    "text": "deploy v2.4.1 on 2026-11-03 and use port 8080",
+    "required": [["v2.4.1"], ["2026-11-03"], ["8080"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "no_wait_request",
+    "category": "negation",
+    "text": "No wait for me outside do not leave without me",
+    "required": [["wait for me"], ["not leave"], ["without me"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "actually_emphasis",
+    "category": "prose",
+    "text": "I actually like the current design and I do not want a redesign",
+    "required": [["like"], ["current design"], ["not"], ["redesign"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "rather_preference",
+    "category": "prose",
+    "text": "I would rather keep SQLite than add a remote database",
+    "required": [["I would rather"], ["SQLite"], ["remote database"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "hinglish",
+    "category": "multilingual",
+    "text": "Amina ने 2 boxes भेजे लेकिन मुझे 3 नहीं चाहिए",
+    "required": [["Amina"], ["2"], ["3"], ["नहीं"]],
+    "forbidden": [],
+    "layout": ""
+  },
+  {
+    "id": "hindi",
+    "category": "multilingual",
+    "text": "मुझे सोमवार को रिपोर्ट भेजनी है और डेटा मिटाना नहीं है",
+    "required": [["सोमवार"], ["रिपोर्ट"], ["नहीं"]],
+    "forbidden": [],
+    "layout": ""
+  },
+  {
+    "id": "spanish",
+    "category": "multilingual",
+    "text": "no borres la base de datos y conserva los nombres originales",
+    "required": [["no"], ["base de datos"], ["nombres"]],
+    "forbidden": [],
+    "layout": ""
+  },
+  {
+    "id": "technical_negation",
+    "category": "negation",
+    "text": "use Svelte not React and PostgreSQL not MySQL",
+    "required": [["Svelte"], ["not React"], ["PostgreSQL"], ["not MySQL"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "repeated_entire_clause",
+    "category": "repetition",
+    "text": "I need the report I need the report by Friday",
+    "required": [["I need the report"], ["Friday"]],
+    "forbidden": ["report I need"],
+    "layout": "prose"
+  },
+  {
+    "id": "uncertain_amount",
+    "category": "uncertainty",
+    "text": "we might need around 20 or 25 licenses depending on who joins",
+    "required": [["might"], ["20"], ["25"], ["depending"], ["licenses"]],
+    "forbidden": [],
+    "layout": "prose"
+  },
+  {
+    "id": "sequence_with_constraint",
+    "category": "structure",
+    "text": "first back up the database then run the migration after that verify the rows and finally restart only if verification passes",
+    "required": [["back up"], ["database"], ["migration"], ["rows"], ["only if"], ["verification"]],
+    "forbidden": [],
+    "layout": "steps"
+  },
+  {
+    "id": "long",
+    "category": "long",
+    "text": "Um we need to improve the dictation application and keep everything local. The the frontend should show microphone permissions and support dark mode. For the backend use React no wait use Python FastAPI with PostgreSQL and Redis caching. Do not upload audio and do not log passwords. The deadline is Monday sorry Tuesday and Amina owns the API integration.\n\nOn the hardware side the target has 16 GB RAM and an RTX 2050 with 4 GB VRAM. We should maybe try a 4096 token context if memory allows but preserve explicit preferences. Keep the command `python -m pytest` exactly and retain the path src/api/client.ts.\n\nFor rollout first back up the database then install dependencies then run the tests and finally restart the server only if all checks pass. The release should work offline support encrypted SQLite storage and avoid unnecessary downloads. I want the result to be clear and natural without losing any details.",
+    "required": [
+      ["local"],
+      ["microphone"],
+      ["dark mode"],
+      ["Python"],
+      ["FastAPI"],
+      ["PostgreSQL"],
+      ["Redis"],
+      ["not upload"],
+      ["not log"],
+      ["Tuesday"],
+      ["Amina"],
+      ["16"],
+      ["RTX 2050"],
+      ["4"],
+      ["maybe"],
+      ["4096"],
+      ["explicit preferences"],
+      ["`python -m pytest`"],
+      ["src/api/client.ts"],
+      ["back up"],
+      ["only if"],
+      ["offline"],
+      ["encrypted"],
+      ["SQLite"]
+    ],
+    "forbidden": ["React", "Monday", "the the"],
+    "layout": ""
+  },
+  {
+    "id": "long_corrected_requirements",
+    "category": "long",
+    "text": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Node.js no wait use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Thursday sorry Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+    "required": [
+      ["I want"],
+      ["lightweight"],
+      ["RAM"],
+      ["websites"],
+      ["permission"],
+      ["Maybe"],
+      ["not a launch requirement"],
+      ["Python"],
+      ["FastAPI"],
+      ["PostgreSQL"],
+      ["not MySQL"],
+      ["credentials"],
+      ["never"],
+      ["private"],
+      ["keyboard"],
+      ["cancel"],
+      ["Noura"],
+      ["Friday"],
+      ["Rahul"],
+      ["Maya"],
+      ["Windows"],
+      ["macOS"],
+      ["Linux"],
+      ["allowNetwork=false"],
+      ["`npm run check`"]
+    ],
+    "forbidden": ["Node.js", "Thursday"],
+    "layout": ""
+  }
+]

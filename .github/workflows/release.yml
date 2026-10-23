@@ -22,11 +22,15 @@ jobs:
     outputs:
       release_id: ${{ steps.release.outputs.release_id }}
       version: ${{ steps.release.outputs.version }}
+      pack_matrix: ${{ steps.packs.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - id: packs
+        shell: bash
+        run: echo "matrix=$(python3 scripts/runtime-packs.py matrix)" >> "$GITHUB_OUTPUT"
       - id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -55,8 +59,59 @@ jobs:
           fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
-  publish-tauri:
+  build-runtime-packs:
     needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-release.outputs.pack_matrix) }}
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Assemble binary wheelhouse and prove local installation without sockets
+        shell: bash
+        run: |
+          python scripts/runtime-packs.py build '${{ matrix.target }}' '${{ matrix.profile }}' '${{ matrix.variant }}' \
+            --output runtime-packs --cache "$RUNNER_TEMP/pbs-cache" --commit "$GITHUB_SHA"
+      - name: Upload verified model-free pack to draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" runtime-packs/* --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: speech-runtime-${{ matrix.target }}-${{ matrix.profile }}-${{ matrix.variant }}
+          path: runtime-packs/*.json
+          if-no-files-found: error
+
+  runtime-pack-catalog:
+    needs: [prepare-release, build-runtime-packs]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: speech-runtime-*
+          path: runtime-pack-metadata
+          merge-multiple: true
+      - name: Bind this workflow's pack hashes and locks into the application catalog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/runtime-packs.py catalog runtime-pack-metadata "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" \
+            "$GITHUB_SHA" model-runtime/runtime-packs.json --metadata-only
+          gh release upload "$GITHUB_REF_NAME" model-runtime/runtime-packs.json --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-pack-catalog
+          path: model-runtime/runtime-packs.json
+          if-no-files-found: error
+
+  publish-tauri:
+    needs: [prepare-release, runtime-pack-catalog]
     name: Build ${{ matrix.name }} installer
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 90
@@ -86,6 +141,10 @@ jobs:
             manifest_platform: macos-x64
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-pack-catalog
+          path: model-runtime
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -184,7 +243,7 @@ jobs:
           PLATFORM: ${{ matrix.manifest_platform }}
         run: |
           manifest="$RUNNER_TEMP/build-$PLATFORM.json"
-          node scripts/release.cjs build-manifest src-tauri/target/release/bundle "$VERSION" "$PLATFORM" "$manifest"
+          node scripts/release.cjs build-manifest src-tauri/target/release/bundle "$VERSION" "$PLATFORM" "$manifest" model-runtime/runtime-packs.json
           gh release upload "$GITHUB_REF_NAME" "$manifest" --clobber
 
   publish-android:
@@ -240,12 +299,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify installer build provenance and publish complete release
+      - name: Verify installer provenance and clean-machine acceptance before publishing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           gh release download "$GITHUB_REF_NAME" --dir release-downloads
+          python3 scripts/runtime-packs.py catalog release-downloads "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" \
+            "$GITHUB_SHA" "$RUNNER_TEMP/verified-runtime-packs.json"
+          cmp release-downloads/runtime-packs.json "$RUNNER_TEMP/verified-runtime-packs.json"
           node scripts/release.cjs verify-assets release-downloads "$VERSION"
+          node scripts/acceptance.cjs release-downloads "$VERSION" "$GITHUB_SHA"
           gh release upload "$GITHUB_REF_NAME" release-downloads/SHA256SUMS.txt --clobber
           gh release edit "$GITHUB_REF_NAME" --draft=false --latest

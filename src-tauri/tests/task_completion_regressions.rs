@@ -139,7 +139,7 @@ fn cleanup_with_context_keeps_the_cacheable_prefix_unchanged() {
         "i will send the report tomorrow",
         &cleanup_settings(),
         "",
-        &server.client(1024),
+        &server.client(4096),
         None,
         &context,
     );
@@ -147,12 +147,18 @@ fn cleanup_with_context_keeps_the_cacheable_prefix_unchanged() {
     assert!(outcome.rewriter_used, "{:?}", outcome.rewriter_error);
     let requests = server.requests();
     let messages = requests[0]["messages"].as_array().unwrap();
-    let prefix = cacheable_prefix();
-    assert_eq!(&messages[..prefix.len()], prefix.as_slice());
-    assert!(messages.last().unwrap()["content"]
+    let system = messages[0]["content"].as_str().unwrap();
+    let prefix = cacheable_prefix()[0]["content"]
         .as_str()
         .unwrap()
-        .contains("private report editor"));
+        .to_owned();
+    // Context follows the byte-stable static prefix and never reaches the user turn.
+    assert!(system.starts_with(&prefix));
+    assert!(system[prefix.len()..].contains("private report editor"));
+    let user = messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(user.starts_with("<transcript>") && user.ends_with("</transcript>"));
+    assert!(user.contains("send the report tomorrow"));
+    assert!(!user.contains("private report editor"));
 }
 
 #[test]
@@ -179,7 +185,7 @@ fn refused_or_meta_task_results_preserve_the_entire_dictation() {
 }
 
 #[test]
-fn coding_dictation_skips_tasks_even_when_a_custom_mode_requests_transformation() {
+fn coding_dictation_ignores_custom_mode_transformations_but_is_still_cleaned() {
     let server = ModelStub::new("This output must never be used.", Some(100));
     let mode = Mode {
         custom_instructions: "Rewrite as prose.".into(),
@@ -188,17 +194,27 @@ fn coding_dictation_skips_tasks_even_when_a_custom_mode_requests_transformation(
     let mut settings = cleanup_settings();
     settings.dictation_mode = "coding".into();
     let outcome = postprocess_with_context(
-        "const sample = 42;",
+        "const sample equals forty two",
         &settings,
         "",
-        &server.client(1024),
+        &server.client(4096),
         Some(&mode),
         &SessionContext::default(),
     );
 
+    // The unrelated answer fails validation, so the deterministic text stays.
     assert!(!outcome.rewriter_used);
-    assert!(outcome.rewrite_ms.is_none());
-    assert!(server.requests().is_empty());
+    assert_eq!(outcome.final_text, outcome.smart);
+    let requests = server.requests();
+    assert!(
+        !requests.is_empty(),
+        "coding dictation now reaches the cleanup model"
+    );
+    for request in requests {
+        let text = request.to_string();
+        assert!(!text.contains("Rewrite as prose"));
+        assert!(text.contains("MODE: keep identifiers"));
+    }
 }
 
 #[test]
@@ -289,4 +305,33 @@ fn snippets_are_inserted_after_task_generation_and_preserve_exact_stored_text() 
     assert!(outcome.rewriter_used);
     assert_eq!(outcome.final_text, format!("Send to {expansion}."));
     assert!(!server.requests()[0].to_string().contains("42 ruE de PARIS"));
+}
+
+#[test]
+fn a_custom_mode_cannot_enable_the_llm_in_the_no_llm_tier() {
+    let server = ModelStub::new("This must never be injected.", Some(100));
+    let settings = AppSettings {
+        intelligence_tier: "raw_verbatim".into(),
+        cleanup_level: "light".into(),
+        ..AppSettings::default()
+    };
+    for translation in [None, Some("bn".to_owned())] {
+        let mode = Mode {
+            custom_instructions: "Rewrite this text.".into(),
+            translate_to: translation,
+            ..Mode::default()
+        };
+        let outcome = postprocess_with_context(
+            "please keep my original language and words",
+            &settings,
+            "",
+            &server.client(4096),
+            Some(&mode),
+            &SessionContext::default(),
+        );
+        assert_eq!(outcome.final_text, outcome.smart);
+        assert_eq!(outcome.rewrite_ms, None);
+        assert!(!outcome.rewriter_used);
+    }
+    assert!(server.requests().is_empty());
 }

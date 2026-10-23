@@ -120,3 +120,135 @@ it("applies healthy status independently and coalesces overlapping refreshes", a
   });
   expect(result.current.flowStatus).toBeNull();
 });
+
+it("restores active model snapshots and ignores an older attempt's terminal event", async () => {
+  const listeners = new Map<string, (payload: any) => void>();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    listeners.set(event, handler);
+    return () => {};
+  });
+  const active = {
+    tier: "smart_flow" as const,
+    attempt_id: "new",
+    revision: 20,
+    phase: "downloading" as const,
+    progress_pct: 42,
+    speed_mbps: 2,
+  };
+  vi.spyOn(api, "getIntelligenceTiers").mockResolvedValue([
+    {
+      tier: "smart_flow",
+      model_id: "qwen3.5-0.8b",
+      installed: false,
+      downloading: true,
+      download: active,
+    },
+  ]);
+  const view = renderHook(useIntelligenceHub);
+  await waitFor(() =>
+    expect(view.result.current.intelligenceDownloads?.smart_flow).toEqual(active),
+  );
+  await act(async () =>
+    listeners.get("intelligence:download-progress")?.({
+      ...active,
+      attempt_id: "old",
+      revision: 19,
+      phase: "complete",
+      progress_pct: 100,
+    }),
+  );
+  expect(view.result.current.activeDownloadTiers.has("smart_flow")).toBe(true);
+  expect(view.result.current.intelligenceDownloads?.smart_flow?.attempt_id).toBe("new");
+  await act(async () =>
+    listeners.get("intelligence:download-progress")?.({
+      ...active,
+      revision: 21,
+      phase: "complete",
+      progress_pct: 100,
+    }),
+  );
+  await waitFor(() =>
+    expect(view.result.current.activeDownloadTiers.has("smart_flow")).toBe(false),
+  );
+  await act(async () => {
+    await view.result.current.refresh();
+  });
+  expect(view.result.current.intelligenceDownloads?.smart_flow?.phase).toBe("complete");
+  expect(view.result.current.intelligenceTiers?.[0].installed).toBe(true);
+});
+
+it("retains independent progress for simultaneous writing models", async () => {
+  const listeners = new Map<string, (payload: any) => void>();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    listeners.set(event, handler);
+    return () => {};
+  });
+  const view = renderHook(() => useIntelligenceHub(false));
+  await waitFor(() => expect(listeners.has("intelligence:download-progress")).toBe(true));
+  await act(async () => {
+    listeners.get("intelligence:download-progress")?.({
+      tier: "smart_flow",
+      revision: 30,
+      phase: "downloading",
+      progress_pct: 70,
+      speed_mbps: 1,
+    });
+    listeners.get("intelligence:download-progress")?.({
+      tier: "deep_context",
+      revision: 31,
+      phase: "downloading",
+      progress_pct: 12,
+      speed_mbps: 2,
+    });
+  });
+  expect(view.result.current.activeDownloadTiers.size).toBe(2);
+  expect(view.result.current.intelligenceDownloads?.smart_flow?.progress_pct).toBe(70);
+  expect(view.result.current.intelligenceDownloads?.deep_context?.progress_pct).toBe(12);
+});
+
+it("restores runtime setup from snapshots and ignores old completion or stale polls", async () => {
+  const listeners = new Map<string, (payload: any) => void>();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    listeners.set(event, handler);
+    return () => {};
+  });
+  const status = await api.getIntelligenceStatus();
+  const snapshot = {
+    version: "b11146",
+    attempt_id: "new",
+    revision: 51,
+    phase: "downloading" as const,
+    progress_pct: 40,
+    speed_mbps: 2,
+    approx_bytes: 100,
+    downloaded_bytes: 40,
+    total_bytes: 100,
+  };
+  vi.spyOn(api, "getIntelligenceStatus").mockResolvedValue({
+    ...status,
+    runtime_download: snapshot,
+  });
+  const view = renderHook(() => useIntelligenceHub(true));
+  await waitFor(() => expect(view.result.current.runtimeDownload?.revision).toBe(51));
+  expect(view.result.current.runtimeDownloadActive).toBe(true);
+  act(() =>
+    listeners.get("runtime:download-progress")?.({
+      ...snapshot,
+      attempt_id: "old",
+      revision: 50,
+      phase: "complete",
+    }),
+  );
+  expect(view.result.current.runtimeDownloadActive).toBe(true);
+  act(() =>
+    listeners.get("runtime:download-progress")?.({
+      ...snapshot,
+      revision: 52,
+      phase: "complete",
+      progress_pct: 100,
+    }),
+  );
+  await act(async () => view.result.current.refresh());
+  expect(view.result.current.runtimeDownload?.phase).toBe("complete");
+  expect(view.result.current.runtimeDownloadActive).toBe(false);
+});

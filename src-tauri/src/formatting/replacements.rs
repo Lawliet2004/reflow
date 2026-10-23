@@ -165,6 +165,9 @@ fn is_identifier_char(c: char) -> bool {
 }
 
 pub(crate) fn is_embedded_identifier(text: &str, start: usize, end: usize) -> bool {
+    if text[end..].starts_with("://") {
+        return true;
+    }
     let before = text[..start]
         .chars()
         .next_back()

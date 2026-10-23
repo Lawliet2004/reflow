@@ -1,0 +1,251 @@
+{
+  "schema": 1,
+  "package_count": 25,
+  "packages": [
+    {
+      "wheel": "annotated_doc-0.0.5-py3-none-any.whl",
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "license": "MIT",
+      "license_files": ["annotated_doc-0.0.5.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "anyio-4.15.1-py3-none-any.whl",
+      "name": "anyio",
+      "version": "4.15.1",
+      "license": "MIT",
+      "license_files": ["anyio-4.15.1.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "certifi-2026.10.19-py3-none-any.whl",
+      "name": "certifi",
+      "version": "2026.10.19",
+      "license": "MPL-2.0",
+      "license_files": ["certifi-2026.10.19.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "filelock-4.2.4-py3-none-any.whl",
+      "name": "filelock",
+      "version": "4.2.4",
+      "license": "MIT",
+      "license_files": ["filelock-4.2.4.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "fsspec-2026.9.0-py3-none-any.whl",
+      "name": "fsspec",
+      "version": "2026.9.0",
+      "license": "BSD-3-Clause",
+      "license_files": ["fsspec-2026.9.0.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "h11-0.16.0-py3-none-any.whl",
+      "name": "h11",
+      "version": "0.16.0",
+      "license": "MIT",
+      "license_files": ["h11-0.16.0.dist-info/licenses/LICENSE.txt"]
+    },
+    {
+      "wheel": "hf_xet-1.7.0-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "name": "hf-xet",
+      "version": "1.7.0",
+      "license": "Apache-2.0",
+      "license_files": ["hf_xet-1.7.0.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "httpcore-1.0.9-py3-none-any.whl",
+      "name": "httpcore",
+      "version": "1.0.9",
+      "license": "BSD-3-Clause",
+      "license_files": ["httpcore-1.0.9.dist-info/licenses/LICENSE.md"]
+    },
+    {
+      "wheel": "httpx-0.28.1-py3-none-any.whl",
+      "name": "httpx",
+      "version": "0.28.1",
+      "license": "BSD-3-Clause",
+      "license_files": ["httpx-0.28.1.dist-info/licenses/LICENSE.md"]
+    },
+    {
+      "wheel": "huggingface_hub-1.11.0-py3-none-any.whl",
+      "name": "huggingface_hub",
+      "version": "1.11.0",
+      "license": "Apache-2.0",
+      "license_files": ["huggingface_hub-1.11.0.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "idna-3.20-py3-none-any.whl",
+      "name": "idna",
+      "version": "3.20",
+      "license": "BSD-3-Clause",
+      "license_files": ["idna-3.20.dist-info/licenses/LICENSE.md"]
+    },
+    {
+      "wheel": "markdown_it_py-4.2.0-py3-none-any.whl",
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "license": null,
+      "license_files": [
+        "markdown_it_py-4.2.0.dist-info/licenses/LICENSE",
+        "markdown_it_py-4.2.0.dist-info/licenses/LICENSE.markdown-it"
+      ]
+    },
+    {
+      "wheel": "mdurl-0.1.2-py3-none-any.whl",
+      "name": "mdurl",
+      "version": "0.1.2",
+      "license": null,
+      "license_files": ["mdurl-0.1.2.dist-info/LICENSE"]
+    },
+    {
+      "wheel": "numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "numpy",
+      "version": "2.4.4",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "license_files": [
+        "numpy/_core/include/numpy/random/LICENSE.txt",
+        "numpy/ma/LICENSE",
+        "numpy/random/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/LICENSE.txt",
+        "numpy-2.4.4.dist-info/licenses/numpy/_core/include/numpy/libdivide/LICENSE.txt",
+        "numpy-2.4.4.dist-info/licenses/numpy/_core/src/common/pythoncapi-compat/COPYING",
+        "numpy-2.4.4.dist-info/licenses/numpy/_core/src/highway/LICENSE",
+        "numpy-2.4.4.dist-info/licenses/numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/numpy/_core/src/umath/svml/LICENSE",
+        "numpy-2.4.4.dist-info/licenses/numpy/fft/pocketfft/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/numpy/linalg/lapack_lite/LICENSE.txt",
+        "numpy-2.4.4.dist-info/licenses/numpy/ma/LICENSE",
+        "numpy-2.4.4.dist-info/licenses/numpy/random/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/numpy/random/src/distributions/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/numpy/random/src/mt19937/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/numpy/random/src/pcg64/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/numpy/random/src/philox/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/numpy/random/src/sfc64/LICENSE.md",
+        "numpy-2.4.4.dist-info/licenses/numpy/random/src/splitmix64/LICENSE.md"
+      ]
+    },
+    {
+      "wheel": "packaging-26.3-py3-none-any.whl",
+      "name": "packaging",
+      "version": "26.3",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "license_files": [
+        "packaging-26.3.dist-info/licenses/LICENSE",
+        "packaging-26.3.dist-info/licenses/LICENSE.APACHE",
+        "packaging-26.3.dist-info/licenses/LICENSE.BSD"
+      ]
+    },
+    {
+      "wheel": "pip-26.2.2-py3-none-any.whl",
+      "name": "pip",
+      "version": "26.2.2",
+      "license": "MIT",
+      "license_files": [
+        "pip/_vendor/cachecontrol/LICENSE.txt",
+        "pip/_vendor/certifi/LICENSE",
+        "pip/_vendor/distlib/LICENSE.txt",
+        "pip/_vendor/distro/LICENSE",
+        "pip/_vendor/idna/LICENSE.md",
+        "pip/_vendor/msgpack/COPYING",
+        "pip/_vendor/packaging/LICENSE",
+        "pip/_vendor/packaging/LICENSE.APACHE",
+        "pip/_vendor/packaging/LICENSE.BSD",
+        "pip/_vendor/pkg_resources/LICENSE",
+        "pip/_vendor/platformdirs/LICENSE",
+        "pip/_vendor/pygments/LICENSE",
+        "pip/_vendor/pyproject_hooks/LICENSE",
+        "pip/_vendor/requests/LICENSE",
+        "pip/_vendor/resolvelib/LICENSE",
+        "pip/_vendor/rich/LICENSE",
+        "pip/_vendor/tomli/LICENSE",
+        "pip/_vendor/tomli_w/LICENSE",
+        "pip/_vendor/truststore/LICENSE",
+        "pip/_vendor/urllib3/LICENSE.txt",
+        "pip-26.2.2.dist-info/licenses/LICENSE.txt",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/cachecontrol/LICENSE.txt",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/certifi/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/distlib/LICENSE.txt",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/distro/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/idna/LICENSE.md",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/msgpack/COPYING",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/packaging/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/packaging/LICENSE.APACHE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/packaging/LICENSE.BSD",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/pkg_resources/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/platformdirs/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/pygments/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/pyproject_hooks/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/requests/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/resolvelib/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/rich/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/tomli/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/tomli_w/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/truststore/LICENSE",
+        "pip-26.2.2.dist-info/licenses/src/pip/_vendor/urllib3/LICENSE.txt"
+      ]
+    },
+    {
+      "wheel": "pygments-2.21.0-py3-none-any.whl",
+      "name": "Pygments",
+      "version": "2.21.0",
+      "license": "BSD-2-Clause",
+      "license_files": ["pygments-2.21.0.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "license": "MIT",
+      "license_files": ["pyyaml-6.0.3.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "rich-15.0.0-py3-none-any.whl",
+      "name": "rich",
+      "version": "15.0.0",
+      "license": "MIT",
+      "license_files": ["rich-15.0.0.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "shellingham-1.5.4-py2.py3-none-any.whl",
+      "name": "shellingham",
+      "version": "1.5.4",
+      "license": "ISC License",
+      "license_files": ["shellingham-1.5.4.dist-info/LICENSE"]
+    },
+    {
+      "wheel": "sherpa_onnx-1.13.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "name": "sherpa_onnx",
+      "version": "1.13.4",
+      "license": "Apache licensed, as found in the LICENSE file",
+      "license_files": ["sherpa_onnx-1.13.4.dist-info/licenses/LICENSE"]
+    },
+    {
+      "wheel": "sherpa_onnx_core-1.13.4-py3-none-manylinux2014_x86_64.whl",
+      "name": "sherpa-onnx-core",
+      "version": "1.13.4",
+      "license": "Apache-2.0",
+      "license_files": []
+    },
+    {
+      "wheel": "tqdm-4.70.1-py3-none-any.whl",
+      "name": "tqdm",
+      "version": "4.70.1",
+      "license": "MPL-2.0 AND MIT",
+      "license_files": ["tqdm-4.70.1.dist-info/licenses/LICENCE"]
+    },
+    {
+      "wheel": "typer-0.27.3-py3-none-any.whl",
+      "name": "typer",
+      "version": "0.27.3",
+      "license": "MIT",
+      "license_files": ["typer-0.27.3.dist-info/licenses/LICENSE", "typer/_click/LICENSE.txt"]
+    },
+    {
+      "wheel": "typing_extensions-4.16.0-py3-none-any.whl",
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "license": "PSF-2.0",
+      "license_files": ["typing_extensions-4.16.0.dist-info/licenses/LICENSE"]
+    }
+  ],
+  "note": "The pack retains full license and notice text; this inventory is not distribution approval."
+}

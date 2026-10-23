@@ -96,6 +96,11 @@ export const LatencyWaterfall: React.FC<WaterfallProps> = ({ metrics, percentile
           {metrics.rewrite_ms ? (metrics.llm_was_warm ? "warm" : "cold start") : "not used"}
         </p>
       )}
+      {metrics.rewrite_fallback_reason && (
+        <p className="text-muted mb-3">
+          Cleanup fallback: <code>{metrics.rewrite_fallback_reason}</code>
+        </p>
+      )}
       {metrics.llm_generation && (
         <p className="text-muted mb-3">
           Writing: {metrics.llm_generation.prompt_tokens} input tokens ·{" "}

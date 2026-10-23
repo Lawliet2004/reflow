@@ -1,0 +1,35 @@
+{
+  "scope": "Historical candidate accepted before the new relationship guard; this is not a current accepted output.",
+  "old_safety_sha256": "fc8e7013224a045a8e0962dd5353c0a4b63865a9a8371cb2c2ab48e9f8f8e72c",
+  "row": {
+    "backend": "Gpu(\"NVIDIA GeForce RTX 2050\")",
+    "category": "structure",
+    "context": 4096,
+    "device_vram_used_mib": 1259,
+    "fallback": null,
+    "forbidden": [],
+    "formatting_ms": 54,
+    "generation": {
+      "decode_ms": 206.269,
+      "output_tokens": 26,
+      "prompt_ms": 85.377,
+      "prompt_tokens": 403
+    },
+    "id": "meeting_actions",
+    "input": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday",
+    "layout_ok": true,
+    "missing": [],
+    "output": "Rahul will finish the frontend by Friday. Priya owns API integration testing on Saturday, and the launch is before Monday.",
+    "prepared": "Rahul will finish the frontend by Friday Priya owns API integration testing is Saturday and launch is before Monday.",
+    "reported_context": 4096,
+    "reused_server": false,
+    "rewrite_ms": 320,
+    "server_context": 4096,
+    "server_peak_rss_bytes": 796803072,
+    "startup_ms": 1702,
+    "temperature": 0.15,
+    "total_ms": 379,
+    "used": true
+  },
+  "current_regression_test": "rewrite::safety::tests::a_new_preposition_cannot_replace_a_finite_predicate_and_reattach_a_fact"
+}

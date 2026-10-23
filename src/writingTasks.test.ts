@@ -75,4 +75,17 @@ describe("writing tasks", () => {
       }),
     ).toBe("custom");
   });
+
+  it("leaves intelligent formatting preferences untouched when a task changes", () => {
+    const settings = {
+      transcript_format: "auto" as const,
+      custom_format_instructions: "keep bullets short",
+      intelligence_tier: "smart_flow" as const,
+      cleanup_level: "medium" as const,
+      dictation_mode: "normal" as const,
+    };
+    const patch = writingTaskPatch(settings, "natural");
+    expect(patch).not.toHaveProperty("transcript_format");
+    expect(patch).not.toHaveProperty("custom_format_instructions");
+  });
 });

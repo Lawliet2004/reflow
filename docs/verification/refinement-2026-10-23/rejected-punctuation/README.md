@@ -1,0 +1,13 @@
+# Rejected punctuation instructions
+
+23 October 2026. Production prompt, cleanup, validation, context budgets and decoding remain unchanged from [paragraph-preservation](../paragraph-preservation/README.md). No weights were downloaded or additional model process started. These probes reused the running app's installed Qwen3.5-0.8B at its verified 1024 context.
+
+The remaining ordinary paragraph, greeting/sign-off, requirement and meeting-output failures were investigated using 54 raw diagnostic requests. Three shorter sentence/punctuation instructions did not split the ordinary run-on sentence and repeated the unsafe interpretation assigning Saturday's testing to Priya. Removing the prepared terminal period improved one email's punctuation but did not improve the ordinary sentence or requirements. Explicit email-shape requests still failed to create its layout. These diagnostic outputs did **not** pass through the production safety gate and are not accepted results.
+
+Moving editing guidance after the transcript or reinforcing sentence punctuation at the end of the user turn improved some commas and the email's body boundary. The most promising suffix was then tested on all 50 inputs through the complete production pipeline, paired with an unchanged control. A local proxy transformed both chat-template accounting and generation messages; the stable system prefix, source and sampling were unchanged. The independent-requirement bullet instruction was retained.
+
+The candidate applied **39/50** rewrites versus **43/50** for the control. It improved the email from `Hi Noura, the invoice is attached thanks, Maya.` to `Hi Noura, the invoice is attached. Thanks, Maya.` However, six cases newly fell back while two previously rejected cases became accepted. The technical-term case lost its visibly polished FastAPI/PostgreSQL/Redis casing to the deterministic fallback. Ordinary sentence and semantic-layout gaps remained. This does not justify adopting the instruction or weakening a guard.
+
+The control met 50/50 coarse contracts and the candidate 49/50. The latter includes an oracle false failure: `instead of React/MySQL` preserves the exclusions required by the `not React/MySQL` substrings. Raw missing fields and all decisions are retained. Neither score proves publication-quality writing.
+
+`raw-diagnostics.json`, `controlled-1024.json` and `provenance.json` retain inputs, candidates/final outputs, applied/fallback status, timing/token observations, source hashes and probe-script hashes. The full cross-platform implementation remains incomplete; see [the active tracker](../../../implementation-progress.md).

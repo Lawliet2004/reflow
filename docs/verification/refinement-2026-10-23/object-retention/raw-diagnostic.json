@@ -1,0 +1,277 @@
+{
+  "instruction": "Edit this transcript into fluent, grammatical writing in its original language. Keep all meaningful words, including pronouns and their objects. Split run-on sentences. Use paragraphs for topic changes and separate greetings/sign-offs when present; use bullets only for independent items.",
+  "actual_context": 1024,
+  "production_safety_gate_applied": false,
+  "results": [
+    {
+      "id": "ordinary_paragraph",
+      "source": "Hey I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+      "production_output": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+      "candidate": "Hey, I wanted to ask you about the project I finished the frontend yesterday and I'm working on the backend today.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 25,
+        "prompt_tokens": 360,
+        "total_tokens": 385,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 117,
+        "prompt_ms": 505.455,
+        "prompt_per_token_ms": 4.320128205128205,
+        "prompt_per_second": 231.4746119832626,
+        "predicted_n": 25,
+        "predicted_ms": 209.644,
+        "predicted_per_token_ms": 8.735166666666666,
+        "predicted_per_second": 114.47978477800461
+      },
+      "ms": 780
+    },
+    {
+      "id": "technical_correction",
+      "source": "Use svelte and connect it to postgres not mysql.",
+      "production_output": "Use svelte and connect it to postgres not mysql.",
+      "candidate": "Use Svelte and connect it to PostgreSQL instead of MySQL.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 13,
+        "prompt_tokens": 348,
+        "total_tokens": 361,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 105,
+        "prompt_ms": 82.349,
+        "prompt_per_token_ms": 0.7842761904761905,
+        "prompt_per_second": 1275.061020777423,
+        "predicted_n": 13,
+        "predicted_ms": 102.412,
+        "predicted_per_token_ms": 8.534333333333334,
+        "predicted_per_second": 117.17376869898058
+      },
+      "ms": 191
+    },
+    {
+      "id": "price_literal",
+      "source": "The price is $125.50 do not change it.",
+      "production_output": "The price is $125.50. Do not change it.",
+      "candidate": "The price is $125.50. Do not change it.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 17,
+        "prompt_tokens": 352,
+        "total_tokens": 369,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 109,
+        "prompt_ms": 82.918,
+        "prompt_per_token_ms": 0.7607155963302753,
+        "prompt_per_second": 1314.551725801394,
+        "predicted_n": 17,
+        "predicted_ms": 139.581,
+        "predicted_per_token_ms": 8.7238125,
+        "predicted_per_second": 114.62878185426383
+      },
+      "ms": 228
+    },
+    {
+      "id": "email",
+      "source": "Hi Noura the invoice is attached thanks Maya.",
+      "production_output": "Hi Noura, the invoice is attached thanks, Maya.",
+      "candidate": "Hi Noura, the invoice is attached thanks, Maya.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 13,
+        "prompt_tokens": 347,
+        "total_tokens": 360,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 104,
+        "prompt_ms": 73.941,
+        "prompt_per_token_ms": 0.7109711538461538,
+        "prompt_per_second": 1406.5268254419063,
+        "predicted_n": 13,
+        "predicted_ms": 98.563,
+        "predicted_per_token_ms": 8.213583333333334,
+        "predicted_per_second": 121.74954090277285
+      },
+      "ms": 177
+    },
+    {
+      "id": "requirements_modifiers",
+      "source": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+      "production_output": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+      "candidate": "Use encrypted sqlite storage support offline dictation and offer an optional dark mode.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 16,
+        "prompt_tokens": 352,
+        "total_tokens": 368,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 109,
+        "prompt_ms": 73.504,
+        "prompt_per_token_ms": 0.674348623853211,
+        "prompt_per_second": 1482.912494558119,
+        "predicted_n": 16,
+        "predicted_ms": 122.329,
+        "predicted_per_token_ms": 8.155266666666666,
+        "predicted_per_second": 122.62014730767031
+      },
+      "ms": 201
+    },
+    {
+      "id": "two_topics",
+      "source": "The frontend is complete and the tests pass. On a different topic the office move is scheduled for Thursday and we still need boxes.",
+      "production_output": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+      "candidate": "The frontend is complete and the tests pass. On a different topic, the office move is scheduled for Thursday and we still need boxes.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 28,
+        "prompt_tokens": 363,
+        "total_tokens": 391,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 120,
+        "prompt_ms": 77.979,
+        "prompt_per_token_ms": 0.649825,
+        "prompt_per_second": 1538.8758511907051,
+        "predicted_n": 28,
+        "predicted_ms": 220.34,
+        "predicted_per_token_ms": 8.16074074074074,
+        "predicted_per_second": 122.53789597894162
+      },
+      "ms": 303
+    },
+    {
+      "id": "no_wait_request",
+      "source": "No wait for me outside do not leave without me.",
+      "production_output": "No wait for me outside do not leave without me.",
+      "candidate": "No wait for me outside do not leave without me.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 12,
+        "prompt_tokens": 348,
+        "total_tokens": 360,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 105,
+        "prompt_ms": 73.81,
+        "prompt_per_token_ms": 0.702952380952381,
+        "prompt_per_second": 1422.5714672808563,
+        "predicted_n": 12,
+        "predicted_ms": 91.123,
+        "predicted_per_token_ms": 8.283909090909091,
+        "predicted_per_second": 120.71595535704486
+      },
+      "ms": 170
+    },
+    {
+      "id": "hinglish",
+      "source": "Amina \u0928\u0947 2 boxes \u092d\u0947\u091c\u0947 \u0932\u0947\u0915\u093f\u0928 \u092e\u0941\u091d\u0947 3 \u0928\u0939\u0940\u0902 \u091a\u093e\u0939\u093f\u090f.",
+      "production_output": "Amina \u0928\u0947 2 boxes \u092d\u0947\u091c\u0947 \u0932\u0947\u0915\u093f\u0928 \u092e\u0941\u091d\u0947 3 \u0928\u0939\u0940\u0902 \u091a\u093e\u0939\u093f\u090f.",
+      "candidate": "Amina \u0928\u0947 2 boxes \u092d\u0947\u091c\u0947 \u0932\u0947\u0915\u093f\u0928 \u092e\u0941\u091d\u0947 3 \u0928\u0939\u0940\u0902 \u091a\u093e\u0939\u093f\u090f.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 18,
+        "prompt_tokens": 354,
+        "total_tokens": 372,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 111,
+        "prompt_ms": 74.09,
+        "prompt_per_token_ms": 0.6674774774774775,
+        "prompt_per_second": 1498.177891753273,
+        "predicted_n": 18,
+        "predicted_ms": 139.131,
+        "predicted_per_token_ms": 8.184176470588236,
+        "predicted_per_second": 122.18700361529781
+      },
+      "ms": 219
+    },
+    {
+      "id": "hindi",
+      "source": "\u092e\u0941\u091d\u0947 \u0938\u094b\u092e\u0935\u093e\u0930 \u0915\u094b \u0930\u093f\u092a\u094b\u0930\u094d\u091f \u092d\u0947\u091c\u0928\u0940 \u0939\u0948 \u0914\u0930 \u0921\u0947\u091f\u093e \u092e\u093f\u091f\u093e\u0928\u093e \u0928\u0939\u0940\u0902 \u0939\u0948.",
+      "production_output": "\u092e\u0941\u091d\u0947 \u0938\u094b\u092e\u0935\u093e\u0930 \u0915\u094b \u0930\u093f\u092a\u094b\u0930\u094d\u091f \u092d\u0947\u091c\u0928\u0940 \u0939\u0948 \u0914\u0930 \u0921\u0947\u091f\u093e \u092e\u093f\u091f\u093e\u0928\u093e \u0928\u0939\u0940\u0902 \u0939\u0948\u0964",
+      "candidate": "\u092e\u0941\u091d\u0947 \u0938\u094b\u092e\u0935\u093e\u0930 \u0915\u094b \u0930\u093f\u092a\u094b\u0930\u094d\u091f \u092d\u0947\u091c\u0928\u0940 \u0939\u0948 \u0914\u0930 \u0921\u0947\u091f\u093e \u092e\u093f\u091f\u093e\u0928\u093e \u0928\u0939\u0940\u0902 \u0939\u0948\u0964",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 25,
+        "prompt_tokens": 361,
+        "total_tokens": 386,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 118,
+        "prompt_ms": 76.339,
+        "prompt_per_token_ms": 0.6469406779661017,
+        "prompt_per_second": 1545.736779365724,
+        "predicted_n": 25,
+        "predicted_ms": 197.932,
+        "predicted_per_token_ms": 8.247166666666667,
+        "predicted_per_second": 121.25376391892166
+      },
+      "ms": 281
+    },
+    {
+      "id": "spanish",
+      "source": "No borres la base de datos y conserva los nombres originales.",
+      "production_output": "No borres la base de datos y conserva los nombres originales.",
+      "candidate": "No borres la base de datos y conserva los nombres originales.",
+      "finish": "stop",
+      "usage": {
+        "completion_tokens": 14,
+        "prompt_tokens": 350,
+        "total_tokens": 364,
+        "prompt_tokens_details": {
+          "cached_tokens": 243
+        }
+      },
+      "timings": {
+        "cache_n": 243,
+        "prompt_n": 107,
+        "prompt_ms": 76.334,
+        "prompt_per_token_ms": 0.7134018691588785,
+        "prompt_per_second": 1401.7344826682736,
+        "predicted_n": 14,
+        "predicted_ms": 106.661,
+        "predicted_per_token_ms": 8.204692307692309,
+        "predicted_per_second": 121.8814749533569
+      },
+      "ms": 188
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "audio_seconds": 4.605,
+  "backend": "Phonon-2 \u00b7 CPU int8 \u00b7 cpu: C encoder (packed one-dot int8) + C TDT loop, avx2 tier",
+  "device": "cpu",
+  "load_ms": 11047,
+  "model_downloads": 0,
+  "native_desktop_acceptance": false,
+  "other_language_rejected": true,
+  "precision": "int8",
+  "reference": "The application should work offline. Please keep my recordings private.",
+  "reference_words_match": true,
+  "stop_and_decode_ms": 202,
+  "text": "The application should work offline. Please keep my recordings private.",
+  "input": {
+    "sample_rate": 48000,
+    "channels": 2,
+    "bits_per_sample": 16,
+    "left_peak": 0,
+    "right_peak": 22389,
+    "sha256": "7fde4282fd9158f39c9c73ca18179f334ca397db1414500589774c85435d9144"
+  },
+  "runtime_scope": "Existing installed interpreter, isolated policy/app data, installed verified weights; resampling regression, not a fresh-package acceptance run.",
+  "log_sha256": "5e40e3f4efd66174a6b603b172026480a911971121d5c48f3fb41818035d2927"
+}

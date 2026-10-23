@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "target": "x86_64-unknown-linux-gnu",
+  "source_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "tested_at": "2026-10-23T01:47:56.291262+00:00",
+  "offline_wheel_install": "pass",
+  "pip_check": "pass",
+  "cpu_imports": "pass",
+  "accelerator_execution": "requires_native_acceptance",
+  "note": "No model weights; this probe does not prove ASR or desktop permission behavior."
+}

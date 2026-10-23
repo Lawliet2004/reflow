@@ -4,8 +4,11 @@ use std::time::{Duration, Instant};
 use parking_lot::RwLock;
 use serde_json::{json, Value};
 
+use super::chunker::{self, MAX_CHUNK_WORDS};
+use super::cleanup_prompt::{self, CleanupMode};
 use super::prompt::build_messages;
-use super::safety::{accept_rewrite, preserves_item_words};
+use super::script::estimate_tokens;
+use super::validate;
 
 pub const CIRCUIT_BREAKER_MAX_FAILURES: usize = 3;
 pub const CIRCUIT_BREAKER_RESET_DURATION: Duration = Duration::from_secs(300); // 5 minutes
@@ -95,11 +98,62 @@ fn model_name_for(id: &str) -> &str {
 }
 
 /// `--ctx-size` used when the caller never declares one.
-const DEFAULT_CONTEXT_SIZE: u32 = 1024;
+pub const DEFAULT_CONTEXT_SIZE: u32 = 4096;
+/// Smallest `--ctx-size` the cleanup prompt is sized for.
+pub const MIN_CONTEXT_SIZE: u32 = 4096;
 
-/// ~4 characters per token is the prose average — the fallback when the
-/// server's `/tokenize` endpoint is unavailable.
-const CHARS_PER_TOKEN: usize = 4;
+/// Sampling for cleanup. The task copies its input, so the repeat penalty must
+/// stay neutral: raising it makes the model avoid the words it should keep.
+pub const SAMPLING_TEMPERATURE: f64 = 0.1;
+pub const SAMPLING_TOP_K: u32 = 20;
+pub const SAMPLING_TOP_P: f64 = 0.9;
+pub const SAMPLING_MIN_P: f64 = 0.0;
+pub const SAMPLING_REPEAT_PENALTY: f64 = 1.0;
+/// Fixed so identical input gives identical output between runs.
+pub const SAMPLING_SEED: u32 = 20_260_723;
+/// `</transcript>` stops a model that tries to echo the closing tag.
+pub const STOP_SEQUENCES: [&str; 5] = [
+    "<|im_end|>",
+    "<|endoftext|>",
+    "</transcript>",
+    "\n\nTranscript:",
+    "\nUser:",
+];
+
+/// Inputs shorter than this many words skip the LLM: the deterministic
+/// cleaner already handles them and a model has nothing to restructure.
+pub const SKIP_LLM_BELOW_WORDS: usize = 4;
+
+/// Reason codes surfaced in logs and the latency waterfall. Never text.
+pub const REASON_SKIPPED_SHORT: &str = "skipped_short";
+pub const REASON_LLM_ERROR: &str = "llm_error";
+pub const REASON_CONTEXT_OVERFLOW: &str = "context_overflow";
+pub const REASON_BREAKER_OPEN: &str = "breaker_open";
+pub const REASON_TIMEOUT: &str = "timeout";
+pub const REASON_TRUNCATED: &str = "truncated";
+
+/// The chat-completions body for one cleanup request.
+pub(crate) fn request_body(
+    model_name: &str,
+    temperature: f64,
+    max_tokens: usize,
+    messages: Vec<Value>,
+) -> Value {
+    json!({
+        "model": model_name,
+        "temperature": temperature,
+        "top_k": SAMPLING_TOP_K,
+        "top_p": SAMPLING_TOP_P,
+        "min_p": SAMPLING_MIN_P,
+        "repeat_penalty": SAMPLING_REPEAT_PENALTY,
+        "seed": SAMPLING_SEED,
+        "cache_prompt": true,
+        "chat_template_kwargs": { "enable_thinking": false },
+        "max_tokens": max_tokens,
+        "stop": STOP_SEQUENCES,
+        "messages": messages,
+    })
+}
 
 #[derive(Clone, Debug)]
 pub struct FlowClient {
@@ -116,6 +170,8 @@ pub struct FlowClient {
     /// The `--ctx-size` the live server was launched with. The input fit check
     /// needs the window itself, not just the completion budget derived from it.
     pub context_size: u32,
+    /// `SAMPLING_TEMPERATURE` by default; the opt-in quality benchmark compares low temperatures.
+    pub temperature: f64,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -170,6 +226,7 @@ impl FlowClient {
             breaker: CircuitBreaker::default(),
             max_completion_tokens: Self::completion_budget(DEFAULT_CONTEXT_SIZE),
             context_size: DEFAULT_CONTEXT_SIZE,
+            temperature: SAMPLING_TEMPERATURE,
         }
     }
 
@@ -181,6 +238,7 @@ impl FlowClient {
             breaker: CircuitBreaker::default(),
             max_completion_tokens: Self::completion_budget(DEFAULT_CONTEXT_SIZE),
             context_size: DEFAULT_CONTEXT_SIZE,
+            temperature: SAMPLING_TEMPERATURE,
         }
     }
 
@@ -192,6 +250,7 @@ impl FlowClient {
             breaker,
             max_completion_tokens: Self::completion_budget(DEFAULT_CONTEXT_SIZE),
             context_size: DEFAULT_CONTEXT_SIZE,
+            temperature: SAMPLING_TEMPERATURE,
         }
     }
 
@@ -265,7 +324,6 @@ impl FlowClient {
             return Err("flow rewriter is not available".into());
         };
         let url = format!("{base}/v1/chat/completions");
-        let word_count = req.text.split_whitespace().count();
         let input_tokens =
             self.input_token_count(base, &req.text, deadline.saturating_sub(started.elapsed()));
         let prompt_tokens = self
@@ -279,29 +337,21 @@ impl FlowClient {
                     .saturating_add(64);
                 supplied.max(input_tokens.saturating_add(Self::PROMPT_RESERVE_TOKENS))
             });
-        // A cleanup rewrite is about as long as its input, so the budget has to
-        // scale with the input rather than sit at a constant.
-        //
-        // The old ceiling was 256 tokens — roughly 190 words — which silently cut
-        // off the polished text of any longer dictation mid-sentence. The floor
-        // matters too: a very short utterance still needs room for punctuation and
-        // capitalisation. `3x words` is generous headroom for a model that is
-        // meant to return the same content, and the upper bound keeps a runaway
-        // generation from consuming the whole context window.
-        //
-        // `input_tokens * 1.5` joins the floor: whitespace-free input (CJK
-        // dictation transcribes without spaces) counts as a single "word",
-        // which would otherwise cap a real answer at 64 tokens and hand back a
-        // truncated rewrite the safety gate can accept.
-        let max_tokens = (word_count * 3)
-            .max(input_tokens.saturating_mul(3) / 2)
-            .clamp(64, self.max_completion_tokens);
+        // A cleanup rewrite is about as long as its input, so the budget scales
+        // with the input: `ceil(1.3 x input tokens) + 32`. The slack covers
+        // list markers and line breaks; the cap keeps a runaway generation from
+        // consuming the window. A cut-off answer is rejected (`finish_reason:
+        // length`), never injected.
+        let max_tokens = chunker::completion_tokens(input_tokens);
         // Prompt prefix + input + a full-length answer must fit the window
         // whole. If they cannot, llama-server either refuses the request or
         // cuts the generation at the window edge — a half-rewrite is worse
         // than no rewrite, so this rejects early and lets the caller fall back
         // to the deterministic Stage-1 text.
-        if prompt_tokens.saturating_add(max_tokens) > self.context_size as usize {
+        if max_tokens > self.max_completion_tokens
+            || prompt_tokens.saturating_add(max_tokens).saturating_add(32)
+                > self.context_size as usize
+        {
             return Err(format!(
                 "flow rewrite input too long: ~{input_tokens} input tokens plus the prompt prefix \
                  and a {max_tokens}-token answer exceed the {}-token context",
@@ -315,20 +365,7 @@ impl FlowClient {
             return Err("flow rewrite deadline expired during context accounting".into());
         }
         let model_name = model_name_for(&req.model_id);
-        let body = json!({
-            "model": model_name,
-            "temperature": 0.0,
-            "top_p": 1.0,
-            "repeat_penalty": 1.0,
-            "max_tokens": max_tokens,
-            "stop": [
-                "<|im_end|>",
-                "<|endoftext|>",
-                "\n\nTranscript:",
-                "\nUser:",
-            ],
-            "messages": messages,
-        });
+        let body = request_body(model_name, self.temperature, max_tokens, messages);
 
         let (tx, rx) = std::sync::mpsc::channel();
         let generation = self.generation.clone();
@@ -403,7 +440,7 @@ impl FlowClient {
         let started = Instant::now();
         let result = post_json(
             format!("{base}/apply-template"),
-            json!({ "messages": messages }),
+            json!({ "messages": messages, "add_generation_prompt": true, "chat_template_kwargs": { "enable_thinking": false } }),
             remaining.min(Duration::from_secs(2)),
         )
         .and_then(|value| {
@@ -429,10 +466,6 @@ impl FlowClient {
             }
         }
     }
-}
-
-fn estimate_tokens(text: &str) -> usize {
-    text.chars().count().div_ceil(CHARS_PER_TOKEN)
 }
 
 /// POST `{base}/tokenize` and count the returned token ids.
@@ -541,6 +574,15 @@ fn extract_content(payload: &Value) -> Result<String, String> {
                 .into(),
         );
     }
+    if payload["choices"][0]["finish_reason"].as_str() != Some("stop")
+        || payload["truncated"].as_bool() == Some(true)
+        || payload["choices"][0]["truncated"].as_bool() == Some(true)
+    {
+        return Err(
+            "flow completion did not confirm a complete response; preserving the full transcript"
+                .into(),
+        );
+    }
     let content = &payload["choices"][0]["message"]["content"];
     let raw = if let Some(text) = content.as_str() {
         text.to_string()
@@ -578,8 +620,8 @@ fn strip_think(text: &str) -> String {
 
 // Conservative sentence boundaries: a false negative keeps the full transcript
 // through fallback, while a false positive can detach a name or instruction.
-fn is_sentence_boundary(source: &str, index: usize, ch: char) -> bool {
-    if matches!(ch, '。' | '！' | '？') {
+pub(crate) fn is_sentence_boundary(source: &str, index: usize, ch: char) -> bool {
+    if matches!(ch, '。' | '！' | '？' | '।' | '॥') {
         return true;
     }
     let end = index + ch.len_utf8();
@@ -604,150 +646,66 @@ fn is_sentence_boundary(source: &str, index: usize, ch: char) -> bool {
     !initial && !dotted_abbreviation && !abbreviation
 }
 
-/// Splits "• item" / "3. item" into its marker and its text. The item is
-/// rewritten with the marker stripped and re-attached afterwards, so the model
-/// only ever sees the item itself.
-fn split_list_marker(line: &str) -> (&str, &str) {
-    for marker in ["• ", "- ", "* "] {
-        if let Some(rest) = line.strip_prefix(marker) {
-            return (marker, rest);
-        }
+/// Reason code for a request-level failure. Codes only; never text.
+fn failure_code(error: &str) -> &'static str {
+    if error.contains("too long") || error.contains("exceeds the local model context") {
+        REASON_CONTEXT_OVERFLOW
+    } else if error.contains("circuit breaker") {
+        REASON_BREAKER_OPEN
+    } else if error.contains("timed out") || error.contains("deadline") {
+        REASON_TIMEOUT
+    } else if error.contains("token or context limit") {
+        REASON_TRUNCATED
+    } else {
+        REASON_LLM_ERROR
     }
-    let digits = line.bytes().take_while(|b| b.is_ascii_digit()).count();
-    if digits > 0
-        && matches!(line.as_bytes().get(digits), Some(b'.' | b')'))
-        && line.as_bytes().get(digits + 1) == Some(&b' ')
-    {
-        return (&line[..digits + 2], &line[digits + 2..]);
-    }
-    ("", line)
 }
 
-/// Rewrite each complete section, returning no partial result on failure.
-fn rewrite_segments(
-    source: &str,
-    level: &str,
-    budget: Duration,
-    rewrite: &mut impl FnMut(&str, Duration) -> Result<String, String>,
-) -> Result<String, String> {
-    fn visit(
-        source: &str,
-        level: &str,
-        started: Instant,
-        budget: Duration,
-        attempts: &mut usize,
-        rewrite: &mut impl FnMut(&str, Duration) -> Result<String, String>,
-    ) -> Result<String, String> {
-        let remaining = budget.saturating_sub(started.elapsed());
-        if remaining.is_zero() || *attempts >= 64 {
-            return Err("Paragraph refinement reached its total deadline or segment limit; original transcript preserved.".into());
-        }
-        // Keep dictated line breaks as hard boundaries. A whole-text rewrite
-        // can move a paragraph while retaining the same number of newlines.
-        if source.contains('\n') {
-            let mut lines = Vec::new();
-            for line in source.split('\n') {
-                if line.trim().is_empty() {
-                    lines.push(line.to_owned());
-                } else {
-                    let leading = line.len() - line.trim_start().len();
-                    let trailing = line.trim_end().len();
-                    let rewritten = visit(line.trim(), level, started, budget, attempts, rewrite)?;
-                    lines.push(format!(
-                        "{}{rewritten}{}",
-                        &line[..leading],
-                        &line[trailing..]
-                    ));
-                }
-            }
-            return Ok(lines.join("\n"));
-        }
-        *attempts += 1;
-        // ponytail: one request per list line, so latency scales with the item
-        // count. Upgrade path: rewrite a contiguous list block in one call and
-        // validate that line and marker counts are unchanged.
-        let (marker, body) = split_list_marker(source);
-        let result = match rewrite(body, remaining) {
-            Ok(candidate) => {
-                let mut candidate = candidate;
-                // A bullet item is a fragment: keep it unpunctuated unless the
-                // dictated item already ended with a period.
-                if !marker.is_empty() && !body.ends_with('.') && candidate.ends_with('.') {
-                    candidate.pop();
-                }
-                // A lead-in ends in a colon; the model tends to "." it back
-                // into an ordinary sentence.
-                if body.ends_with(':') {
-                    // The caller owns the existing marker. Keep the model from
-                    // numbering the header itself despite the fragment rule.
-                    candidate = split_list_marker(&candidate).1.to_owned();
-                    if candidate.ends_with('.') {
-                        candidate.pop();
-                    }
-                    if !candidate.ends_with(':') {
-                        candidate.push(':');
-                    }
-                }
-                if !marker.is_empty() && !preserves_item_words(body, &candidate) {
-                    return Err(
-                        "LLM changed a listed item's content; original transcript preserved."
-                            .into(),
-                    );
-                }
-                accept_rewrite(body, &candidate, level)
-                    .map(|text| format!("{marker}{text}"))
-                    .ok_or_else(|| "LLM rewrite rejected by safety gate".into())
-            }
-            Err(error) if error.starts_with("flow rewrite input too long") => {
-                // Split only at paragraph/sentence boundaries. Never split a long
-                // sentence arbitrarily: that could detach a negation from its verb.
-                let middle = body.len() / 2;
-                let boundary = body
-                    .char_indices()
-                    .filter_map(|(index, ch)| {
-                        let end = index + ch.len_utf8();
-                        (is_sentence_boundary(body, index, ch)
-                            && end < body.len()
-                            && !body[end..].trim().is_empty())
-                        .then_some(end)
-                    })
-                    .min_by_key(|end| end.abs_diff(middle));
-                let Some(boundary) = boundary else {
-                    return Err(error);
-                };
-                let left = &body[..boundary];
-                let right = &body[boundary..];
-                let leading = right.len() - right.trim_start().len();
-                let left_trimmed = left.trim_end();
-                let separator = &body[left_trimmed.len()..boundary + leading];
-                let first = visit(left_trimmed, level, started, budget, attempts, rewrite)?;
-                let second = visit(&right[leading..], level, started, budget, attempts, rewrite)?;
-                Ok(format!("{marker}{first}{separator}{second}"))
-            }
-            Err(error) => Err(error),
-        };
-        // Each existing item and its lead-in are already one structural line.
-        // Expanding a fragment can duplicate the whole list while still sharing
-        // enough words to pass the meaning checks. Full prose can still gain
-        // paragraphs or become a list when its input has no marker/ending colon.
-        if (!marker.is_empty() || body.ends_with(':'))
-            && result
-                .as_ref()
-                .is_ok_and(|candidate| candidate.contains(['\n', '\r']))
-        {
-            return Err(
-                "LLM expanded an existing list fragment; original transcript preserved.".into(),
-            );
-        }
-        result
-    }
-    visit(source, level, Instant::now(), budget, &mut 0, rewrite)
+/// Tokens the chat template adds around the system and user messages.
+const TEMPLATE_OVERHEAD_TOKENS: usize = 64;
+
+/// One request: build, send, validate. `Err` carries the reason code and a
+/// message safe to show the user (it never contains transcript text).
+fn clean_chunk(
+    client: &FlowClient,
+    request: &RewriteRequest,
+    system: &str,
+    chunk: &str,
+    timeout: Duration,
+) -> Result<String, (&'static str, String)> {
+    let mut bounded = client.clone();
+    bounded.timeout = timeout;
+    let mut request = request.clone();
+    request.text = chunk.to_owned();
+    let messages = cleanup_prompt::messages(system.to_owned(), chunk);
+    let raw = bounded
+        .rewrite_messages(&request, messages)
+        .map_err(|error| (failure_code(&error), error))?;
+    let cleaned = validate::validate(chunk, &raw).map_err(|rejection| {
+        (
+            rejection.code(),
+            format!(
+                "LLM output rejected ({}); deterministic text kept",
+                rejection.code()
+            ),
+        )
+    })?;
+    Ok(restore_explicit_paragraphs(chunk, &cleaned))
+}
+
+fn ends_with_list_line(text: &str) -> bool {
+    let last = text.lines().next_back().unwrap_or_default().trim_start();
+    last.ends_with(':')
+        || last.starts_with("- ")
+        || last
+            .split_once(". ")
+            .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
 }
 
 ///
 /// `final_text` is the text to inject (or display). `used` indicates whether
 /// the LLM actually rewrote the input. `error` is `Some` when the rewriter
-/// was attempted but failed, including the safety gate rejecting an
+/// was attempted but failed, including the validator rejecting an
 /// otherwise-OK response. Callers are expected to surface `error` to the
 /// user instead of silently degrading.
 pub fn polish_or_fallback(
@@ -755,146 +713,173 @@ pub fn polish_or_fallback(
     smart_text: &str,
     req: &RewriteRequest,
 ) -> PolishOutcome {
-    polish_with_context_or_fallback(client, smart_text, req, &[])
+    polish_with_context_or_fallback(client, smart_text, req, None, &[])
 }
 
+/// The one cleanup pipeline: live dictation, Retry transcript and file import
+/// all arrive here with the deterministic-cleaned text.
+///
+/// Long input is split into chunks (never inside a spoken list) that are
+/// cleaned sequentially. Each chunk is validated on its own; a chunk that
+/// fails keeps its deterministic text, so one bad chunk never costs the rest.
 pub(crate) fn polish_with_context_or_fallback(
     client: &FlowClient,
     smart_text: &str,
     req: &RewriteRequest,
+    formatting: Option<(&str, &str)>,
     inputs: &[(&str, String)],
 ) -> PolishOutcome {
     *client.generation.write() = GenerationMetrics::default();
     let level = req.cleanup_level.trim().to_ascii_lowercase();
     // `raw` is the one level that genuinely forbids Stage 2: the user asked for
-    // their words back verbatim.
-    //
-    // `light` used to be refused here too, which contradicted
-    // `ResolvedIntent::run_llm` — the authoritative gate, which permits it. The
-    // caller checks `run_llm`, starts llama-server, holds the VRAM, and then
-    // this function threw the rewrite away, so `smart_flow` + `light` paid the
-    // entire cost of refinement and silently produced none of it. `cleanup_level`
-    // describes how aggressive the deterministic Stage 1 pipeline is; it is not
-    // the Stage 2 switch.
-    if level == "raw" {
-        return PolishOutcome {
-            final_text: smart_text.to_string(),
-            used: false,
-            error: None,
-        };
+    // their words back verbatim. `light` is not a Stage 2 switch;
+    // `ResolvedIntent::run_llm` is the authority and the caller already checked it.
+    if level == "raw" || smart_text.trim().is_empty() {
+        return PolishOutcome::skipped(smart_text, None);
     }
-    if req.dictation_mode.trim().eq_ignore_ascii_case("coding") {
-        return PolishOutcome {
-            final_text: smart_text.to_string(),
-            used: false,
-            error: None,
-        };
-    }
-    if smart_text.trim().is_empty() {
-        return PolishOutcome {
-            final_text: smart_text.to_string(),
-            used: false,
-            error: None,
-        };
+    if smart_text.split_whitespace().count() < SKIP_LLM_BELOW_WORDS {
+        return PolishOutcome::skipped(smart_text, Some(REASON_SKIPPED_SHORT));
     }
 
+    let preference =
+        formatting.and_then(|(mode, custom)| cleanup_prompt::format_preference(mode, custom));
     // Only minimal cleanup may skip already-punctuated short text. Casing and
-    // terminal punctuation cannot prove grammar or repeated phrases are right;
-    // natural/writing/developer tasks must receive their requested edit.
+    // terminal punctuation cannot prove grammar or repeated phrases are right.
     if level == "light"
         && inputs.is_empty()
+        && formatting.is_none()
         && req.dictation_mode == "normal"
         && !req.style.eq_ignore_ascii_case("email")
         && super::safety::polish_would_add_nothing(smart_text)
     {
         log::debug!("Skipping polish: Stage 1 output is already clean");
-        return PolishOutcome {
-            final_text: smart_text.to_string(),
-            used: false,
-            error: None,
-        };
+        return PolishOutcome::skipped(smart_text, None);
     }
 
     let mut effective = req.clone();
-    effective.text = smart_text.to_string();
-    let result = rewrite_segments(
-        smart_text,
-        &level,
-        client.timeout.min(FlowClient::DEADLINE_CEILING),
-        &mut |part, remaining| {
-            effective.text = part.to_owned();
-            let mut bounded = client.clone();
-            bounded.timeout = remaining;
-            let mut messages = build_messages(&effective);
-            let list_fragment = if part.ends_with(':') {
-                Some("header")
-            } else if smart_text.lines().any(|line| {
-                let (marker, body) = split_list_marker(line.trim());
-                !marker.is_empty() && body == part
-            }) {
-                Some("item")
-            } else {
-                None
-            };
-            if let Some(fragment) = list_fragment {
-                let user = messages.last_mut().unwrap();
-                let (instruction, transcript) =
-                    user["content"].as_str().unwrap().split_once('\n').unwrap();
-                // The full writing directive asks for paragraphs/enumeration
-                // layout. That conflicts with editing just an existing header
-                // or item and made the small model try to finish the list.
-                let opener = instruction
-                    .split_once(". ")
-                    .map_or(instruction, |(opener, _)| opener);
-                user["content"] = format!(
-                    "{opener}. Edit only this list {fragment}; fix grammar/casing and \
-                     return one line without a list marker. Keep the full name and modifiers; \
-                     never complete the list or add, repeat, or copy any items:\n{transcript}"
-                )
-                .into();
-            } else if part.trim() != smart_text.trim() {
-                let user = messages.last_mut().unwrap();
-                let (instruction, transcript) =
-                    user["content"].as_str().unwrap().split_once('\n').unwrap();
-                let opener = instruction
-                    .split_once(". ")
-                    .map_or(instruction, |(opener, _)| opener);
-                user["content"] = format!(
-                    "{opener}. Edit only this existing paragraph or line; retain its role \
-                     and full content, including an existing greeting or sign-off. Return \
-                     only this part; never complete the document or add other paragraphs:\n{transcript}"
-                )
-                .into();
-            }
-            if !inputs.is_empty() {
-                let mut content = messages.last().unwrap()["content"]
-                    .as_str()
-                    .unwrap()
-                    .to_owned();
-                for (label, text) in inputs {
-                    content.push_str(&format!("\n\n{label}:\n{text}"));
-                }
-                messages.last_mut().unwrap()["content"] = content.into();
-            }
-            bounded.rewrite_messages(&effective, messages)
-        },
+    effective.text = smart_text.to_owned();
+    let system = cleanup_prompt::system_prompt(
+        CleanupMode::for_request(&effective),
+        &req.vocabulary,
+        preference.as_deref(),
+        inputs,
     );
-    let result = result.and_then(|candidate| {
-        accept_rewrite(smart_text, &candidate, &level)
-            .ok_or_else(|| "LLM changed the assembled text's structure or content; original transcript preserved.".into())
-    });
-    match result {
-        Ok(candidate) => PolishOutcome {
-            final_text: candidate,
-            used: true,
-            error: None,
-        },
-        Err(err) => PolishOutcome {
-            final_text: smart_text.to_string(),
-            used: false,
-            error: Some(err),
-        },
+    let prompt_tokens = estimate_tokens(&system) + TEMPLATE_OVERHEAD_TOKENS;
+    let max_input = chunker::max_chunk_input_tokens(client.context_size, prompt_tokens);
+    let chunks = chunker::split(smart_text, MAX_CHUNK_WORDS, max_input);
+
+    let started = Instant::now();
+    let budget = client
+        .timeout
+        .saturating_mul(chunks.len() as u32)
+        .min(FlowClient::DEADLINE_CEILING);
+    let mut text = String::new();
+    let mut applied = 0usize;
+    let mut first_failure: Option<(&'static str, String)> = None;
+    for chunk in &chunks {
+        let remaining = budget.saturating_sub(started.elapsed());
+        let result = if remaining.is_zero() {
+            Err((REASON_TIMEOUT, "cleanup deadline expired".to_owned()))
+        } else {
+            clean_chunk(
+                client,
+                &effective,
+                &system,
+                &chunk.text,
+                client.timeout.min(remaining),
+            )
+        };
+        let piece = match result {
+            Ok(cleaned) => {
+                applied += 1;
+                cleaned
+            }
+            Err(failure) => {
+                first_failure.get_or_insert(failure);
+                chunk.text.clone()
+            }
+        };
+        if !text.is_empty() {
+            let separator = if chunk.separator_before == " " && ends_with_list_line(&text) {
+                "\n"
+            } else {
+                chunk.separator_before
+            };
+            text.push_str(separator);
+        }
+        text.push_str(&piece);
     }
+
+    if let Some((code, _)) = &first_failure {
+        log::info!(
+            "Cleanup fell back to deterministic text: reason={code}, chunks_applied={applied}/{}",
+            chunks.len()
+        );
+    }
+    PolishOutcome {
+        final_text: text,
+        used: applied > 0,
+        // A partial result is still a result; only a total failure is an error.
+        error: first_failure
+            .as_ref()
+            .filter(|_| applied == 0)
+            .map(|(_, message)| message.clone()),
+        fallback_reason: first_failure.map(|(code, _)| code),
+    }
+}
+
+/// Restore dictated paragraph boundaries only at unique, unchanged anchors.
+/// Content still passes the complete safety gate after this presentation fix.
+fn restore_explicit_paragraphs(source: &str, candidate: &str) -> String {
+    if !source.contains("\n\n") || candidate.matches('\n').count() >= source.matches('\n').count() {
+        return candidate.to_owned();
+    }
+    let words = regex::Regex::new(r"\S+").unwrap();
+    let tokens = words.find_iter(candidate).collect::<Vec<_>>();
+    let key = |word: &str| {
+        word.trim_matches(|ch: char| !ch.is_alphanumeric())
+            .to_lowercase()
+    };
+    let mut boundaries = Vec::new();
+    for paragraph in source
+        .split("\n\n")
+        .skip(1)
+        .filter(|part| !part.trim().is_empty())
+    {
+        let anchor = paragraph
+            .split_whitespace()
+            .take(4)
+            .map(key)
+            .collect::<Vec<_>>();
+        if anchor.len() < 3 {
+            return candidate.to_owned();
+        }
+        let matches = tokens
+            .windows(anchor.len())
+            .filter(|window| {
+                window
+                    .iter()
+                    .map(|token| key(token.as_str()))
+                    .eq(anchor.iter().cloned())
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return candidate.to_owned();
+        }
+        let at = matches[0][0].start();
+        if boundaries.last().is_some_and(|previous| *previous >= at)
+            || crate::formatting::literals::overlaps_literal(candidate, at..at + 1)
+        {
+            return candidate.to_owned();
+        }
+        boundaries.push(at);
+    }
+    let mut text = candidate.to_owned();
+    for at in boundaries.into_iter().rev() {
+        let start = text[..at].trim_end().len();
+        text.replace_range(start..at, "\n\n");
+    }
+    text
 }
 
 #[derive(Debug, Clone)]
@@ -902,184 +887,52 @@ pub struct PolishOutcome {
     pub final_text: String,
     pub used: bool,
     pub error: Option<String>,
+    /// Why the deterministic text was kept, wholly or in part, or why the LLM
+    /// was skipped. A code only, never text; feeds the latency waterfall.
+    pub fallback_reason: Option<&'static str>,
+}
+
+impl PolishOutcome {
+    fn skipped(text: &str, reason: Option<&'static str>) -> Self {
+        Self {
+            final_text: text.to_owned(),
+            used: false,
+            error: None,
+            fallback_reason: reason,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paragraph_restoration_preserves_content_and_refuses_ambiguous_or_literal_anchors() {
+        let source = "The first topic is settled.\n\nOn a different topic we need boxes.";
+        let flat = "The first topic is settled. On a different topic we need boxes.";
+        assert_eq!(restore_explicit_paragraphs(source, flat), source);
+        assert_eq!(
+            restore_explicit_paragraphs(
+                "One topic.\n\nI want to build it.",
+                "I want to build it. I want to build it."
+            ),
+            "I want to build it. I want to build it."
+        );
+        assert_eq!(
+            restore_explicit_paragraphs(
+                "One topic.\n\nKeep this exact phrase.",
+                "One topic. \"Keep this exact phrase.\""
+            ),
+            "One topic. \"Keep this exact phrase.\""
+        );
+    }
+
     use axum::{routing::post, Json, Router};
     use serde_json::Value;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-
-    #[test]
-    fn spoken_breaks_are_hard_boundaries_even_when_the_whole_text_fits() {
-        let source = "First.\n\nSecond. Third.";
-        let mut parts = Vec::new();
-        let output = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
-            parts.push(part.to_owned());
-            Ok(part.to_owned())
-        })
-        .unwrap();
-        assert_eq!(parts, ["First.", "Second. Third."]);
-        assert_eq!(output, source);
-    }
-
-    #[test]
-    fn list_lines_keep_markers_colons_and_unpunctuated_items() {
-        let source = "things i need:\n\n• update the readme\n• fix the bug";
-        let mut parts = Vec::new();
-        let output = rewrite_segments(source, "high", Duration::from_secs(1), &mut |part, _| {
-            parts.push(part.to_owned());
-            // The model capitalises and tends to sentence-ify fragments.
-            let mut chars = part.chars();
-            let mut s = chars
-                .next()
-                .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
-                .unwrap_or_default();
-            if let Some(stripped) = s.strip_suffix(':') {
-                s = format!("{stripped}.");
-            } else if !s.ends_with('.') {
-                s.push('.');
-            }
-            Ok(s)
-        })
-        .unwrap();
-        // The marker and colon are re-attached; item periods are stripped.
-        assert_eq!(
-            parts,
-            ["things i need:", "update the readme", "fix the bug"]
-        );
-        assert_eq!(
-            output,
-            "Things i need:\n\n• Update the readme\n• Fix the bug"
-        );
-    }
-
-    #[test]
-    fn existing_list_items_cannot_expand_into_additional_lines() {
-        for marker in ["• ", "1. ", "2) ", "- ", "* "] {
-            let source = format!("{marker}The mobile and the power bank");
-            let result =
-                rewrite_segments(&source, "high", Duration::from_secs(1), &mut |part, _| {
-                    Ok(part.replace(" and ", "\n"))
-                });
-            assert!(result.is_err(), "a {marker:?} item gained a new line");
-        }
-    }
-
-    #[test]
-    fn writing_audit_header_does_not_acquire_a_number_marker() {
-        let source = "Use numbered points:\n\n1. Save the draft\n2. Send the invoice";
-        let result = rewrite_segments(source, "high", Duration::from_secs(1), &mut |part, _| {
-            Ok(if part.ends_with(':') {
-                format!("1. {part}")
-            } else {
-                part.to_owned()
-            })
-        })
-        .unwrap();
-        assert_eq!(result, source);
-    }
-
-    #[test]
-    fn existing_list_header_cannot_expand_into_additional_lines() {
-        let source =
-            "I want you to bring me three things:\n\n• The mobile\n• The power bank\n• The earbuds";
-        let result = rewrite_segments(source, "high", Duration::from_secs(1), &mut |part, _| {
-            Ok(part.replace("me three", "me\nthree"))
-        });
-        assert!(result.is_err(), "a list header gained a new line");
-    }
-
-    #[test]
-    fn an_unformatted_whole_dictation_can_still_become_a_list() {
-        let source = "I want you to bring me three things: first the mobile, second the power bank, third the earbuds.";
-        let candidate =
-            "I want you to bring me three things:\n\n• The mobile\n• The power bank\n• The earbuds";
-        let result = rewrite_segments(source, "high", Duration::from_secs(1), &mut |_, _| {
-            Ok(candidate.to_owned())
-        })
-        .unwrap();
-        assert_eq!(result, candidate);
-    }
-
-    #[test]
-    fn ordinary_paragraph_rewrites_can_add_paragraph_breaks() {
-        let source = "I will bring the mobile. Please bring the power bank and earbuds.";
-        let candidate = "I will bring the mobile.\n\nPlease bring the power bank and earbuds.";
-        let result = rewrite_segments(source, "high", Duration::from_secs(1), &mut |_, _| {
-            Ok(candidate.to_owned())
-        })
-        .unwrap();
-        assert_eq!(result, candidate);
-    }
-
-    #[test]
-    fn expanding_a_list_fragment_preserves_the_entire_dictation() {
-        let source =
-            "I want you to bring me three things:\n\n• The mobile\n• The power bank\n• The earbuds";
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let worker = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async move {
-                    let app = Router::new()
-                        .route(
-                            "/apply-template",
-                            post(|| async { Json(json!({"prompt": "rendered prompt"})) }),
-                        )
-                        .route(
-                            "/tokenize",
-                            post(|| async { Json(json!({"tokens": vec![1; 128]})) }),
-                        )
-                        .route(
-                            "/v1/chat/completions",
-                            post(|Json(request): Json<Value>| async move {
-                                let user = request["messages"]
-                                    .as_array()
-                                    .unwrap()
-                                    .last()
-                                    .unwrap()["content"]
-                                    .as_str()
-                                    .unwrap();
-                                let (_, part) = user.split_once('\n').unwrap();
-                                Json(json!({
-                                    "choices": [{
-                                        "message": {"content": part.replace("me three", "me\nthree")},
-                                        "finish_reason": "stop"
-                                    }]
-                                }))
-                            }),
-                        );
-                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-                    tx.send(format!("http://{}", listener.local_addr().unwrap()))
-                        .unwrap();
-                    axum::serve(listener, app)
-                        .with_graceful_shutdown(async {
-                            let _ = stopped.await;
-                        })
-                        .await
-                        .unwrap();
-                });
-        });
-        let client = FlowClient::new_url(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            Duration::from_secs(3),
-        )
-        .with_context_size(4096);
-        let outcome = polish_or_fallback(&client, source, &sample_req("high", "notes", source));
-        let _ = shutdown.send(());
-        worker.join().unwrap();
-
-        assert_eq!(outcome.final_text, source);
-        assert!(!outcome.used, "unsafe fragments must not reach injection");
-        assert!(outcome.error.is_some());
-    }
 
     #[test]
     fn captured_context_is_not_skipped_for_a_short_clean_sentence() {
@@ -1088,120 +941,13 @@ mod tests {
             &FlowClient::new_missing(),
             text,
             &sample_req("light", "normal", text),
+            None,
             &[("Clipboard", "Release requirements".into())],
         );
         assert!(outcome.error.is_some());
         assert_eq!(outcome.final_text, text);
     }
     use tokio::net::TcpListener;
-
-    #[test]
-    fn segmented_rewrite_preserves_every_paragraph_and_its_separator() {
-        let source = "first paragraph has several words.\n\nsecond paragraph has several words.\n\nthird paragraph has several words.";
-        let mut requests = 0;
-        let result = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
-            requests += 1;
-            if part.len() > 50 {
-                Err("flow rewrite input too long".into())
-            } else {
-                Ok(part.to_owned())
-            }
-        })
-        .unwrap();
-        assert_eq!(result, source);
-        assert!(requests > 1);
-    }
-
-    #[test]
-    fn segmented_rewrite_failure_never_returns_only_completed_paragraphs() {
-        let source = "first paragraph has several words.\n\nsecond paragraph has several words.";
-        let result = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
-            if part.len() > 50 {
-                Err("flow rewrite input too long".into())
-            } else if part.starts_with("second") {
-                Err("generation failed".into())
-            } else {
-                Ok(part.to_owned())
-            }
-        });
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn oversized_input_does_not_split_paths_or_decimal_numbers() {
-        let source = "Keep version 3.5 in src/api.ts and do not change the route";
-        let mut parts = Vec::new();
-        let result = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
-            parts.push(part.to_owned());
-            if part == source {
-                Err("flow rewrite input too long".into())
-            } else {
-                Ok(part.to_owned())
-            }
-        });
-        assert!(
-            result.is_err(),
-            "a sentence without a safe boundary must fall back"
-        );
-        assert_eq!(parts, [source]);
-    }
-
-    #[test]
-    fn oversized_input_splits_at_the_sentence_after_a_path_and_version() {
-        let source = "Keep src/api.ts at 3.5. Don't change the route.";
-        let mut parts = Vec::new();
-        let result = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
-            parts.push(part.to_owned());
-            if part.len() > 30 {
-                Err("flow rewrite input too long".into())
-            } else {
-                Ok(part.to_owned())
-            }
-        })
-        .unwrap();
-        assert_eq!(result, source);
-        assert_eq!(
-            parts,
-            [source, "Keep src/api.ts at 3.5.", "Don't change the route."]
-        );
-    }
-
-    #[test]
-    fn oversized_input_never_splits_abbreviations_from_their_context() {
-        for source in [
-            "Please ask Dr. Smith to review the release",
-            "Please ask A. Smith to review the release",
-            "Use e.g. a safe fallback for this request",
-            "Ask the U.S. Navy to review the release",
-        ] {
-            let mut parts = Vec::new();
-            let result =
-                rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
-                    parts.push(part.to_owned());
-                    if part == source {
-                        Err("flow rewrite input too long".into())
-                    } else {
-                        Ok(part.to_owned())
-                    }
-                });
-            assert!(result.is_err(), "unsafe split in {source}");
-            assert_eq!(parts, [source]);
-        }
-    }
-
-    #[test]
-    fn oversized_cjk_input_can_split_without_ascii_whitespace() {
-        let source = "请检查文件。不要改动接口。";
-        let result = rewrite_segments(source, "medium", Duration::from_secs(1), &mut |part, _| {
-            if part == source {
-                Err("flow rewrite input too long".into())
-            } else {
-                Ok(part.to_owned())
-            }
-        })
-        .unwrap();
-        assert_eq!(result, source);
-    }
 
     #[test]
     fn compressible_input_uses_the_rendered_template_instead_of_early_estimate_rejection() {
@@ -1264,7 +1010,8 @@ mod tests {
                                         "message": {
                                             "role": "assistant",
                                             "content": body.as_str()
-                                        }
+                                        },
+                                        "finish_reason": "stop"
                                     }]
                                 }))
                             }
@@ -1317,7 +1064,8 @@ mod tests {
                                             "message": {
                                                 "role": "assistant",
                                                 "content": body.as_str()
-                                            }
+                                            },
+                                            "finish_reason": "stop"
                                         }]
                                     }))
                                 }
@@ -1339,7 +1087,7 @@ mod tests {
         // Must be text that actually needs polishing: an already-clean sentence
         // is now skipped before the client is consulted, so it would never
         // exercise the missing-rewriter path.
-        let smart = "hello world today";
+        let smart = "hello world today my friend";
         let outcome = polish_or_fallback(&client, smart, &sample_req("medium", "normal", smart));
         assert_eq!(outcome.final_text, smart);
         assert!(!outcome.used);
@@ -1386,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_light_and_coding_skip_llm() {
+    fn raw_and_light_skip_llm_but_coding_does_not() {
         let client = FlowClient {
             generation: Default::default(),
             base_url: None,
@@ -1394,17 +1142,27 @@ mod tests {
             breaker: CircuitBreaker::default(),
             max_completion_tokens: FlowClient::completion_budget(1024),
             context_size: 1024,
+            temperature: 0.0,
         };
-        let smart = "Keep this.";
-        assert!(!polish_or_fallback(&client, smart, &sample_req("raw", "normal", smart)).used);
-        assert!(!polish_or_fallback(&client, smart, &sample_req("light", "normal", smart)).used);
-        assert!(!polish_or_fallback(&client, smart, &sample_req("medium", "coding", smart)).used);
+        let smart = "Keep this exact sentence.";
+        let raw = polish_or_fallback(&client, smart, &sample_req("raw", "normal", smart));
+        assert!(!raw.used && raw.error.is_none() && raw.fallback_reason.is_none());
+        let light = polish_or_fallback(&client, smart, &sample_req("light", "normal", smart));
+        assert!(!light.used && light.error.is_none());
+        // Coding reaches the (here missing) model: an attempted, failed cleanup.
+        let coding = polish_or_fallback(&client, smart, &sample_req("medium", "coding", smart));
+        assert!(!coding.used);
+        assert!(coding.error.is_some());
+        assert_eq!(coding.final_text, smart);
     }
 
     #[test]
     fn completion_metrics_come_from_the_server_and_reset_for_each_polish() {
-        let client = FlowClient::new_url(spawn_stub("Hello world today."), Duration::from_secs(3));
-        let request = sample_req("medium", "normal", "hello world today");
+        let client = FlowClient::new_url(
+            spawn_stub("Hello world today my friend."),
+            Duration::from_secs(3),
+        );
+        let request = sample_req("medium", "normal", "hello world today my friend");
         assert!(polish_or_fallback(&client, &request.text, &request).used);
         let metrics = client.generation.read().clone();
         assert_eq!((metrics.prompt_tokens, metrics.output_tokens), (25, 7));
@@ -1418,44 +1176,17 @@ mod tests {
 
     #[test]
     fn stub_server_safe_rewrite_is_accepted() {
-        let orig = "hello world today";
-        let url = spawn_stub("Hello world today.");
+        let orig = "hello world today my friend";
+        let url = spawn_stub("Hello world today my friend.");
         let client = FlowClient::new_url(url, Duration::from_secs(3));
         let rewritten = client
             .rewrite(&sample_req("medium", "normal", orig))
             .expect("rewrite");
-        assert_eq!(rewritten, "Hello world today.");
+        assert_eq!(rewritten, "Hello world today my friend.");
         let outcome = polish_or_fallback(&client, orig, &sample_req("medium", "normal", orig));
-        assert_eq!(outcome.final_text, "Hello world today.");
+        assert_eq!(outcome.final_text, "Hello world today my friend.");
         assert!(outcome.used);
         assert!(outcome.error.is_none());
-    }
-
-    #[test]
-    fn grammatical_paraphrase_keeps_the_complete_original_when_word_choices_change() {
-        let original = "i need the key, for opening the door";
-        let candidate = "I need the key to open the door.";
-        assert!(crate::rewrite::safety::accept_rewrite(original, candidate, "high").is_none());
-        let client = FlowClient::new_url(spawn_stub(candidate), Duration::from_secs(3));
-        let outcome =
-            polish_or_fallback(&client, original, &sample_req("high", "normal", original));
-        assert_eq!(outcome.final_text, original);
-        assert!(!outcome.used);
-        assert_eq!(
-            outcome.error.as_deref(),
-            Some("LLM rewrite rejected by safety gate")
-        );
-    }
-
-    #[test]
-    fn stub_meta_output_falls_back() {
-        let orig = "Hello";
-        let url = spawn_stub("Sure, here is the rewritten text:\n\nHello");
-        let client = FlowClient::new_url(url, Duration::from_secs(3));
-        let outcome = polish_or_fallback(&client, orig, &sample_req("medium", "normal", orig));
-        assert_eq!(outcome.final_text, orig);
-        assert!(!outcome.used);
-        assert!(outcome.error.is_some());
     }
 
     #[test]
@@ -1487,6 +1218,21 @@ mod tests {
             extract_content(&finished).unwrap(),
             "I would like to ship this."
         );
+        for reason in [
+            Value::Null,
+            json!("tool_calls"),
+            json!("content_filter"),
+            json!("cancelled"),
+        ] {
+            let mut incomplete = finished.clone();
+            incomplete["choices"][0]["finish_reason"] = reason;
+            assert!(extract_content(&incomplete)
+                .unwrap_err()
+                .contains("complete response"));
+        }
+        let mut truncated = finished.clone();
+        truncated["truncated"] = json!(true);
+        assert!(extract_content(&truncated).is_err());
     }
 
     #[test]
@@ -1622,7 +1368,8 @@ mod tests {
     /// an input that cannot fit, without spending a completion.
     #[test]
     fn tokenize_failure_falls_back_to_the_length_estimate() {
-        let client = FlowClient::new_url("http://127.0.0.1:9".into(), Duration::from_millis(500));
+        let client = FlowClient::new_url("http://127.0.0.1:9".into(), Duration::from_millis(500))
+            .with_context_size(1024);
         // 1000 bytes > 128, so the client tries /tokenize; the dead port
         // fails it and the estimate (~250 tokens) still overflows the window
         // once the answer budget is added.
@@ -1678,15 +1425,6 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn token_estimate_is_about_four_chars_per_token() {
-        assert_eq!(estimate_tokens(""), 0);
-        assert_eq!(estimate_tokens("Ship"), 1);
-        // 20 characters -> 5 tokens. Real BPE on this sentence is ~6, well
-        // inside the 512-token prompt reserve the budget already holds back.
-        assert_eq!(estimate_tokens("Ship it on Thursday."), 5);
-    }
-
     /// A longer input must not silently override the user's time budget.
     #[test]
     fn the_deadline_scales_with_input_size_and_is_capped() {
@@ -1699,5 +1437,242 @@ mod tests {
             Duration::from_secs(12),
             "the user's deadline must be honored"
         );
+    }
+    type Captured = Arc<std::sync::Mutex<Vec<Value>>>;
+
+    /// A stub that records every completion request and answers with
+    /// `reply(transcript)`, where `transcript` is the user turn's text.
+    fn spawn_transform_stub(reply: fn(&str) -> String) -> (String, Captured) {
+        let captured: Captured = Default::default();
+        let sink = Arc::clone(&captured);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("stub runtime");
+            rt.block_on(async move {
+                let app = Router::new().route(
+                    "/v1/chat/completions",
+                    post(move |Json(req): Json<Value>| {
+                        let sink = Arc::clone(&sink);
+                        async move {
+                            let user = req["messages"][1]["content"].as_str().unwrap_or_default();
+                            let transcript = user
+                                .strip_prefix("<transcript>")
+                                .and_then(|t| t.strip_suffix("</transcript>"))
+                                .unwrap_or_default()
+                                .to_owned();
+                            sink.lock().unwrap().push(req);
+                            Json(json!({"choices": [{
+                                "message": {"role": "assistant", "content": reply(&transcript)},
+                                "finish_reason": "stop"
+                            }]}))
+                        }
+                    }),
+                );
+                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind stub");
+                let _ = tx.send(format!("http://{}", listener.local_addr().unwrap()));
+                axum::serve(listener, app).await.ok();
+            });
+        });
+        (rx.recv().expect("stub addr"), captured)
+    }
+
+    fn echo(transcript: &str) -> String {
+        transcript.to_owned()
+    }
+
+    #[test]
+    fn request_body_uses_the_named_sampling_constants() {
+        let body = request_body("Qwen3.5-0.8B", SAMPLING_TEMPERATURE, 99, vec![]);
+        assert_eq!(body["temperature"], 0.1);
+        assert_eq!(body["top_k"], 20);
+        assert_eq!(body["top_p"], 0.9);
+        assert_eq!(body["min_p"], 0.0);
+        assert_eq!(body["repeat_penalty"], 1.0);
+        assert_eq!(body["seed"], SAMPLING_SEED);
+        assert_eq!(body["cache_prompt"], true);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(body["max_tokens"], 99);
+        assert!(body["stop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s == "</transcript>"));
+        assert_eq!(FlowClient::new_missing().temperature, SAMPLING_TEMPERATURE);
+    }
+
+    #[test]
+    fn wire_request_has_the_agreed_layout_dictionary_and_mode() {
+        let (url, captured) = spawn_transform_stub(echo);
+        let client = FlowClient::new_url(url, Duration::from_secs(3));
+        let text = "run cargo build in the src tauri folder";
+        let mut request = sample_req("medium", "coding", text);
+        request.vocabulary = vec!["Tauri".into()];
+        let outcome = polish_with_context_or_fallback(&client, text, &request, None, &[]);
+        assert!(outcome.used, "{:?}", outcome.error);
+        let sent = captured.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let messages = sent[0]["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        let system = messages[0]["content"].as_str().unwrap();
+        assert!(system.starts_with(cleanup_prompt::static_prompt()));
+        assert!(system.contains("\nDICTIONARY: Tauri"));
+        assert!(system.contains("\nMODE: keep identifiers, commands, paths exactly as spoken"));
+        assert_eq!(
+            messages[1]["content"],
+            format!("<transcript>{text}</transcript>")
+        );
+        assert_eq!(sent[0]["seed"], SAMPLING_SEED);
+        assert_eq!(sent[0]["top_k"], SAMPLING_TOP_K);
+        let expected = chunker::completion_tokens(estimate_tokens(text));
+        assert_eq!(sent[0]["max_tokens"], expected);
+    }
+
+    #[test]
+    fn the_static_prefix_is_byte_identical_between_calls() {
+        let (url, captured) = spawn_transform_stub(echo);
+        let client = FlowClient::new_url(url, Duration::from_secs(3));
+        for (mode, text) in [
+            ("normal", "send the report to the whole team today"),
+            ("email", "please confirm the meeting for tomorrow morning"),
+        ] {
+            let request = sample_req("medium", mode, text);
+            assert!(polish_with_context_or_fallback(&client, text, &request, None, &[]).used);
+        }
+        let sent = captured.lock().unwrap();
+        let prefix = cleanup_prompt::static_prompt();
+        for request in sent.iter() {
+            let system = request["messages"][0]["content"].as_str().unwrap();
+            assert_eq!(&system.as_bytes()[..prefix.len()], prefix.as_bytes());
+        }
+        assert_ne!(
+            sent[0]["messages"][0]["content"],
+            sent[1]["messages"][0]["content"]
+        );
+    }
+
+    #[test]
+    fn short_input_never_reaches_the_model() {
+        let (url, captured) = spawn_transform_stub(echo);
+        let client = FlowClient::new_url(url, Duration::from_secs(3));
+        for text in ["Okay", "thank you", "see you soon"] {
+            let outcome = polish_or_fallback(&client, text, &sample_req("medium", "normal", text));
+            assert_eq!(outcome.final_text, text);
+            assert!(!outcome.used);
+            assert!(outcome.error.is_none());
+            assert_eq!(outcome.fallback_reason, Some(REASON_SKIPPED_SHORT));
+        }
+        assert!(captured.lock().unwrap().is_empty());
+        let four = "see you soon friend";
+        assert!(polish_or_fallback(&client, four, &sample_req("medium", "normal", four)).used);
+    }
+
+    #[test]
+    fn a_rejected_answer_falls_back_with_only_a_reason_code() {
+        let (url, _) =
+            spawn_transform_stub(|_| "The capital of France is Paris, of course.".into());
+        let client = FlowClient::new_url(url, Duration::from_secs(3));
+        let text = "what is the capital of france";
+        let outcome = polish_or_fallback(&client, text, &sample_req("medium", "normal", text));
+        assert_eq!(outcome.final_text, text);
+        assert!(!outcome.used);
+        assert_eq!(outcome.fallback_reason, Some("hallucination"));
+        assert!(!outcome.error.unwrap().contains("Paris"));
+    }
+
+    #[test]
+    fn an_empty_answer_falls_back() {
+        let (url, _) = spawn_transform_stub(|_| "  ".into());
+        let client = FlowClient::new_url(url, Duration::from_secs(3));
+        let text = "hello world today my friend";
+        let outcome = polish_or_fallback(&client, text, &sample_req("medium", "normal", text));
+        assert_eq!(outcome.final_text, text);
+        assert_eq!(outcome.fallback_reason, Some("empty_output"));
+    }
+
+    #[test]
+    fn thinking_tags_and_preambles_are_stripped_before_validation() {
+        let (url, _) = spawn_transform_stub(|_| {
+            "<think>plan the edit</think>Here is the cleaned text:\nHello world today my friend."
+                .into()
+        });
+        let client = FlowClient::new_url(url, Duration::from_secs(3));
+        let text = "hello world today my friend";
+        let outcome = polish_or_fallback(&client, text, &sample_req("medium", "normal", text));
+        assert_eq!(outcome.final_text, "Hello world today my friend.");
+        assert!(outcome.used);
+        assert_eq!(outcome.fallback_reason, None);
+    }
+
+    fn long_dictation(words: usize) -> String {
+        (0..words / 10)
+            .map(|i| format!("Item {i} covers the quarterly plan and the budget review today."))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn long_dictation_is_cleaned_in_chunks_and_nothing_is_dropped() {
+        let (url, captured) = spawn_transform_stub(echo);
+        let client = FlowClient::new_url(url, Duration::from_secs(10));
+        let text = long_dictation(700);
+        let outcome = polish_or_fallback(&client, &text, &sample_req("medium", "normal", &text));
+        assert!(outcome.used, "{:?}", outcome.error);
+        assert_eq!(outcome.final_text, text);
+        let sent = captured.lock().unwrap();
+        assert!(sent.len() >= 3, "{} requests", sent.len());
+        for request in sent.iter() {
+            let user = request["messages"][1]["content"].as_str().unwrap();
+            assert!(user.split_whitespace().count() <= MAX_CHUNK_WORDS + 2);
+        }
+    }
+
+    #[test]
+    fn one_failing_chunk_keeps_its_text_and_the_rest_are_cleaned() {
+        let (url, _) = spawn_transform_stub(|transcript| {
+            if transcript.contains("Item 0 ") {
+                String::new()
+            } else {
+                transcript.replace("quarterly", "Quarterly")
+            }
+        });
+        let client = FlowClient::new_url(url, Duration::from_secs(10));
+        let text = long_dictation(700);
+        let outcome = polish_or_fallback(&client, &text, &sample_req("medium", "normal", &text));
+        assert!(outcome.used);
+        assert!(outcome.error.is_none(), "a partial result is not an error");
+        assert_eq!(outcome.fallback_reason, Some("empty_output"));
+        assert!(outcome
+            .final_text
+            .starts_with("Item 0 covers the quarterly plan"));
+        assert!(outcome.final_text.contains("Quarterly"));
+        assert_eq!(
+            outcome.final_text.split_whitespace().count(),
+            text.split_whitespace().count()
+        );
+    }
+
+    #[test]
+    fn chunks_are_joined_by_a_blank_line_only_where_the_speaker_paused_for_one() {
+        let (url, _) = spawn_transform_stub(echo);
+        let client = FlowClient::new_url(url, Duration::from_secs(10));
+        let text = format!("{}\n\n{}", long_dictation(320), long_dictation(320));
+        let outcome = polish_or_fallback(&client, &text, &sample_req("medium", "normal", &text));
+        assert!(outcome.used, "{:?}", outcome.error);
+        assert!(outcome.final_text.contains("\n\n"));
+        assert_eq!(outcome.final_text, text);
+    }
+
+    #[test]
+    fn a_missing_server_reports_a_reason_and_keeps_every_chunk() {
+        let client = FlowClient::new_url("http://127.0.0.1:9".into(), Duration::from_millis(300));
+        let text = long_dictation(700);
+        let outcome = polish_or_fallback(&client, &text, &sample_req("medium", "normal", &text));
+        assert_eq!(outcome.final_text, text);
+        assert!(!outcome.used);
+        assert!(outcome.error.is_some());
+        assert!(outcome.fallback_reason.is_some());
     }
 }

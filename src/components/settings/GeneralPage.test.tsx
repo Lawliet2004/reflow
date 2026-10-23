@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { GeneralPage } from "./GeneralPage";
 import { api } from "../../services/tauriApi";
@@ -33,6 +33,7 @@ it("captures a KDE shortcut inside Reflow and shows only the confirmed binding",
     name: "Change dictation shortcut: Ctrl+Shift+Space",
   });
   fireEvent.click(key);
+  await waitFor(() => expect(key).toHaveTextContent("Press keys"));
   expect(key).toHaveTextContent("Press keys");
   fireEvent.keyDown(window, { key: " ", code: "Space", ctrlKey: true });
   expect(assign).toHaveBeenCalledExactlyOnceWith("dictation", "Ctrl+Space");
@@ -62,6 +63,11 @@ it("keeps the previous KDE binding when a captured shortcut conflicts", async ()
   render(<GeneralPage settings={settings} onUpdateSettings={vi.fn()} />);
   fireEvent.click(
     await screen.findByRole("button", { name: "Change dictation shortcut: Ctrl+Shift+Space" }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Change dictation shortcut: Ctrl+Shift+Space" }),
+    ).toHaveTextContent("Press keys"),
   );
   fireEvent.keyDown(window, { key: "t", code: "KeyT", ctrlKey: true, altKey: true });
   expect(await screen.findByRole("alert")).toHaveTextContent("That shortcut is already used");

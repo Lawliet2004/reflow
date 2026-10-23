@@ -45,7 +45,7 @@ pub struct HistoryEntry {
 fn default_kind() -> String {
     "dictation".into()
 }
-pub const CURRENT_HISTORY_SCHEMA_VERSION: i32 = 6;
+pub const CURRENT_HISTORY_SCHEMA_VERSION: i32 = 7;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct HistoryQuery {
@@ -226,6 +226,36 @@ impl HistoryStore {
                 .execute(
                     "UPDATE history_audio SET pcm=?2 WHERE history_id=?1",
                     params![id, bytes],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let chunks = transaction
+            .prepare("SELECT history_id, sequence FROM history_audio_chunks")
+            .map_err(|e| e.to_string())?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        for (id, sequence) in chunks {
+            let bytes: Vec<u8> = transaction
+                .query_row(
+                    "SELECT pcm FROM history_audio_chunks WHERE history_id=?1 AND sequence=?2",
+                    params![id, sequence],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let field = format!("pcm:{sequence}");
+            let bytes = if enabled {
+                cipher.seal(&id, &field, &bytes)?
+            } else {
+                cipher.open(&id, &field, &bytes)?
+            };
+            transaction
+                .execute(
+                    "UPDATE history_audio_chunks SET pcm=?3 WHERE history_id=?1 AND sequence=?2",
+                    params![id, sequence, bytes],
                 )
                 .map_err(|e| e.to_string())?;
         }
@@ -691,6 +721,14 @@ impl HistoryStore {
                 .map_err(|e| e.to_string())?;
         }
 
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS history_audio_chunks (
+            history_id TEXT NOT NULL REFERENCES history_audio(history_id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL, pcm BLOB NOT NULL, PRIMARY KEY(history_id, sequence)
+        )",
+        )
+        .map_err(|e| e.to_string())?;
+
         conn.execute(
             &format!("PRAGMA user_version = {CURRENT_HISTORY_SCHEMA_VERSION}"),
             [],
@@ -769,6 +807,58 @@ impl HistoryStore {
         Ok(())
     }
 
+    pub fn save_audio_stream(
+        &self,
+        id: &str,
+        decode: impl FnOnce(&mut dyn FnMut(&[f32]) -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.ensure_private_writes()?;
+        let policy = self.audio_retention.lock();
+        if *policy == "disabled" {
+            return Ok(());
+        }
+        let duration = audio_retention_ms(&policy)?;
+        let conn = self.conn.lock();
+        let created: String = conn
+            .query_row("SELECT created_at FROM history WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        let recorded = chrono::DateTime::parse_from_rfc3339(&created)
+            .map_err(|e| e.to_string())?
+            .timestamp_millis();
+        let expiry = duration.map(|ms| recorded + ms);
+        let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let cipher = self.cipher.lock();
+        let empty = match cipher.as_ref() {
+            Some(cipher) => cipher.seal(id, "pcm", &[])?,
+            None => vec![],
+        };
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO history_audio VALUES (?1, ?2, ?3, ?4)",
+                params![id, recorded, expiry, empty],
+            )
+            .map_err(|e| e.to_string())?;
+        let mut sequence = 0i64;
+        decode(&mut |samples| {
+            let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let bytes = match cipher.as_ref() {
+                Some(cipher) => cipher.seal(id, &format!("pcm:{sequence}"), &bytes)?,
+                None => bytes,
+            };
+            transaction
+                .execute(
+                    "INSERT INTO history_audio_chunks VALUES (?1, ?2, ?3)",
+                    params![id, sequence, bytes],
+                )
+                .map_err(|e| e.to_string())?;
+            sequence += 1;
+            Ok(())
+        })?;
+        transaction.commit().map_err(|e| e.to_string())
+    }
+
     pub fn load_audio(&self, id: &str) -> Result<Vec<f32>, String> {
         let conn = self.conn.lock();
         purge_audio_on(&conn, Utc::now().timestamp_millis())?;
@@ -781,10 +871,27 @@ impl HistoryStore {
             .optional()
             .map_err(|e| e.to_string())?;
         let bytes = bytes.ok_or("Audio is no longer available for this transcript.")?;
-        let bytes = match self.cipher.lock().as_ref() {
+        let cipher = self.cipher.lock();
+        let mut bytes = match cipher.as_ref() {
             Some(cipher) => cipher.open(id, "pcm", &bytes)?,
             None => bytes,
         };
+        if bytes.is_empty() {
+            let mut statement = conn.prepare("SELECT sequence, pcm FROM history_audio_chunks WHERE history_id=?1 ORDER BY sequence").map_err(|e| e.to_string())?;
+            let rows = statement
+                .query_map([id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (sequence, chunk) = row.map_err(|e| e.to_string())?;
+                let chunk = match cipher.as_ref() {
+                    Some(cipher) => cipher.open(id, &format!("pcm:{sequence}"), &chunk)?,
+                    None => chunk,
+                };
+                bytes.extend(chunk);
+            }
+        }
         if bytes.is_empty() || bytes.len() % 4 != 0 {
             return Err("Saved audio is damaged.".into());
         }
@@ -830,6 +937,10 @@ impl HistoryStore {
     pub fn insert_entry(&self, entry: &HistoryEntry) -> Result<(), String> {
         self.ensure_private_writes()?;
         let conn = self.conn.lock();
+        self.insert_entry_on(&conn, entry)
+    }
+
+    fn insert_entry_on(&self, conn: &Connection, entry: &HistoryEntry) -> Result<(), String> {
         let raw = self.encode_text(&entry.id, "raw_transcript", &entry.raw_transcript)?;
         let smart = self.encode_text(&entry.id, "smart_transcript", &entry.smart_transcript)?;
         let final_text =
@@ -866,6 +977,29 @@ impl HistoryStore {
         .map_err(|e| format!("Failed to insert history entry: {}", e))?;
 
         Ok(())
+    }
+
+    pub fn insert_file_entry(
+        &self,
+        entry: &HistoryEntry,
+        segments: &[crate::file_jobs::TranscriptSegment],
+    ) -> Result<(), String> {
+        self.ensure_private_writes()?;
+        let conn = self.conn.lock();
+        let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        self.insert_entry_on(&transaction, entry)?;
+        let json = self.encode_text(
+            &entry.id,
+            "segments",
+            &serde_json::to_string(segments).map_err(|e| e.to_string())?,
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO file_segments VALUES (?1, ?2)",
+                params![entry.id, json],
+            )
+            .map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())
     }
 
     pub fn get_entries(&self, limit: usize, offset: usize) -> Result<Vec<HistoryEntry>, String> {
@@ -1344,6 +1478,66 @@ fn purge_audio_on(conn: &Connection, now_ms: i64) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_transcript_and_subtitles_roll_back_together() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-file-transaction-{}", uuid::Uuid::new_v4()));
+        let store = HistoryStore::new(root.join("history.db")).unwrap();
+        store.conn.lock().execute_batch("CREATE TRIGGER reject_segments BEFORE INSERT ON file_segments BEGIN SELECT RAISE(ABORT, 'disk fault fixture'); END;").unwrap();
+        let entry = sample_entry();
+        assert!(store.insert_file_entry(&entry, &[]).is_err());
+        assert!(store.get_entry(&entry.id).unwrap().is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retained_audio_failure_keeps_transcript_and_rolls_back_audio_chunks() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-audio-transaction-{}", uuid::Uuid::new_v4()));
+        let store = HistoryStore::new(root.join("history.db")).unwrap();
+        store.set_audio_retention("forever").unwrap();
+        let entry = sample_entry();
+        store.insert_file_entry(&entry, &[]).unwrap();
+        let result = store.save_audio_stream(&entry.id, |sink| {
+            sink(&[0.1, 0.2])?;
+            Err("storage fault".into())
+        });
+        assert!(result.is_err());
+        assert!(store.get_entry(&entry.id).unwrap().is_some());
+        assert!(store.load_audio(&entry.id).is_err());
+        assert_eq!(
+            store
+                .conn
+                .lock()
+                .query_row("SELECT count(*) FROM history_audio_chunks", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        store
+            .save_audio_stream(&entry.id, |sink| {
+                sink(&[0.1, 0.2])?;
+                sink(&[0.3])
+            })
+            .unwrap();
+        assert_eq!(store.load_audio(&entry.id).unwrap(), [0.1, 0.2, 0.3]);
+        store.set_audio_retention("disabled").unwrap();
+        assert_eq!(
+            store
+                .conn
+                .lock()
+                .query_row("SELECT count(*) FROM history_audio_chunks", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn date_filter_precedes_paging_and_literal_search_returns_honest_total() {

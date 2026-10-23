@@ -99,7 +99,11 @@ export const Overlay: React.FC<OverlayProps> = ({
   // Minimal shows only the dot and level while listening; status words return after.
   const minimal = waveformStyle === "minimal" && phase === "listen";
   const waveformPill = hudStyle === "waveform";
-  const showMessage = waveformPill && (phase === "error" || (phase === "done" && label !== "Done"));
+  // An unpolished insertion is still a completed paste. Keep the waveform's
+  // checkmark and geometry; reserve expansion for messages requiring attention.
+  const compactCompletion = label === "Done" || /^Inserted \(unpolished\)[.!]?$/i.test(label);
+  const showMessage =
+    waveformPill && (phase === "error" || (phase === "done" && !compactCompletion));
   const scaleClass = SCALE_CLASS[hudScale];
 
   return (

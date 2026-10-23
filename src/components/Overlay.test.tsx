@@ -136,10 +136,37 @@ describe("Overlay", () => {
     expect(screen.queryByText("Private transcript")).not.toBeInTheDocument();
   });
 
+  it("keeps the waveform capsule stable when insertion finishes without polish", () => {
+    const { container, rerender } = render(
+      <Overlay appState="RECORDING" transcript={payload()} hudStyle="waveform" standalone />,
+    );
+    const wave = container.querySelector(".capsule-wave");
+    rerender(
+      <Overlay
+        appState="READY"
+        transcript={payload({ full_text: "Private transcript" })}
+        extraMessage="Inserted (unpolished)"
+        hudStyle="waveform"
+        standalone
+      />,
+    );
+    expect(screen.getByRole("status")).not.toHaveAttribute("data-message");
+    expect(container.querySelector(".capsule-wave")).toBe(wave);
+    expect(container.querySelector(".capsule-check")).not.toBeNull();
+    expect(screen.getByText("Inserted (unpolished)")).toHaveClass("sr-only");
+    expect(screen.getByRole("status")).toHaveAttribute("title", "Inserted (unpolished)");
+  });
+
   it.each([
     ["IDLE", "Copied — press Ctrl+V", "Copied — press Ctrl+V"],
     ["READY", "No speech", "No speech detected"],
     ["ERROR", "Failed", "Couldn't finish · open Reflow"],
+    ["READY", "Inserted (LLM error: timeout)", "Inserted (LLM error: timeout)"],
+    [
+      "READY",
+      "Inserted (unpolished) · Transcript incomplete",
+      "Inserted (unpolished) · Transcript incomplete",
+    ],
   ] as const)(
     "keeps %s recovery messages visible in the waveform style",
     (appState, extraMessage, label) => {

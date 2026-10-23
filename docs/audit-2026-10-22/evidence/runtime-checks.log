@@ -1,0 +1,7 @@
+Audit host: Linux x86_64; Node v22.22.1; cargo 1.99.0
+Existing managed environment: /home/papan/.local/share/reflow/python-runtime/bin/python
+python -m pip check: No broken requirements found.
+Measured torch: 2.13.0+cu130; torch.version.cuda: 13.0; torch.cuda.is_available(): True
+GPU: NVIDIA GeForce RTX 2050
+Real CUDA tensor: torch.ones(1, device="cuda").sum().item() -> 1.0; torch.cuda.synchronize() succeeded.
+This checks an already-installed runtime; it does not verify a fresh installation or speech-model inference.

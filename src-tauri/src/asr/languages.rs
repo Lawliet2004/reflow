@@ -7,31 +7,30 @@ struct Language {
     name: String,
 }
 
+fn languages() -> &'static [Language] {
+    static LANGUAGES: OnceLock<Vec<Language>> = OnceLock::new();
+    LANGUAGES.get_or_init(|| {
+        serde_json::from_str(include_str!("../../../model-runtime/languages.json"))
+            .expect("compiled language catalogue must be valid")
+    })
+}
+
 /// Shared with both language selectors and the Python sidecar. The names
 /// match Qwen3-ASR's supported forced-language prompt tags.
 pub fn language_name(code: &str) -> Result<Option<&'static str>, String> {
     if code == "auto" {
         return Ok(None);
     }
-    static LANGUAGES: OnceLock<Vec<Language>> = OnceLock::new();
-    let languages = LANGUAGES.get_or_init(|| {
-        serde_json::from_str(include_str!("../../../model-runtime/languages.json"))
-            .expect("compiled language catalogue must be valid")
-    });
-    languages.iter().find(|l| l.code == code).map(|l| Some(l.name.as_str()))
+    languages().iter().find(|l| l.code == code).map(|l| Some(l.name.as_str()))
         .ok_or_else(|| format!("Unsupported dictation language '{code}'. Choose a supported language or Auto-detect."))
 }
 
 pub fn resolve_language_name(input: &str) -> Result<String, String> {
-    let languages: Vec<Language> =
-        serde_json::from_str(include_str!("../../../model-runtime/languages.json"))
-            .map_err(|e| e.to_string())?;
-    languages
-        .into_iter()
-        .find(|l| {
-            l.code.eq_ignore_ascii_case(input.trim()) || l.name.eq_ignore_ascii_case(input.trim())
-        })
-        .map(|l| l.name)
+    let input = input.trim();
+    languages()
+        .iter()
+        .find(|l| l.code.eq_ignore_ascii_case(input) || l.name.eq_ignore_ascii_case(input))
+        .map(|l| l.name.clone())
         .ok_or_else(|| format!("Unsupported translation language '{input}'"))
 }
 
@@ -53,5 +52,12 @@ mod tests {
         assert_eq!(language_name("auto").unwrap(), None);
         assert!(language_name("bn").is_err());
         assert!(language_name("English").is_err());
+    }
+
+    #[test]
+    fn resolves_codes_and_names_case_insensitively() {
+        assert_eq!(resolve_language_name(" EN ").unwrap(), "English");
+        assert_eq!(resolve_language_name("german").unwrap(), "German");
+        assert!(resolve_language_name("tlh").is_err());
     }
 }

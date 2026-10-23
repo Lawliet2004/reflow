@@ -1,0 +1,16 @@
+npm WARN ERESOLVE overriding peer dependency
+npm WARN While resolving: reflow@0.5.0
+npm WARN Found: @vitest/coverage-v8@4.1.11
+npm WARN node_modules/@vitest/coverage-v8
+npm WARN   dev @vitest/coverage-v8@"4.1.12" from the root project
+npm WARN   1 more (vitest)
+npm WARN 
+npm WARN Could not resolve dependency:
+npm WARN peerOptional @vitest/coverage-v8@"4.1.11" from vitest@4.1.11
+npm WARN node_modules/vitest
+npm WARN   dev vitest@"4.1.12" from the root project
+npm WARN   2 more (@testing-library/jest-dom, @vitest/coverage-v8)
+npm ERR! Cannot read properties of null (reading 'edgesOut')
+
+npm ERR! A complete log of this run can be found in:
+npm ERR!     /home/papan/.npm/_logs/2026-10-22T13_10_50_099Z-debug-0.log

@@ -1,0 +1,20 @@
+
+> reflow@0.5.0 build
+> tsc && vite build
+
+vite v6.4.5 building for production...
+transforming...
+✓ 1899 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                          1.73 kB │ gzip:   0.79 kB
+dist/assets/logo-DN8_OmNI.png           44.75 kB
+dist/assets/index-CSiic5U-.css          91.48 kB │ gzip:  18.67 kB
+dist/assets/webviewWindow-D6UFVvp4.js    4.80 kB │ gzip:   1.42 kB
+dist/assets/index-BIh-G9kP.js          543.86 kB │ gzip: 160.21 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 3.08s

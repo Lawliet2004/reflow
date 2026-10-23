@@ -3,7 +3,6 @@ import {
   AppState,
   AppSettings,
   Appearance,
-  IntelligenceTier,
   LatencyMetrics,
   LatencyPercentiles,
   ModelStatus,
@@ -27,6 +26,7 @@ import { HistoryView } from "./components/HistoryView";
 import { SettingsDialog, SettingsView } from "./components/SettingsView";
 import { Overlay } from "./components/Overlay";
 import { Onboarding } from "./components/Onboarding";
+import { setupDismissed } from "./services/onboarding";
 import { applyTheme, syncWindowChrome } from "./utils/theme";
 import logoUrl from "./assets/logo.png";
 import { AlertCircle, Info, X } from "lucide-react";
@@ -40,14 +40,7 @@ const EMPTY_TRANSCRIPT: StreamingTranscriptPayload = {
   stage: "",
 };
 
-export interface IntelligenceDownloadEvent {
-  tier: IntelligenceTier;
-  progress_pct: number;
-  speed_mbps: number;
-  phase: "starting" | "downloading" | "complete" | "error";
-  error?: string;
-  filename?: string;
-}
+export type { IntelligenceDownloadEvent } from "./types";
 
 export const App: React.FC = () => {
   const visible = useViewVisibility();
@@ -135,17 +128,8 @@ export const App: React.FC = () => {
   }, [appState, visible]);
   const [latencyMetrics, setLatencyMetrics] = useState<LatencyMetrics | null>(null);
   const [latencyPercentiles, setLatencyPercentiles] = useState<LatencyPercentiles | null>(null);
-  // Persisted so "Set up later" means later — the wizard no longer ambushes
-  // every launch just because no model is installed yet. DictateHome gets a
-  // "Finish setup" action that reopens it deliberately.
-  const [onboardingComplete, setOnboardingComplete] = useState(() => {
-    try {
-      return localStorage.getItem("reflow.onboarding.completed") === "1";
-    } catch {
-      // Private-mode storage denials must not strand the wizard logic.
-      return false;
-    }
-  });
+  // Dismissal and verified completion have separate persisted outcomes.
+  const [onboardingComplete, setOnboardingComplete] = useState(setupDismissed);
   // The mount-time model fetch is deliberately one-shot; read the flag
   // through a ref so completing the wizard does not re-run the startup load.
   const onboardingCompleteRef = useRef(onboardingComplete);
@@ -351,12 +335,6 @@ export const App: React.FC = () => {
   }, [openSettings]);
 
   const completeOnboarding = useCallback(() => {
-    try {
-      localStorage.setItem("reflow.onboarding.completed", "1");
-    } catch (error) {
-      // The wizard still closes — persistence is best-effort (private mode).
-      console.error("Could not persist onboarding completion:", error);
-    }
     onboardingCompleteRef.current = true;
     setOnboardingComplete(true);
     setWizardOpen(false);

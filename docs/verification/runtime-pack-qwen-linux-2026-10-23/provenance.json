@@ -1,0 +1,155 @@
+{
+  "recorded_at": "2026-10-23T02:13:26.332168+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "dirty_worktree": true,
+  "source_sha256": {
+    "scripts/runtime-packs.py": "40ad1ad6664543f0588673eb30a01fb9f18a76ced60e9f8b8942cdbb999563f2",
+    "scripts/test_runtime_packs.py": "62c6c4e9e76814c493ea48dd4e9614ad527ae1cdb424a912f35353c7eb1b91ad",
+    "model-runtime/licenses/supplements.json": "dda36f383c1016070b9f800745ae65c60cd0659ed76eb412894d9fbbe755552c",
+    "model-runtime/licenses/tokenizers-0.22.2.LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "model-runtime/locks/x86_64-unknown-linux-gnu-qwen-cpu.txt": "55c5ade4a342d81fb453bd409be5f159bc66a258a2c1a3d1775c8b9c8c784cf1",
+    "model-runtime/locks/x86_64-unknown-linux-gnu-zipformer-none.txt": "10b27c4759a572548207244fc63e8f8a4276704975abf1ccfa361ff897b23ac8",
+    "model-runtime/locks/pip.txt": "a5156dc41a4a00784002d063a17d6fcdb3e6922dd650046fd907b80173a502a7",
+    "model-runtime/python-builds.json": "264bef1d61cea3fe7113371bf91fdd488cc059e0d7c599378f24f13bf9a20635",
+    "src-tauri/src/asr/python_setup.rs": "753c74332e4655ffdff21437a89cd8090f48c5de6287c5b43f78acf227a64f68",
+    "src-tauri/src/asr/runtime_pack.rs": "377ccfc9915cd14ab61011c8d90cdbe0cfc18d8eb1b8fb33404996efebf0f439",
+    "src-tauri/src/asr/dependency_locks.rs": "c237064f8c2381d8b0e40af63134033171c4e19a6c8d753630db003c7222faf2",
+    "src-tauri/src/asr/sidecar.rs": "1c3fed9318f7b72da8275cdc2487de2cfafaab6d77a1fb11a469dc9a252bd627",
+    "src-tauri/src/network_policy.rs": "1274cffc1759335ab5671872fcaff697e9f8352487e2c9b2f87cc8a197dcd490",
+    "src-tauri/src/network_policy/download.rs": "eb4fcd88d821fea1b386f3f79100a2cc44fc0fa1a96d6ec68bdfbe4e645e8910",
+    "src-tauri/src/platform/persistence.rs": "ae78fb5342d5c064a2c63cedab5fb0c8f3f1c102fd950caea6886cd09b05bab9",
+    "src-tauri/Cargo.toml": "0bca3bfef2a39620367495293061a2e76910281b1db2a6c388a70a0670bd137c",
+    "src-tauri/Cargo.lock": "d8a15de445c394094483dbf7d785ff45e4d8fa1703ba732fc5341f8649ac5c5f",
+    "model-runtime/qwen3_asr_runtime.py": "db6d8b7911830460590ef1c5d0fdff0c15d50ae8ec542e234be97c828990cb6a",
+    ".gitattributes": "8367f9ff4ff0786f34da24d89b4a0bd64a137b58245bf70255706ff5e7fdfd08"
+  },
+  "asset": {
+    "target": "x86_64-unknown-linux-gnu",
+    "profile": "qwen",
+    "variant": "cpu",
+    "requirements_sha256": "55c5ade4a342d81fb453bd409be5f159bc66a258a2c1a3d1775c8b9c8c784cf1",
+    "pip_lock_sha256": "a5156dc41a4a00784002d063a17d6fcdb3e6922dd650046fd907b80173a502a7",
+    "pbs_sha256": "f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5",
+    "schema": 1,
+    "asset": "speech-runtime-x86_64-unknown-linux-gnu-qwen-cpu.tar.gz",
+    "sha256": "548fabff5ba36aa7c279eb5e6bd136f54c0415b73d8e1710ec9382ac5ef85f53",
+    "bytes": 308489808,
+    "unpacked_bytes": 314999977,
+    "source_commit": "148ae33a9deba466dda58874419c9301b56b69db"
+  },
+  "no_model_downloads": true,
+  "published": false,
+  "scope": "Native Linux x64 CPU dependency pack and controlled offline install/fault/repair. No native desktop, trained ASR recognition, accelerator or other-platform acceptance. Full source identifies dirty worktree beyond descriptor base commit.",
+  "checks": {
+    "rust_all_targets": {
+      "command": "cargo test --locked --all-targets",
+      "passed": 983,
+      "failed": 0,
+      "ignored": 27,
+      "targets": 45,
+      "library_passed": 639,
+      "library_ignored": 16,
+      "exit_code": 0,
+      "log_sha256": "9cd470a13bd64ae4f8d7dc855949553a9a1a98b7d8eb21501d889aaf82b225e5"
+    },
+    "clippy_all_targets": {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log_sha256": "b03b0b42ef1683be6f328d6101b99eb52fcd238a99052ed3f43ca7bd0a4bce5a"
+    },
+    "builder_catalog": {
+      "command": "python3 -m unittest scripts/test_runtime_packs.py",
+      "passed": 8,
+      "failed": 0,
+      "exit_code": 0,
+      "log_sha256": "ad8a7898d6079d75ab99b6e0a6fec28ef063f86bab96b6f480087f44a3135aca"
+    },
+    "native_pack_build": {
+      "exit_code": 0,
+      "log_sha256": "7fd07cf0d9d543f8644b1a10bcf461de28dffbd925fbc31d00335c6fc318f460",
+      "archive_sha256": "548fabff5ba36aa7c279eb5e6bd136f54c0415b73d8e1710ec9382ac5ef85f53"
+    },
+    "offline_qwen": {
+      "passed": 1,
+      "exit_code": 0,
+      "result": "offline-install.json",
+      "log_sha256": "49f2fa07a49a0466ad40d9c37225467029122d8861f26e1fed57538a16d4c9c6"
+    },
+    "offline_zipformer": {
+      "passed": 1,
+      "exit_code": 0,
+      "result": "zipformer-regression.json",
+      "log_sha256": "c15d50b152761972bae5b42866d772616f644e78ddd9b2ba31a8a652ae1a6cc6"
+    },
+    "disk_regression_before": {
+      "passed": 0,
+      "failed": 1,
+      "exit_code": 101,
+      "log_sha256": "c6de1049ed4f954d507a01d759779212e33854d6f4e7b34847693eaf2ed81f50"
+    },
+    "disk_regression_after": {
+      "passed": 1,
+      "failed": 0,
+      "exit_code": 0,
+      "log_sha256": "b6b74d848ba81b6844d30ac02a66ad51974cdc21b3f6fb02fd4034b1ffe4c338"
+    },
+    "lf_notice_checkout": {
+      "command": "git check-attr eol -- model-runtime/licenses/tokenizers-0.22.2.LICENSE model-runtime/licenses/supplements.json",
+      "result": "lf for both; native Windows checkout/build still unverified"
+    },
+    "rust_format": {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0
+    },
+    "repository_format": {
+      "command": "npm run format:check",
+      "exit_code": 0,
+      "log_sha256": "0aaa94ebb7c9974eb24e337e82ec2e975a2ef4f381a45bd9bf78beefa50610f5"
+    },
+    "diff_check": {
+      "command": "git diff --check",
+      "exit_code": 0
+    },
+    "frontend_scope": "Nine captured source/test hashes rechecked unchanged; earlier 371-test/production-JS-build evidence reused. No new frontend or IPC source change or frontend test/build run claimed.",
+    "refinement_scope": "All 15 captured refinement implementation/fixture hashes rechecked unchanged against paragraph-preservation evidence. No extra context/sampling benchmark for these dependency/storage changes."
+  },
+  "remaining": "Full native matrix, signing/quarantine/accelerator/device/insertion acceptance, release distribution review, wider faults/advisories and writing quality cases remain.",
+  "reference_sources": {
+    "wheel_layout": "https://packaging.python.org/en/latest/specifications/binary-distribution-format/",
+    "tokenizers_license": "https://raw.githubusercontent.com/huggingface/tokenizers/f383101a26663708484cac0727792aad74f78234/LICENSE",
+    "sysinfo_tmpfs": "Pinned sysinfo 0.33.1 source src/unix/linux/disk.rs filters tmpfs unless feature linux-tmpfs is enabled."
+  },
+  "failure_evidence": {
+    "first_real_build": {
+      "path": "/tmp/reflow-qwen-cpu-pack-build.log",
+      "sha256": "f9ec3ece9b4adab015a7c2b7c14a7b26f4d0c3a6a8f317ae8296e836c809608e"
+    },
+    "second_real_build": {
+      "path": "/tmp/reflow-qwen-cpu-pack-build-fixed.log",
+      "sha256": "a80061883c4bfdfc853084d2af59ac564e58f539b663889767d8677b824235f7"
+    },
+    "final_build": "/tmp/reflow-qwen-cpu-pack-build-final.log",
+    "disk_regression_before": "/tmp/reflow-pack-disk-before.log",
+    "disk_regression_after": "/tmp/reflow-pack-disk-after.log",
+    "fixture_diagnostic_correction": {
+      "path": "/tmp/reflow-qwen-lazy-fixture-before-fix.log",
+      "sha256": "a829b2628208fdd1538e321cef54c20df2e8ec3e26b0dfc56cc08425e69ad1a4"
+    },
+    "storage_failure": "Observed excerpt retained in storage-failure-excerpt.txt; full original log not retained."
+  },
+  "selected_source_lines_delta": 7169,
+  "verification_recorded_at": "2026-10-23T02:25:59.101497+00:00",
+  "artifact_sha256": {
+    "offline-install-before-preflight.json": "46d94f9b445872dd9b1757cc0932ca43a29abe7f23e0aaf8888151d7e57dbcaa",
+    "license-summary.json": "4f20f2ee7eabf21a8338368afd1ddb1fab418c3fccfb8eed4d30d9fd7c2140d9",
+    "descriptor.json": "96bb6e1dbaf118ec0fb3ba9dfccf0c9b39415d176f155ff2190a45e491eca72c",
+    "storage-failure-excerpt.txt": "ba03435518fb44f919f4e8841e18b2049b150675e37e4d6cb276f383c82a65f8",
+    "storage-failure.json": "3c670d28f89240379b9f3dcbe5503fb7f75b7ab7faae5bb5e3d7979c3d1faf5a",
+    "tokenizers-notice.json": "4e5ae84b4df463f4150dfcec5277b9db49fccc4837971fc871394e42c16b13f8",
+    "setuptools-metadata.json": "55031cfe210f6b74b282926a56aa8b46444c8c6d072d3364744382a1220bbb45",
+    "manifest.json": "bbe50b662e5956297aaf979c75227a32474e8b9fa8df55c293fa09e2e15214f8",
+    "zipformer-regression.json": "cf532b5e37c85bbf31aaa979e2a0dfd9582ff5b69cff9302bb3f8a307d0b96d8",
+    "build-check.json": "95492d4c354bcf4ca0a754ddd07fca6651c8e34f4f2e614cbec077be3ea22e8d",
+    "offline-install.json": "1d1044b842541e84cf303a6c8491f3bd949806f0689fb15250a54373b1440679"
+  }
+}

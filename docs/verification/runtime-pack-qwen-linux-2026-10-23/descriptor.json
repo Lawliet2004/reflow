@@ -1,0 +1,14 @@
+{
+  "target": "x86_64-unknown-linux-gnu",
+  "profile": "qwen",
+  "variant": "cpu",
+  "requirements_sha256": "55c5ade4a342d81fb453bd409be5f159bc66a258a2c1a3d1775c8b9c8c784cf1",
+  "pip_lock_sha256": "a5156dc41a4a00784002d063a17d6fcdb3e6922dd650046fd907b80173a502a7",
+  "pbs_sha256": "f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5",
+  "schema": 1,
+  "asset": "speech-runtime-x86_64-unknown-linux-gnu-qwen-cpu.tar.gz",
+  "sha256": "548fabff5ba36aa7c279eb5e6bd136f54c0415b73d8e1710ec9382ac5ef85f53",
+  "bytes": 308489808,
+  "unpacked_bytes": 314999977,
+  "source_commit": "148ae33a9deba466dda58874419c9301b56b69db"
+}

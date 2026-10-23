@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-10-22T22:01:18.647850+00:00",
+  "base_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "dirty_worktree": true,
+  "source_sha256": {
+    "scripts/runtime-packs.py": "9ce04772327f947ed7b19c8ea549088b9c5d934868e430c4759db5ae64e3e116",
+    "scripts/test_runtime_packs.py": "81385cb873af647d1e8f9a319189c0f7691bd7324731a985b454d48b3d23c582",
+    "src-tauri/src/asr/python_setup.rs": "1394a980dfa3b48a384cce73a26765f73c7ac25fd1c5475af3cacefaae36cc64",
+    "src-tauri/src/asr/runtime_pack.rs": "377ccfc9915cd14ab61011c8d90cdbe0cfc18d8eb1b8fb33404996efebf0f439",
+    "src-tauri/src/asr/sidecar.rs": "1ab7cebbf33c363216d257fd20eb0302bc85f604296ffc1d66d97d11f73fe04d",
+    "src-tauri/src/network_policy/download.rs": "fc901aa7d16b4ab331f96170c0128a6458ee1269b8cd38374223ebe63d1f7f8c",
+    "model-runtime/python-builds.json": "264bef1d61cea3fe7113371bf91fdd488cc059e0d7c599378f24f13bf9a20635",
+    "model-runtime/locks/x86_64-unknown-linux-gnu-zipformer-none.txt": "10b27c4759a572548207244fc63e8f8a4276704975abf1ccfa361ff897b23ac8",
+    "model-runtime/locks/pip.txt": "a5156dc41a4a00784002d063a17d6fcdb3e6922dd650046fd907b80173a502a7",
+    "src-tauri/src/network_policy.rs": "bb0295434cfe35e09697ddc701d9e3cfc3032b3fb81449c46c7de6456e333b0f"
+  },
+  "warning": "Dirty worktree: these hashes identify the installer sources used for final-policy-gate-offline-install.json. The pack build and earlier verification runs predate some installer changes, but use the same immutable pack bytes. Later formatting/refinement changes do not enter this model-free installer path. The AppImage environment is simulated; no native installer, microphone, accelerator, signing or insertion acceptance is implied."
+}

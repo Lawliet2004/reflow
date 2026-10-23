@@ -1,0 +1,108 @@
+{
+  "deterministic": {
+    "2048": {
+      "cases": 50,
+      "applied": 43,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 7,
+      "explicit_break_contracts": 50,
+      "median_total_ms": 263.5,
+      "p95_total_ms": 406,
+      "median_prompt_tokens": 349.5,
+      "peak_server_rss_bytes": 781864960,
+      "peak_device_vram_mib": 1239
+    },
+    "4096": {
+      "cases": 50,
+      "applied": 43,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 7,
+      "explicit_break_contracts": 50,
+      "median_total_ms": 266.5,
+      "p95_total_ms": 411,
+      "median_prompt_tokens": 349.5,
+      "peak_server_rss_bytes": 781889536,
+      "peak_device_vram_mib": 1265
+    },
+    "8192": {
+      "cases": 50,
+      "applied": 43,
+      "coarse_contracts": 50,
+      "safety_fallbacks": 7,
+      "explicit_break_contracts": 50,
+      "median_total_ms": 266.0,
+      "p95_total_ms": 420,
+      "median_prompt_tokens": 349.5,
+      "peak_server_rss_bytes": 782176256,
+      "peak_device_vram_mib": 1317
+    }
+  },
+  "temperature_015_at_4096": {
+    "cases": 50,
+    "applied": 43,
+    "coarse_contracts": 49,
+    "safety_fallbacks": 7,
+    "explicit_break_contracts": 50,
+    "median_total_ms": 268.0,
+    "p95_total_ms": 428,
+    "median_prompt_tokens": 349.5,
+    "peak_server_rss_bytes": 781664256,
+    "peak_device_vram_mib": 1265
+  },
+  "paired_changes": [
+    {
+      "context": 2048,
+      "id": "long_corrected_requirements",
+      "input": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Node.js no wait use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Thursday sorry Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "before": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement. Use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "after": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "before_prepared": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement. Use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "after_prepared": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "used_before": false,
+      "used_after": false
+    },
+    {
+      "context": 4096,
+      "id": "long_corrected_requirements",
+      "input": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Node.js no wait use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Thursday sorry Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "before": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement. Use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "after": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "before_prepared": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement. Use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "after_prepared": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "used_before": false,
+      "used_after": false
+    },
+    {
+      "context": 8192,
+      "id": "long_corrected_requirements",
+      "input": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Node.js no wait use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Thursday sorry Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "before": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement. Use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "after": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "before_prepared": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement. Use Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "after_prepared": "I want to build a privacy focused browser that stays lightweight and uses little RAM. It should open websites search the web and perform tasks only after permission. Maybe we can add local AI assistance later but that is not a launch requirement.\n\nUse Python FastAPI for the service and PostgreSQL for the database not MySQL. Store credentials securely and never send private pages to a cloud model. Keep the interface simple with keyboard navigation and a visible cancel action.\n\nNoura will finish the prototype by Friday. Rahul owns integration tests and Maya will check accessibility. We need Windows macOS and Linux support. Please preserve the setting allowNetwork=false and the exact command `npm run check`. Do not invent additional features or omit any owner or deadline.",
+      "used_before": false,
+      "used_after": false
+    }
+  ],
+  "before_break_contract_recheck": {
+    "2048": 49,
+    "4096": 49,
+    "8192": 49
+  },
+  "temperature_contract_manual_review": {
+    "id": "technical_negation",
+    "coarse_false_negative": true,
+    "detail": "The unchanged substring oracle requires not React and not MySQL; the actual output says instead of React and instead of MySQL, retaining both exclusions. Raw missing fields are preserved, not rescored."
+  },
+  "remaining_substantive_cases": [
+    "ordinary_paragraph",
+    "email",
+    "requirements_modifiers",
+    "meeting_actions",
+    "two_topics",
+    "no_wait_request",
+    "long",
+    "long_corrected_requirements"
+  ],
+  "warning": "Explicit-break counts augment coarse word/layout contracts; these do not establish semantic equivalence or publication-quality acceptance."
+}

@@ -1,0 +1,10 @@
+{
+  "pbs_tag": "20261003",
+  "python_version": "3.12.15",
+  "torch_variant": "cpu",
+  "created_at": "2026-10-23T02:53:21.821942528+00:00",
+  "requirements_digest": "c9906b11753deb4ae98315aa0a546f22fe059a20b0417bef136c47c4e98a69a6",
+  "target": "x86_64-unknown-linux-gnu",
+  "profile": "phonon",
+  "runtime_pack_sha256": "80a6eb835b574612a6001d4c677c7e16582416c09c2084c429676b859adecc7b"
+}
