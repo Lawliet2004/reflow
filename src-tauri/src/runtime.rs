@@ -82,16 +82,10 @@ pub fn plan(
             }
         }
     }
-    let context_size = if automatic {
-        // Capacity-based tiers are stable between dictations; transient free
-        // memory must not repeatedly invalidate the warm server's cache.
-        if caps.total_vram_mb() >= 16_384.0 {
-            4096
-        } else if caps.total_vram_mb() >= 8192.0 {
-            2048
-        } else {
-            1024
-        }
+    // A saved context value is a preference even under automatic offload.
+    // Changing free VRAM changes admission/layers, never the user's window.
+    let context_size = if settings.refinement.context_size == 0 {
+        crate::rewrite::client::DEFAULT_CONTEXT_SIZE
     } else {
         settings.refinement.context_size
     };
@@ -149,7 +143,7 @@ pub fn plan(
         if !automatic || refinement_resident { return true; }
         // GGUF remains quantized on CPU. ASR's fp32 estimate is inappropriate.
         let needed = crate::rewrite::server::flow_model_spec(id).approx_bytes as f32
-            / (1024.0 * 1024.0) + 512.0;
+            / (1024.0 * 1024.0) + 512.0 + context_size as f32 * 0.125;
         // GGUF is mmap-backed even with GPU offload. Reserve room for the app,
         // audio and OS instead of starting an additional runtime into paging.
         if caps.ram.available_mb < needed + 1024.0 {

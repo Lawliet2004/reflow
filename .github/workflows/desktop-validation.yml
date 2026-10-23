@@ -1,0 +1,122 @@
+name: Desktop validation
+
+on:
+  push:
+    branches: ["codex/native-validation-**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+# Model-free validation only. Installers are unsigned/ad-hoc previews, and the
+# dependency archives are not published or embedded as a release catalog.
+jobs:
+  pack-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: matrix
+        run: echo "value=$(python3 scripts/runtime-packs.py matrix)" >> "$GITHUB_OUTPUT"
+
+  dependency-packs:
+    needs: pack-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.pack-matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build pinned pack and verify offline installation
+        shell: bash
+        run: |
+          python scripts/runtime-packs.py build '${{ matrix.target }}' '${{ matrix.profile }}' '${{ matrix.variant }}' \
+            --output runtime-packs --cache "$RUNNER_TEMP/pbs-cache" --commit "$GITHUB_SHA"
+      - name: Retain build checks and license inventory
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+          output = Path("runtime-packs")
+          for filename in output.glob("*.tar.gz"):
+              with tarfile.open(filename) as archive:
+                  for name in ("manifest.json", "build-check.json", "licenses.json"):
+                      data = archive.extractfile(name)
+                      if data is None:
+                          raise ValueError(f"Missing {name}")
+                      (output / name).write_bytes(data.read())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-${{ matrix.target }}-${{ matrix.profile }}-${{ matrix.variant }}
+          path: runtime-packs/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  installers:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-22.04
+          - name: windows-x64
+            os: windows-latest
+          - name: macos-arm64-preview
+            os: macos-latest
+          - name: macos-x64-preview
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libgtk-layer-shell-dev libayatana-appindicator3-dev \
+            librsvg2-dev libasound2-dev libxdo-dev libssl-dev patchelf pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: node --test scripts/package.test.cjs scripts/kill-running.test.cjs
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests
+      - name: Build preview installers and checksums
+        run: node scripts/package.cjs --macos-preview
+      - name: Native launcher smoke check
+        shell: bash
+        run: |
+          binary=src-tauri/target/release/reflow
+          if [ "$RUNNER_OS" = "Windows" ]; then binary="$binary.exe"; fi
+          "$binary" --status > startup.txt
+          grep -q 'Reflow' startup.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.name }}-${{ github.sha }}
+          path: |
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.sha256
+            startup.txt
+          if-no-files-found: error
+          retention-days: 14

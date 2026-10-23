@@ -337,7 +337,7 @@ fn schema_2_flat_compute_fields_migrate_into_nested_sections() {
 
     // New sections get their defaults.
     assert_eq!(migrated.streaming.silence_boundary_ms, 400);
-    assert_eq!(migrated.refinement.context_size, 1024);
+    assert_eq!(migrated.refinement.context_size, 4096);
     assert!(migrated.refinement.keep_warm);
 
     // Persisted, so the next launch is a no-op.

@@ -26,6 +26,7 @@ pub struct FileProgress {
     pub history_id: Option<String>,
     pub finished: bool,
     pub error: Option<String>,
+    pub warning: Option<String>,
 }
 #[derive(Clone)]
 pub struct FileJob {
@@ -87,7 +88,19 @@ pub async fn transcribe_samples(
                     .push_audio(session, sequence as u32, chunk.to_vec())
                     .await?;
             }
-            let text = ctx.asr_handle.stop_stream(session).await?;
+            let stopped = ctx.asr_handle.stop_stream(session);
+            tokio::pin!(stopped);
+            let text = loop {
+                tokio::select! {
+                    result = &mut stopped => break result?,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                        if cancel.load(Ordering::SeqCst) {
+                            ctx.asr_handle.cancel_stream(session).await?;
+                            return Err("File transcription cancelled".into());
+                        }
+                    }
+                }
+            };
             if cancel.load(Ordering::SeqCst) {
                 return Err("File transcription cancelled".into());
             }
@@ -177,6 +190,7 @@ pub async fn transcribe_file(
                     history_id: None,
                     finished: false,
                     error: None,
+                    warning: None,
                 },
             },
         );
@@ -224,22 +238,75 @@ async fn import(
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let samples = tokio::task::spawn_blocking(move || {
-        crate::audio::file_decode::decode_file(Path::new(&path), allow_large)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    publish(ctx, id, |p| p.total_s = samples.len() as f64 / 16_000.0);
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<Vec<f32>>(2);
+    let decode_cancel = cancel.clone();
+    let decode_path = path.clone();
+    let decoder = tokio::task::spawn_blocking(move || {
+        let mut pending = Vec::with_capacity(16_000 * 30);
+        crate::audio::file_decode::decode_file_chunks(
+            Path::new(&decode_path),
+            allow_large,
+            &decode_cancel,
+            |samples| {
+                for chunk in samples.chunks(16_000) {
+                    pending.extend_from_slice(chunk);
+                    if pending.len() > 16_000 * 30 {
+                        // Keep the original silence-aware boundary, retaining
+                        // only the short tail for the next bounded batch.
+                        let end = segment_audio(&pending)[0].1;
+                        let batch = pending.drain(..end).collect();
+                        sender
+                            .blocking_send(batch)
+                            .map_err(|_| "File transcription cancelled".to_string())?;
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        if !pending.is_empty() {
+            sender
+                .blocking_send(pending)
+                .map_err(|_| "File transcription cancelled".to_string())?;
+        }
+        Ok::<_, String>(())
+    });
     let settings = ctx.settings_store.get();
     let language = if settings.auto_detect_language {
         "auto"
     } else {
         &settings.language
     };
-    let segments = transcribe_samples(ctx, &samples, language, &cancel, |done| {
-        publish(ctx, id, |p| p.done_s = done)
-    })
-    .await?;
+    let mut segments = Vec::new();
+    let mut total_samples = 0u64;
+    let mut transcription_error = None;
+    while let Some(samples) = receiver.recv().await {
+        match transcribe_samples(ctx, &samples, language, &cancel, |_| {}).await {
+            Ok(mut batch) => {
+                let offset = total_samples / 16;
+                for segment in &mut batch {
+                    segment.offset_ms += offset;
+                    segment.end_ms += offset;
+                }
+                segments.extend(batch);
+                total_samples += samples.len() as u64;
+                publish(ctx, id, |p| {
+                    p.done_s = total_samples as f64 / 16_000.0;
+                });
+            }
+            Err(error) => {
+                transcription_error = Some(error);
+                cancel.store(true, Ordering::SeqCst);
+                break;
+            }
+        }
+    }
+    drop(receiver); // wakes a producer waiting on backpressure
+    let decoded = decoder.await.map_err(|e| e.to_string())?;
+    if let Some(error) = transcription_error {
+        return Err(error);
+    }
+    decoded?;
+    publish(ctx, id, |p| p.total_s = total_samples as f64 / 16_000.0);
     if cancel.load(Ordering::SeqCst) {
         return Err("File transcription cancelled".into());
     }
@@ -252,7 +319,7 @@ async fn import(
     let entry = HistoryEntry {
         id: history_id.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
-        duration_ms: samples.len() as u64 / 16,
+        duration_ms: total_samples / 16,
         language: ctx.asr_handle.get_detected_language(),
         raw_transcript: text.clone(),
         smart_transcript: text.clone(),
@@ -279,10 +346,16 @@ async fn import(
     if cancel.load(Ordering::SeqCst) {
         return Err("File transcription cancelled".into());
     }
-    ctx.history_store.insert_entry(&entry)?;
-    ctx.history_store
-        .save_file_segments(&history_id, &segments)?;
-    ctx.history_store.save_audio(&history_id, &samples)?;
+    ctx.history_store.insert_file_entry(&entry, &segments)?;
+    // Optional retention has its own transaction. The transcript ID remains a
+    // successful outcome even if storage or cancellation interrupts retention.
+    if let Err(error) = ctx.history_store.save_audio_stream(&history_id, |sink| {
+        crate::audio::file_decode::decode_file_chunks(Path::new(&path), allow_large, &cancel, sink)
+    }) {
+        publish(ctx, id, |p| {
+            p.warning = Some(format!("Transcript saved. Recording could not be retained: {error}. Open History; do not retry transcription."))
+        });
+    }
     Ok(history_id)
 }
 
@@ -590,6 +663,7 @@ mod storage_audit_tests {
                     history_id: None,
                     finished: false,
                     error: None,
+                    warning: None,
                 },
             },
         );

@@ -6,13 +6,13 @@ import {
   Capabilities,
   DownloadedModel,
   IntelligenceTier,
-  IntelligenceTierState,
   INTELLIGENCE_TIERS,
   ModelStatus,
   RuntimeDownloadEvent,
   primaryGpu,
   isModelLoading,
   isModelReady,
+  tierState,
 } from "../../types";
 import { api } from "../../services/tauriApi";
 import { ModelNotice } from "../ModelNotice";
@@ -217,24 +217,12 @@ export const ModelPage: React.FC<Props> = ({
     }
   };
 
-  const tierState = (tier: IntelligenceTier): IntelligenceTierState | null => {
-    if (tier === "raw_verbatim") {
-      return {
-        tier,
-        model_id: "none",
-        installed: true,
-        downloading: false,
-      };
-    }
-    return intelligenceTiers?.find((t) => t.tier === tier) ?? null;
-  };
-
   const isIntelligenceDownloading = (tier: IntelligenceTier) => activeDownloadTiers.has(tier);
 
   const handleInstallIntelligence = async (tier: IntelligenceTier) => {
     if (tier === "raw_verbatim") return;
     if (activeDownloadTiers.has(tier)) return;
-    if (tierState(tier)?.installed) return;
+    if (tierState(intelligenceTiers, tier)?.installed) return;
     setInstallingIntelligence(tier);
     try {
       await api.installIntelligenceModel(tier);
@@ -539,6 +527,24 @@ export const ModelPage: React.FC<Props> = ({
             )}
           </div>
 
+          {modelStatus?.installed && !speechBusy && !loading && (
+            <button type="button" className="btn btn-secondary mt-3" onClick={installSelectedModel}>
+              Verify and repair download
+            </button>
+          )}
+          {downloading && (
+            <button
+              type="button"
+              className="btn btn-secondary mt-3"
+              onClick={() =>
+                api
+                  .cancelModelDownload(settings.asr.model)
+                  .catch((error) => intelligence.notifyToast("error", String(error)))
+              }
+            >
+              Cancel model download
+            </button>
+          )}
           {downloading && (
             <div className="h-1.5 rounded-full bg-line mt-3 overflow-hidden">
               <div
@@ -770,7 +776,7 @@ export const ModelPage: React.FC<Props> = ({
           </li>
           {(["smart_flow", "deep_context"] as IntelligenceTier[]).map((tier) => {
             const meta = INTELLIGENCE_TIERS[tier];
-            const state = tierState(tier);
+            const state = tierState(intelligenceTiers, tier);
             const ggufInstalled = state?.weights_installed ?? state?.installed ?? false;
             const runtimeInstalled = flowStatus?.runtime_installed ?? false;
             const installed = ggufInstalled && runtimeInstalled;

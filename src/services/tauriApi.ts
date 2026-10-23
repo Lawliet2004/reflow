@@ -37,6 +37,7 @@ import {
   DownloadedModel,
   PlatformInfo,
   PythonRuntimeStatus,
+  PythonSetupProgress,
   SpeechSetupPlan,
   DesktopIntegrationStatus,
   ApiStatus,
@@ -229,6 +230,8 @@ const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   ui_zoom: 100,
   developer_mode: false,
   cleanup_level: "medium",
+  transcript_format: "off",
+  custom_format_instructions: "",
   intelligence_tier: "smart_flow",
   style: "faithful",
   auto_style_from_app: false,
@@ -436,6 +439,7 @@ export const api = {
       error: null,
     }),
 
+  cancelModelDownload: (modelId: string) => invoke<void>("cancel_model_download", { modelId }),
   installModel: (modelSize: string = "0.6b") => safeInvoke<void>("install_model", { modelSize }),
 
   removeModel: (modelSize: string = "0.6b") => safeInvoke<void>("remove_model", { modelSize }),
@@ -456,8 +460,12 @@ export const api = {
     }),
   getSpeechSetupPlan: () =>
     safeInvoke<SpeechSetupPlan | null>("get_speech_setup_plan", undefined, null),
+  getPythonSetupProgress: () =>
+    safeInvoke<PythonSetupProgress | null>("get_python_setup_progress", undefined, null),
+  verifySpeechRuntime: () => invoke<void>("verify_speech_runtime"),
   setupPythonRuntime: () => safeInvoke<void>("setup_python_runtime"),
-  cancelPythonRuntimeSetup: () => safeInvoke<void>("cancel_python_runtime_setup"),
+  cancelPythonRuntimeSetup: (attemptId?: string) =>
+    safeInvoke<void>("cancel_python_runtime_setup", { attemptId }),
   removePythonRuntime: () => safeInvoke<number>("remove_python_runtime", undefined, 0),
 
   // Metrics & Developer Diagnostics
@@ -555,11 +563,13 @@ export const api = {
   requestKeyboardAccess: () => safeInvoke<void>("request_keyboard_access"),
   retryDesktopShortcuts: () => safeInvoke<void>("retry_desktop_shortcuts"),
   configureGlobalShortcuts: () => safeInvoke<void>("configure_global_shortcuts"),
+  beginShortcutCapture: () => safeInvoke<number>("begin_shortcut_capture", undefined, 0),
+  endShortcutCapture: (id: number) => safeInvoke<void>("end_shortcut_capture", { id }),
   setDesktopShortcut: (action: string, shortcut: string | null) =>
     safeInvoke<DesktopIntegrationStatus>("set_desktop_shortcut", { action, shortcut }),
 
-  getApiStatus: () =>
-    safeInvoke<ApiStatus>("get_api_status", undefined, {
+  getApiStatus: (pairingHost?: string) =>
+    safeInvoke<ApiStatus>("get_api_status", pairingHost ? { pairingHost } : undefined, {
       enabled: false,
       running: false,
       bind: "lan",
@@ -626,11 +636,22 @@ export const api = {
     safeInvoke<IntelligenceTierState[]>("get_intelligence_tiers", undefined, []),
   installIntelligenceModel: (tier: AppSettings["intelligence_tier"]) =>
     safeInvoke<void>("install_intelligence_model", { tier }),
+  cancelIntelligenceDownload: (tier: AppSettings["intelligence_tier"], attemptId: string) =>
+    safeInvoke<void>("cancel_intelligence_download", { tier, attemptId }),
   removeIntelligenceModel: (tier: AppSettings["intelligence_tier"]) =>
     safeInvoke<void>("remove_intelligence_model", { tier }),
   installLlamaRuntime: (computeBackend: AppSettings["refinement"]["device"]) =>
     safeInvoke<void>("install_llama_runtime", { computeBackend }),
   removeLlamaRuntime: () => safeInvoke<void>("remove_llama_runtime"),
+  verifyLlamaRuntime: () => safeInvoke<string>("verify_llama_runtime"),
+  getRuntimeDownloadStatus: () =>
+    safeInvoke<import("../types").RuntimeDownloadEvent | null>(
+      "get_runtime_download_status",
+      undefined,
+      null,
+    ),
+  cancelRuntimeDownload: (attemptId: string) =>
+    safeInvoke<void>("cancel_runtime_download", { attemptId }),
   setIntelligenceTier: (tier: AppSettings["intelligence_tier"]) =>
     safeInvoke<AppSettings>("set_intelligence_tier", { tier }),
   /**
@@ -650,8 +671,12 @@ export const api = {
    */
   setPolishEnabled: (enabled: boolean) =>
     safeInvoke<AppSettings>("set_polish_enabled", { enabled }),
-  previewTierCleanup: (text: string, tier: AppSettings["intelligence_tier"], style?: string) =>
-    api.previewCleanup(text, tier, style),
+  previewTierCleanup: (
+    text: string,
+    tier: AppSettings["intelligence_tier"],
+    style?: string,
+    mode?: Mode,
+  ) => api.previewCleanup(text, tier, style, mode),
   // Returns pre-edit text for recovery; never pastes into the foreground app.
   undoLastAiEdit: () => safeInvoke<string>("undo_last_ai_edit", undefined, ""),
 

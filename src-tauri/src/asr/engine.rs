@@ -156,6 +156,13 @@ impl LoadFailureKind {
 }
 
 impl EngineStatus {
+    pub(crate) fn unavailable(error: impl Into<String>) -> Self {
+        Self {
+            error: Some(error.into()),
+            backend: "unavailable".into(),
+            ..Self::default()
+        }
+    }
     /// `true` when the engine is loaded and known to be running entirely in
     /// device memory.
     ///
@@ -180,9 +187,16 @@ pub struct InferenceProgress {
     pub total: usize,
 }
 pub type ProgressTracker = std::sync::Arc<parking_lot::RwLock<InferenceProgress>>;
+pub type NetworkPolicySignal = std::sync::Arc<dyn Fn(bool) -> Result<(), String> + Send + Sync>;
+pub const NETWORK_POLICY_UNAVAILABLE: &str = "Speech runtime is unavailable until its network policy can be saved. Check that Reflow's data folder is writable and retry the setting.";
 
 pub trait ASREngine: Send + Sync {
     fn set_progress_tracker(&mut self, _tracker: ProgressTracker) {}
+    /// Revoke the runtime directly when policy persistence fails, even while
+    /// the actor is busy. `true` permits restart after a successful policy save.
+    fn network_policy_signal(&self) -> Option<NetworkPolicySignal> {
+        None
+    }
     fn initialize(&mut self) -> Result<(), String>;
     /// Ask the runtime to compute its CUDA capability snapshot now.
     ///
@@ -205,6 +219,9 @@ pub trait ASREngine: Send + Sync {
         backend: &str,
         precision: &str,
     ) -> Result<(), String>;
+    fn cancel_model_download(&mut self, _model_id: &str) -> Result<(), String> {
+        Err("This engine has no active model download".into())
+    }
     fn unload_model(&mut self) -> Result<(), String>;
     fn is_model_loaded(&self) -> bool;
 

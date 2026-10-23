@@ -438,6 +438,13 @@ pub fn import_model_into(source: &Path, models_dir: &Path) -> Result<ImportedMod
         );
     }
     std::fs::create_dir_all(models_dir).map_err(|e| e.to_string())?;
+    crate::network_policy::check_disk_space(
+        models_dir,
+        manifest
+            .download_bytes
+            .saturating_mul(2)
+            .saturating_add(128_000_000),
+    )?;
     let stage = models_dir.join(format!(".import-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&stage).map_err(|e| e.to_string())?;
     let result = (|| {

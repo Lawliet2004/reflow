@@ -337,6 +337,26 @@ mod tests {
         s.modes[1].enabled = false;
         assert_eq!(s.resolve_mode("chat.exe").id, "dictation");
     }
+
+    #[test]
+    fn formatting_preference_is_inherited_but_does_not_override_mode_safety() {
+        let settings = AppSettings {
+            transcript_format: "auto".into(),
+            custom_format_instructions: "brief bullets".into(),
+            ..AppSettings::default()
+        };
+        let message = settings
+            .modes
+            .iter()
+            .find(|mode| mode.id == "message")
+            .unwrap()
+            .clone();
+        let effective = settings.settings_for_mode("chat.exe", &message);
+        assert_eq!(effective.transcript_format, "auto");
+        assert_eq!(effective.custom_format_instructions, "brief bullets");
+        assert_eq!(effective.intelligence_tier, "raw_verbatim");
+        assert!(!effective.resolve_intent().run_llm);
+    }
     #[test]
     fn fresh_cancel_binding_is_escape_only_where_the_hook_is_transparent() {
         let cancel = Hotkeys::default().cancel;

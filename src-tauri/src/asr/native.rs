@@ -83,6 +83,7 @@ impl NativeAsrEngine {
         ));
         self.status = Arc::new(RwLock::new(EngineStatus {
             backend: "native ASR (not loaded)".into(),
+            model_id: Some(manifest.id.into()),
             ..Default::default()
         }));
         Ok(manifest)
@@ -96,6 +97,7 @@ impl Drop for NativeAsrEngine {
     }
 }
 
+#[cfg(test)]
 fn load_installed_native(
     runtime: &FlowRuntime,
     status: &RwLock<EngineStatus>,
@@ -383,6 +385,26 @@ impl ASREngine for NativeAsrEngine {
     }
 
     fn install_model_dir(&mut self, model_dir: &str, repo: &str) -> Result<(), String> {
+        self.install_model_dir_with_options(model_dir, repo, "auto", "int8")
+    }
+
+    fn cancel_model_download(&mut self, model_id: &str) -> Result<(), String> {
+        let state = self.status.read();
+        if !state.is_downloading || state.model_id.as_deref() != Some(model_id) {
+            return Err("No matching native speech download is running".into());
+        }
+        drop(state);
+        *self.installation_active.lock() = false;
+        Ok(())
+    }
+
+    fn install_model_dir_with_options(
+        &mut self,
+        model_dir: &str,
+        repo: &str,
+        backend: &str,
+        _precision: &str,
+    ) -> Result<(), String> {
         crate::network_policy::check_download()?;
         if self.status.read().is_downloading {
             return Err("A native ASR download is already running".into());
@@ -396,10 +418,15 @@ impl ASREngine for NativeAsrEngine {
         let status = Arc::clone(&self.status);
         let installation_active = Arc::clone(&self.installation_active);
         status.write().is_downloading = true;
+        let backend = backend.to_owned();
         std::thread::spawn(move || {
             let outcome =
                 download_native(&dir, manifest, &status, &installation_active).and_then(|_| {
-                    load_installed_native(&runtime, &status, manifest, &installation_active)
+                    let active = installation_active.lock();
+                    if !*active {
+                        return Err("Native ASR installation canceled".into());
+                    }
+                    load_native(&runtime, &status, manifest, &backend)
                 });
             let mut state = status.write();
             state.is_downloading = false;
@@ -431,7 +458,7 @@ fn download_native(
         manifest.download_bytes.saturating_sub(already_on_disk),
     )?;
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60 * 60))
+        .timeout(Duration::from_secs(30))
         .redirect(crate::network_policy::redirect_policy())
         .build()
         .map_err(|e| e.to_string())?;
@@ -451,54 +478,99 @@ fn download_native(
             continue;
         }
         let part = dest.with_extension("gguf.part");
-        let mut response = crate::network_policy::send_download(client.get(format!(
-            "https://huggingface.co/{}/resolve/{}/{}",
-            manifest.repo, manifest.revision, filename
-        )))?;
-        if !response.status().is_success() {
-            return Err(format!("Model download failed: HTTP {}", response.status()));
-        }
-        let mut file = {
-            let active = installation_active.lock();
-            if !*active {
+        let completed_bytes = downloaded;
+        let mut interruptions = 0;
+        'resume: loop {
+            if !*installation_active.lock() {
                 return Err("Native ASR installation canceled".into());
             }
-            std::fs::File::create(&part).map_err(|e| e.to_string())?
-        };
-        let mut buffer = vec![0u8; 64 * 1024];
-        loop {
-            let count = response.read(&mut buffer).map_err(|e| e.to_string())?;
-            if count == 0 {
-                break;
-            }
-            let active = installation_active.lock();
-            if !*active {
-                return Err("Native ASR installation canceled".into());
-            }
-            file.write_all(&buffer[..count])
-                .map_err(|e| e.to_string())?;
-            downloaded += count as u64;
-            status.write().download_progress_pct =
-                (downloaded * 100 / manifest.download_bytes).min(99) as u8;
-        }
-        file.flush().map_err(|e| e.to_string())?;
-        drop(file);
-        // Serialize the final artifact commit with invalidation so a retired
-        // installer cannot replace files belonging to a newer installation.
-        let active = installation_active.lock();
-        if !*active {
-            return Err("Native ASR installation canceled".into());
-        }
-        if let Err(error) = verify_sha256(&part, hash) {
-            let _ = std::fs::remove_file(&part);
-            return Err(format!(
-                "Native ASR SHA-256 mismatch for {filename}: {error}"
+            downloaded = completed_bytes;
+            let offset = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+            let mut request = client.get(format!(
+                "https://huggingface.co/{}/resolve/{}/{}",
+                manifest.repo, manifest.revision, filename
             ));
+            if offset > 0 {
+                request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+            }
+            let mut response = crate::network_policy::send_download(request)?;
+            let resumed = offset > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+            if resumed {
+                let expected = format!("bytes {offset}-");
+                if !response
+                    .headers()
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|v| v.starts_with(&expected))
+                {
+                    return Err("Invalid model resume response".into());
+                }
+                downloaded += offset;
+            }
+            if !response.status().is_success() {
+                return Err(format!("Model download failed: HTTP {}", response.status()));
+            }
+            let mut file = {
+                let active = installation_active.lock();
+                if !*active {
+                    return Err("Native ASR installation canceled".into());
+                }
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .append(resumed)
+                    .truncate(!resumed)
+                    .open(&part)
+                    .map_err(|e| e.to_string())?
+            };
+            let mut buffer = vec![0u8; 64 * 1024];
+            loop {
+                let count = match response.read(&mut buffer) {
+                    Ok(count) => count,
+                    Err(error) => {
+                        interruptions += 1;
+                        if interruptions >= 100 {
+                            return Err(format!(
+                                "Model transfer interrupted; retry to resume: {error}"
+                            ));
+                        }
+                        file.flush().map_err(|e| e.to_string())?;
+                        continue 'resume;
+                    }
+                };
+                if count == 0 {
+                    break;
+                }
+                let active = installation_active.lock();
+                if !*active {
+                    return Err("Native ASR installation canceled".into());
+                }
+                file.write_all(&buffer[..count])
+                    .map_err(|e| e.to_string())?;
+                downloaded += count as u64;
+                status.write().download_progress_pct =
+                    (downloaded * 100 / manifest.download_bytes).min(99) as u8;
+            }
+            file.flush().map_err(|e| e.to_string())?;
+            drop(file);
+            // Serialize the final artifact commit with invalidation so a retired
+            // installer cannot replace files belonging to a newer installation.
+            let active = installation_active.lock();
+            if !*active {
+                return Err("Native ASR installation canceled".into());
+            }
+            if let Err(error) = verify_sha256(&part, hash) {
+                let _ = std::fs::remove_file(&part);
+                return Err(format!(
+                    "Native ASR SHA-256 mismatch for {filename}: {error}"
+                ));
+            }
+            if dest.exists() {
+                std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+            }
+            std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+            break;
         }
-        if dest.exists() {
-            std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
-        }
-        std::fs::rename(part, dest).map_err(|e| e.to_string())?;
     }
     status.write().download_progress_pct = 100;
     Ok(())

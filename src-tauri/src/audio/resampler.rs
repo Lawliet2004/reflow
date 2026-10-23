@@ -22,16 +22,14 @@ impl AudioResampler {
         }
     }
 
+    /// Caller must pass mono-through-multi input; `resample_f32` handles the
+    /// single-channel path directly so this never sees `channels == 0`.
     fn downmix(&self, input: &[f32]) -> Vec<f32> {
-        if self.input_channels <= 1 {
-            input.to_vec()
-        } else {
-            let channels = self.input_channels as usize;
-            input
-                .chunks_exact(channels)
-                .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
-                .collect()
-        }
+        let channels = self.input_channels as usize;
+        input
+            .chunks_exact(channels)
+            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+            .collect()
     }
 
     /// Resample multi-channel f32 input into 16kHz mono f32 samples
@@ -42,7 +40,11 @@ impl AudioResampler {
 
         let mut src = std::mem::take(&mut self.leftover);
         if !input.is_empty() {
-            src.extend(self.downmix(input));
+            if self.input_channels <= 1 {
+                src.extend_from_slice(input);
+            } else {
+                src.extend(self.downmix(input));
+            }
         }
 
         if self.input_sample_rate == self.target_sample_rate {

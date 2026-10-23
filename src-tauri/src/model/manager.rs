@@ -73,13 +73,13 @@ pub fn spec_for(id: &str) -> &'static ModelSpec {
     MODELS.iter().find(|m| m.id == id).unwrap_or(&MODELS[0])
 }
 
-/// Written by the Python install path after checksum verification — the
-/// authoritative completeness marker for models (Qwen) whose ancillary files
-/// are downloaded by glob rather than by pinned name.
-const INSTALL_RECEIPT_NAME: &str = "reflow-install.json";
-
 pub struct ModelManager {
     models_dir: PathBuf,
+}
+
+fn nonempty_file(path: &std::path::Path) -> bool {
+    path.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
 }
 
 impl ModelManager {
@@ -90,15 +90,6 @@ impl ModelManager {
 
     pub fn get_model_dir(&self, id: &str) -> PathBuf {
         self.models_dir.join(spec_for(id).dir_name)
-    }
-
-    /// Legacy helper: directory of the active model.
-    pub fn get_qwen3_dir(&self) -> PathBuf {
-        self.get_qwen3_dir_for("0.6b")
-    }
-
-    pub fn get_qwen3_dir_for(&self, id: &str) -> PathBuf {
-        self.get_model_dir(id)
     }
 
     pub fn repo_for(&self, id: &str) -> &'static str {
@@ -115,33 +106,40 @@ impl ModelManager {
             if let Some(manifest) =
                 crate::profile::manifest::asr_manifest(id).filter(|m| m.id == id)
             {
-                return dir.join(manifest.filename).is_file()
+                return nonempty_file(&dir.join(manifest.filename))
                     && manifest
                         .auxiliary_files
                         .iter()
-                        .all(|f| dir.join(f.filename).is_file());
+                        .all(|f| nonempty_file(&dir.join(f.filename)));
             }
             return false;
         }
         if let Some(manifest) =
             crate::profile::manifest::native_asr_manifest(id).filter(|m| m.id == id)
         {
-            dir.join(manifest.filename).is_file()
+            nonempty_file(&dir.join(manifest.filename))
                 && manifest
                     .auxiliary_files
                     .iter()
-                    .all(|f| dir.join(f.filename).is_file())
+                    .all(|f| nonempty_file(&dir.join(f.filename)))
         } else if let Some(manifest) =
             crate::profile::manifest::asr_manifest(id).filter(|m| m.id == id)
         {
-            // Qwen snapshots download tokenizer/processor files by glob —
-            // there is no pinned name list — so completeness is proven by the
-            // install receipt the sidecar writes after checksum verification.
-            // Directories that predate receipts (or came from Import) keep
-            // the manifest-files-and-size check.
-            if dir.join(INSTALL_RECEIPT_NAME).is_file() {
-                return true;
+            if dir.join("reflow-install.json").exists() {
+                let valid = std::fs::read(dir.join("reflow-install.json"))
+                    .ok()
+                    .filter(|bytes| bytes.len() <= 16 * 1024)
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|receipt| {
+                        receipt.get("model_id").and_then(|value| value.as_str()) == Some(id)
+                    });
+                if !valid {
+                    return false;
+                }
             }
+            // A receipt cannot substitute for the weights and processor files.
+            // Hash verification runs on load/repair; discovery checks structure
+            // without hashing gigabytes every time the settings page polls.
             let all_files = manifest
                 .auxiliary_files
                 .iter()
@@ -152,11 +150,42 @@ impl ModelManager {
                     .metadata()
                     .map(|meta| meta.len() > 0)
                     .unwrap_or(false)
-            }) && dir.join("config.json").is_file()
+            }) && [
+                "config.json",
+                "tokenizer_config.json",
+                "preprocessor_config.json",
+            ]
+            .iter()
+            .all(|file| nonempty_file(&dir.join(file)))
+                && (nonempty_file(&dir.join("tokenizer.json"))
+                    || nonempty_file(&dir.join("vocab.json")))
                 && Self::get_dir_size(&dir).unwrap_or(0) >= manifest.download_bytes
         } else {
             weights_present(&dir)
         }
+    }
+
+    pub fn prepare_repair(&self, id: &str) -> Result<(), String> {
+        let manifest = crate::profile::asr_manifest(id)
+            .or_else(|| crate::profile::manifest::native_asr_manifest(id))
+            .ok_or("Unknown speech model")?;
+        let directory = self.get_model_dir(id);
+        for (name, hash) in std::iter::once((manifest.filename, manifest.sha256)).chain(
+            manifest
+                .auxiliary_files
+                .iter()
+                .map(|file| (file.filename, file.sha256)),
+        ) {
+            let file = directory.join(name);
+            if file.exists() && crate::rewrite::runtime_install::verify_sha256(&file, hash).is_err()
+            {
+                let quarantine = file.with_extension(format!("corrupt-{}", uuid::Uuid::new_v4()));
+                std::fs::rename(&file, quarantine).map_err(|e| {
+                    format!("Could not preserve damaged model file before repair: {e}")
+                })?;
+            }
+        }
+        Ok(())
     }
 
     /// `resolved_id` is what the resolver would actually load for the
@@ -200,6 +229,7 @@ impl ModelManager {
         };
 
         ModelStatus {
+            selected_model: active_id.into(),
             installed,
             loaded: engine.loaded && !backend_loading && !stale_engine,
             version: spec.label.into(),
@@ -287,6 +317,29 @@ mod tests {
     use crate::asr::engine::EngineStatus;
 
     #[test]
+    fn receipt_only_and_empty_zipformer_are_not_installed() {
+        let root = std::env::temp_dir().join(format!(
+            "reflow-install-regression-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let manager = ModelManager::new(root.clone());
+        let qwen = manager.get_model_dir("0.6b");
+        fs::create_dir_all(&qwen).unwrap();
+        fs::write(qwen.join("reflow-install.json"), r#"{"model_id":"0.6b"}"#).unwrap();
+        assert!(!manager.is_installed("0.6b"));
+        let zip = manager.get_model_dir("zipformer-20m");
+        fs::create_dir_all(&zip).unwrap();
+        let manifest = crate::profile::asr_manifest("zipformer-20m").unwrap();
+        for file in std::iter::once(manifest.filename)
+            .chain(manifest.auxiliary_files.iter().map(|f| f.filename))
+        {
+            fs::write(zip.join(file), []).unwrap();
+        }
+        assert!(!manager.is_installed("zipformer-20m"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn loading_backend_is_not_reported_ready() {
         let dir = std::env::temp_dir().join(format!("reflow_model_{}", uuid::Uuid::new_v4()));
         let mgr = ModelManager::new(dir.clone());
@@ -344,7 +397,14 @@ mod tests {
         fs::write(&weights, b"partial").unwrap();
         assert!(!manager.is_installed("0.6b"));
 
-        // A sparse file at the manifest's expected bytes completes the install.
+        for file in [
+            "tokenizer_config.json",
+            "preprocessor_config.json",
+            "tokenizer.json",
+        ] {
+            fs::write(model_dir.join(file), "{}").unwrap();
+        }
+        // A sparse file at the manifest's expected bytes completes the structural install check.
         let expected = crate::profile::asr_manifest("0.6b").unwrap().download_bytes;
         fs::File::create(&weights)
             .unwrap()
@@ -365,6 +425,7 @@ mod tests {
             ..Default::default()
         };
         let status = manager.get_status(&engine, "1.7b", None);
+        assert_eq!(status.selected_model, "1.7b");
         assert!(
             !status.loaded,
             "the resident 0.6B must not read as a ready 1.7B"

@@ -35,6 +35,17 @@ pub struct PortalBinding {
     pub cancel: ComboFn,
 }
 
+/// Modifier-only shortcuts activate on release and therefore use toggle mode.
+fn uses_hold_mode(requested: bool, trigger: &str) -> bool {
+    // KDE emits Activated/Deactivated together when modifiers are released.
+    // Treat this as one tap; hold mode would start and immediately stop ASR.
+    requested
+        && super::HotkeyManager::modifier_only_flags(&super::HotkeyManager::normalize_shortcut(
+            trigger,
+        ))
+        .is_none()
+}
+
 /// Remember the mode at key-down and suppress repeats. A physical key-up
 /// finishes hold-to-talk; cancellation is reserved for revocation/rebinding.
 fn dispatch_event(
@@ -447,7 +458,14 @@ async fn serve_session(
         }
         if let Some(binding) = bindings.iter().find(|binding| binding.action == action) {
             let at = Instant::now();
-            let push_to_talk = app.state::<AppContext>().settings_store.get().push_to_talk;
+            let requested_hold = app.state::<AppContext>().settings_store.get().push_to_talk;
+            let status = desktop::snapshot();
+            let trigger = status
+                .assigned_shortcuts
+                .get(&action)
+                .map(String::as_str)
+                .unwrap_or(&binding.shortcut);
+            let push_to_talk = uses_hold_mode(requested_hold, trigger);
             log::debug!(
                 "Wayland shortcut action={action} pressed={pressed} generation={generation}"
             );
@@ -648,6 +666,36 @@ mod tests {
             super::dispatch_event(&binding, false, true, &mut held, at);
         }
         assert_eq!(*calls.lock(), ["toggle", "toggle"]);
+    }
+
+    #[test]
+    fn modifier_only_release_taps_toggle_once_per_gesture() {
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let callback = |name| {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |_| calls.lock().push(name)) as crate::hotkey::hook::platform::ComboFn
+        };
+        let binding = PortalBinding {
+            action: "dictate".into(),
+            shortcut: "Ctrl+Space".into(),
+            press: callback("press"),
+            release: callback("release"),
+            toggle: callback("toggle"),
+            cancel: callback("cancel"),
+        };
+        for actual in ["Ctrl+Shift", "Ctrl+Win", "Shift+Win"] {
+            calls.lock().clear();
+            let mut held = HashMap::new();
+            let hold = super::uses_hold_mode(true, actual);
+            for _ in 0..2 {
+                super::dispatch_event(&binding, true, hold, &mut held, std::time::Instant::now());
+                super::dispatch_event(&binding, false, hold, &mut held, std::time::Instant::now());
+            }
+            assert_eq!(*calls.lock(), ["toggle", "toggle"], "{actual}");
+        }
+        assert!(super::uses_hold_mode(true, "Shift+Space"));
+        assert!(super::uses_hold_mode(true, "Ctrl+1"));
+        assert!(!super::uses_hold_mode(false, "Ctrl+Space"));
     }
 
     #[tokio::test]

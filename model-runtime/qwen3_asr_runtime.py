@@ -53,6 +53,59 @@ _DOWNLOAD_HOSTS = frozenset((
 ))
 
 
+_DOWNLOAD_CANCEL = threading.Event()
+
+
+def check_download_cancel():
+    if _DOWNLOAD_CANCEL.is_set():
+        raise RuntimeError("Model download cancelled. Completed files and partial downloads were preserved; retry Download to resume.")
+
+
+def available_ram_mb():
+    try:
+        if sys.platform.startswith("linux"):
+            with open("/proc/meminfo", encoding="ascii") as stream:
+                for line in stream:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) / 1024
+        elif sys.platform == "win32":
+            import ctypes
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [(name, ctypes.c_ulonglong) for name in ("total", "available", "page_total", "page_available", "virtual_total", "virtual_available", "extended")]
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.available / (1024 * 1024)
+        else:
+            # Free + inactive pages are reclaimable; do not use total RAM.
+            output = subprocess.check_output(["vm_stat"], text=True, timeout=5)
+            import re
+            page_size = int(re.search(r"page size of (\d+) bytes", output).group(1))
+            pages = sum(int(re.search(rf"{name}:\s+(\d+)", output).group(1)) for name in ("Pages free", "Pages inactive"))
+            return pages * page_size / (1024 * 1024)
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        pass
+    raise RuntimeError("Could not measure available RAM before loading speech. Retry after checking system resources.")
+
+
+def admit_cpu_load(model_dir, model_id=None):
+    if model_id == "zipformer-20m":
+        required = 1400
+    elif model_id == "phonon-2":
+        required = 630_000_000 * 1.1 / (1024 * 1024) + 900 * 1.2 + 1024
+    else:
+        required = max(3500, weights_bytes(model_dir) * 2 / (1024 * 1024) + 1600)
+    available = available_ram_mb()
+    if available < required:
+        raise RuntimeError(f"Speech needs about {required:.0f} MB available RAM including headroom; {available:.0f} MB is available. Close applications or select Zipformer 20M.")
+
+
+def admit_gpu_host_load():
+    available = available_ram_mb()
+    if available < 2048:
+        raise RuntimeError(f"GPU speech loading needs at least 2048 MB available host RAM; {available:.0f} MB is available. Close applications or select Zipformer 20M.")
+
+
 def require_network_online():
     """Read on each request so a running sidecar immediately sees Airplane mode."""
     policy_path = os.environ.get("REFLOW_NETWORK_POLICY")
@@ -68,6 +121,7 @@ def require_network_online():
 def check_download_request(url):
     from urllib.parse import urlsplit
     require_network_online()
+    check_download_cancel()
     parsed = urlsplit(str(url))
     if (parsed.scheme != "https" or parsed.port not in (None, 443) or parsed.hostname not in _DOWNLOAD_HOSTS
             or parsed.username is not None or parsed.password is not None):
@@ -116,6 +170,7 @@ def install_network_guard():
                 try:
                     for chunk in self.stream:
                         require_network_online()
+                        check_download_cancel()
                         self.count += len(chunk)
                         yield chunk
                 finally:
@@ -140,6 +195,7 @@ def install_network_guard():
                 try:
                     async for chunk in self.stream:
                         require_network_online()
+                        check_download_cancel()
                         self.count += len(chunk)
                         yield chunk
                 finally:
@@ -232,10 +288,6 @@ def unpack_binary_audio_frame(header: bytes) -> tuple:
 
 
 SAMPLE_RATE = 16000
-# Hold-to-talk buffers audio while the hotkey is down and transcribes once
-# on release — no live partials (those steal the GPU mid-utterance).
-PARTIAL_MIN_NEW_AUDIO_S = 1.2
-PARTIAL_TAIL_S = 20.0
 # Ceiling on the total audio handed to segmented transcription.
 #
 # One hour. Raised from 120s, which silently discarded everything past two
@@ -414,10 +466,7 @@ def pcm16_to_float32(pcm16: bytes) -> np.ndarray:
 
 def _log_file_path():
     base = os.environ.get("APPDATA") or os.path.expanduser("~/.local/share")
-    if os.environ.get("APPDATA"):
-        path = os.path.join(base, "reflow", "logs")
-    else:
-        path = os.path.join(os.path.expanduser("~"), ".local", "share", "reflow", "logs")
+    path = os.path.join(base, "reflow", "logs")
     try:
         os.makedirs(path, exist_ok=True)
         return os.path.join(path, "qwen_asr.log")
@@ -473,7 +522,6 @@ class RuntimeState:
 
     def __init__(self):
         self.loaded = False
-        self.load_started_at = None
         self.load_error = None
         self.device = "none"
         self.backend = "not loaded"
@@ -520,9 +568,7 @@ class RuntimeState:
         self.stream_captured_bytes = 0
         self.stream_active = False
         self.stream_error = None
-        self.unprocessed = 0              # bytes appended since last partial run
         self.partial_text = ""
-        self.detected_language = ""
         self.vocabulary_prompt = None
         self.stream_language = None
 
@@ -558,7 +604,6 @@ def append_stream_audio(audio):
         remaining = max(0, int(FINAL_MAX_AUDIO_S * 2 * SAMPLE_RATE) - len(STATE.stream_audio))
         retained = audio[:remaining]
         STATE.stream_audio.extend(retained)
-        STATE.unprocessed += len(retained)
 
 
 def clear_stream_audio():
@@ -573,7 +618,6 @@ def clear_stream_audio():
         STATE.stream_error = None
         STATE.stream_audio = bytearray()
         STATE.stream_captured_bytes = 0
-        STATE.unprocessed = 0
         STATE.partial_text = ""
 
 
@@ -1342,7 +1386,6 @@ def load_model_blocking(
     global _MODEL
     t0 = time.time()
     STATE.loaded = False
-    device = pick_device(requested_device)
     # Normalize precision so callers passing "AUTO"/"Int8" still match.
     # "fp32" is accepted: it is what the Rust resolver's CPU selection sends
     # (the CPU ladder never quantizes), and rejecting it logged
@@ -1354,6 +1397,7 @@ def load_model_blocking(
         precision = "auto"
 
     try:
+        device = pick_device(requested_device)
         if not os.path.isfile(os.path.join(model_dir, "config.json")):
             raise FileNotFoundError(
                 f"Model weights not found at {model_dir}. "
@@ -1407,6 +1451,8 @@ def load_model_blocking(
                 vram = int(free_bytes)
                 log_err(f"nvidia-smi unavailable; CUDA reports {vram / (1024 * 1024):.0f} MB free VRAM")
         attempts = build_attempts(precision, device, vram, weights_bytes(model_dir))
+        if (requested_device or "").strip().lower() in ("cuda", "gpu"):
+            attempts = [attempt for attempt in attempts if attempt[1] == "cuda"]
 
         last_err = None
         for label, target, quant in attempts:
@@ -1414,7 +1460,10 @@ def load_model_blocking(
                 log_err(f"Loading Qwen3-ASR from {model_dir} on {target} ({label})")
                 _unload_model_blocking()
                 if target == "cpu":
+                    admit_cpu_load(model_dir, model_id)
                     configure_cpu_threads()
+                else:
+                    admit_gpu_host_load()
                 # Sample free VRAM *before* the load so the spill check has a
                 # baseline. Reading it after and subtracting an estimate is
                 # exactly the mistake this whole task exists to avoid.
@@ -1497,6 +1546,15 @@ def load_model_blocking(
         }
 
 
+def _record_load_failure(error):
+    _unload_model_blocking()
+    STATE.load_error = str(error)
+    STATE.load_failure_kind = classify_load_failure(error)
+    STATE.backend = "load failed"
+    STATE.device = "none"
+    return {"status": "error", "error": str(error), "failure_kind": STATE.load_failure_kind}
+
+
 def load_phonon_blocking(model_dir, requested_device, precision):
     global _MODEL
     started = time.time()
@@ -1508,6 +1566,13 @@ def load_phonon_blocking(model_dir, requested_device, precision):
         if wanted not in ("auto", "int8", "fp32") or (device == "cuda" and wanted == "int8"):
             raise ValueError("Phonon-2 uses optimized int8 on CPU and fp32 on CUDA. Choose Auto precision.")
         _unload_model_blocking()
+        if device == "cpu":
+            admit_cpu_load(model_dir, "phonon-2")
+        else:
+            admit_gpu_host_load()
+            free, _total = _torch().cuda.mem_get_info(0)
+            if free / (1024 * 1024) < 3900:
+                raise RuntimeError("Phonon-2 CUDA needs about 3900 MB free VRAM including headroom. Free GPU memory or choose CPU.")
         _MODEL = PhononModel(model_dir, device, _CANCEL_EVENT)
         STATE.device = device
         STATE.precision = _MODEL.precision
@@ -1524,12 +1589,7 @@ def load_phonon_blocking(model_dir, requested_device, precision):
         log_err(f"Phonon-2 ready on {device} in {STATE.load_seconds:.1f}s")
         return {"status": "ok", "loaded": True, "device": device, "backend": STATE.backend}
     except (Exception, SystemExit) as error:
-        _unload_model_blocking()
-        STATE.load_error = str(error)
-        STATE.load_failure_kind = classify_load_failure(error)
-        STATE.backend = "load failed"
-        STATE.device = "none"
-        return {"status": "error", "error": str(error), "failure_kind": STATE.load_failure_kind}
+        return _record_load_failure(error)
 
 
 def load_zipformer_blocking(model_dir, requested_device, precision):
@@ -1545,6 +1605,7 @@ def load_zipformer_blocking(model_dir, requested_device, precision):
         if wanted_precision not in ("auto", "int8"):
             raise ValueError("Zipformer 20M ships int8 weights only. Choose Auto precision.")
         _unload_model_blocking()
+        admit_cpu_load(model_dir, "zipformer-20m")
         _MODEL = ZipformerModel(model_dir, "cpu", _CANCEL_EVENT)
         STATE.device = "cpu"
         STATE.precision = _MODEL.precision
@@ -1561,12 +1622,7 @@ def load_zipformer_blocking(model_dir, requested_device, precision):
         log_err(f"Zipformer 20M ready on cpu in {STATE.load_seconds:.1f}s")
         return {"status": "ok", "loaded": True, "device": "cpu", "backend": STATE.backend}
     except (Exception, SystemExit) as error:
-        _unload_model_blocking()
-        STATE.load_error = str(error)
-        STATE.load_failure_kind = classify_load_failure(error)
-        STATE.backend = "load failed"
-        STATE.device = "none"
-        return {"status": "error", "error": str(error), "failure_kind": STATE.load_failure_kind}
+        return _record_load_failure(error)
 
 
 def looks_like_vocab_echo(text: str, prompt) -> bool:
@@ -1831,15 +1887,15 @@ def _warm_groups(model_id=None, model_dir=None, device=None):
         model_dir
         and os.path.isfile(os.path.join(model_dir, "phonon-2.bps.tar.zst"))
     ):
-        # Only the fp32 CUDA graph rides on transformers/torch; the CPU engine
-        # is pure fermion/numpy.
+        # Phonon's group warms its model/engine imports on the main thread.
+        # The separate torch group also requests a CUDA capability snapshot.
         if (device or "").strip().lower() in ("cpu",):
             return {"phonon"}
         return {"phonon", "torch", "transformers"}
     if model_id is None and model_dir is None:
         # probe_cuda: only the torch import and the capability snapshot.
         return {"torch"}
-    return {"torch", "transformers", "torchao", "sherpa"}
+    return {"torch", "transformers", "torchao"}
 
 
 def _warm_imports(model_id=None, model_dir=None, device=None):
@@ -1874,8 +1930,6 @@ def _warm_imports(model_id=None, model_dir=None, device=None):
             try:
                 from phonon_runtime import require_dependencies
                 require_dependencies()
-                from fermion._speech import engine_phonon2_cpu  # noqa: F401
-                from transformers import ParakeetForTDT, ParakeetTDTConfig  # noqa: F401
             except (ImportError, RuntimeError):
                 pass
         # sherpa-onnx loads onnxruntime's native libraries; same init hazard.
@@ -1915,10 +1969,9 @@ def _warm_imports(model_id=None, model_dir=None, device=None):
 
 
 def start_load(model_dir: str, device: str, precision: str = "auto", model_id=None, expected_bytes=None):
-    if any(t.name == "model-loader" and t.is_alive() for t in threading.enumerate()):
+    if _load_thread_alive():
         STATE.load_pending = False
         return {"status": "already-loading"}
-    STATE.load_started_at = time.time()
     STATE.load_error = None
     # Must flip loaded off immediately. Leaving it True from a previous
     # load makes the UI think the model is ready and stop polling, while
@@ -1956,6 +2009,7 @@ def verify_weight_files(model_dir: str, weight_files):
         digest = hashlib.sha256()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                check_download_cancel()
                 digest.update(chunk)
         actual = digest.hexdigest()
         if actual != weight["sha256"].lower():
@@ -1999,10 +2053,14 @@ def download_snapshot_with_retry(repo, **options):
                 raise
             log_err(f"Temporary download connection failure ({type(error).__name__}); "
                     f"retrying ({attempt + 2}/3)...")
-            time.sleep(2 ** attempt)
+            if _DOWNLOAD_CANCEL.wait(2 ** attempt):
+                check_download_cancel()
 
 
 def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None, revision=None, weight_files=None, device="auto"):
+    if any(t.name == "model-installer" and t.is_alive() for t in threading.enumerate()):
+        return {"status": "already-downloading"}
+    _DOWNLOAD_CANCEL.clear()
     if model_id in ("phonon-2", "zipformer-20m"):
         module = "phonon_runtime" if model_id == "phonon-2" else "zipformer_runtime"
         try:
@@ -2073,6 +2131,7 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
                     )
             except Exception as e:
                 log_err(f"Could not write install receipt: {e}")
+            check_download_cancel()
             STATE.is_downloading = False
             log_err("Model download complete and verified")
             # auto-load right after install, honoring the precision the user
@@ -2191,7 +2250,6 @@ def handle(msg: dict) -> dict:
         clear_stream_audio()
         with STATE.stream_lock:
             STATE.stream_active = True
-        STATE.detected_language = ""
         vocab = msg.get("vocabulary") or []
         if vocab:
             terms = ", ".join(str(t) for t in vocab[:MAX_VOCAB_TERMS])
@@ -2236,7 +2294,6 @@ def handle(msg: dict) -> dict:
                 if stream_error:
                     return {"status": "error", "error": stream_error, "text": ""}
                 text = _MODEL.finish_stream()
-                STATE.detected_language = "en"
                 log_err(f"final transcript ({len(text)} chars, lang=en)")
                 return {"status": "ok", "text": text, "language": "en"}
             except Exception as e:
@@ -2271,8 +2328,6 @@ def handle(msg: dict) -> dict:
                 audio, getattr(STATE, "stream_language", None), STATE.vocabulary_prompt,
                 **({"progress": progress} if progress else {})
             )
-            if lang:
-                STATE.detected_language = lang
             log_err(f"final transcript ({len(text)} chars, lang={lang or '-'})")
             response = {"status": "ok", "text": text, "language": lang}
             if truncated_s > 0.0:
@@ -2358,11 +2413,9 @@ def _selftest() -> bool:
         STATE.stream_audio,
         STATE.stream_active,
         STATE.stream_captured_bytes,
-        STATE.unprocessed,
         STATE.partial_text,
         STATE.loaded,
         STATE.load_error,
-        STATE.detected_language,
         STATE.stream_language,
         STATE.vocabulary_prompt,
     )
@@ -2371,11 +2424,9 @@ def _selftest() -> bool:
         STATE.stream_audio = bytearray(b"prefix")
         STATE.stream_active = True
         STATE.stream_captured_bytes = 6
-        STATE.unprocessed = 0
         STATE.partial_text = ""
         STATE.loaded = True
         STATE.load_error = None
-        STATE.detected_language = ""
         STATE.stream_language = None
         STATE.vocabulary_prompt = None
         globals()["transcribe_blocking"] = lambda audio, _language, _prompt: (
@@ -2395,11 +2446,9 @@ def _selftest() -> bool:
             STATE.stream_audio,
             STATE.stream_active,
             STATE.stream_captured_bytes,
-            STATE.unprocessed,
             STATE.partial_text,
             STATE.loaded,
             STATE.load_error,
-            STATE.detected_language,
             STATE.stream_language,
             STATE.vocabulary_prompt,
         ) = saved_stream_state
@@ -2826,7 +2875,13 @@ def main():
                 continue
 
             cmd = msg.get("cmd")
-            if cmd == "cancel_stream":
+            if cmd == "cancel_download":
+                if msg.get("model_id") != STATE.download_model_id:
+                    _respond(msg, {"status": "error", "error": "This model does not own the active download"})
+                else:
+                    _DOWNLOAD_CANCEL.set()
+                    _respond(msg, {"status": "ok"})
+            elif cmd == "cancel_stream":
                 _CANCEL_EVENT.set()
                 clear_stream_audio()
                 _respond(msg, {"status": "ok"})

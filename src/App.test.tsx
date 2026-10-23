@@ -300,6 +300,7 @@ it("collapses the sidebar and remembers the choice", async () => {
 });
 
 it("reopens setup from the not-ready card and remembers 'Set up later'", async () => {
+  localStorage.removeItem("reflow.onboarding.v1");
   localStorage.removeItem("reflow.onboarding.completed");
   const status = await api.getModelStatus();
   vi.spyOn(api, "getModelStatus").mockResolvedValue({
@@ -313,10 +314,13 @@ it("reopens setup from the not-ready card and remembers 'Set up later'", async (
   // same not-ready card carries the manual "Finish setup" action.
   fireEvent.click(await screen.findByRole("button", { name: "Finish setup" }));
   expect(await screen.findByText("A few things. Then just speak.")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: "Set up later" }));
-  expect(localStorage.getItem("reflow.onboarding.completed")).toBe("1");
+  expect(JSON.parse(localStorage.getItem("reflow.onboarding.v1")!)).toMatchObject({
+    outcome: "deferred",
+    stage: 0,
+  });
+  expect(localStorage.getItem("reflow.onboarding.completed")).toBeNull();
   expect(screen.queryByText("A few things. Then just speak.")).not.toBeInTheDocument();
   localStorage.removeItem("reflow.onboarding.completed");
+  localStorage.removeItem("reflow.onboarding.v1");
 });

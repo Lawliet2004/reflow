@@ -17,7 +17,6 @@ use crate::injection::TextInjector;
 use crate::overlay;
 use crate::pairing::PairedDevicePublic;
 use crate::platform::{self, PlatformInfo, PlatformSys};
-use crate::rewrite::RewriteRequest;
 use crate::session;
 use crate::settings::{AppSettings, DictionaryTerm};
 use crate::state::{AppStateEnum, LatencyMetrics, LatencyReport, ModelStatus, SystemMetrics};
@@ -106,6 +105,7 @@ enum HotkeyEvent {
     Release,
     Toggle,
     Cancel,
+    Expire,
 }
 
 struct DispatchCallbacks {
@@ -117,67 +117,147 @@ struct DispatchCallbacks {
     cancel: HotkeyCallback,
 }
 
-fn hotkey_dispatcher(app: AppHandle, action: String) -> DispatchCallbacks {
+#[tauri::command]
+pub fn begin_shortcut_capture(ctx: State<'_, AppContext>) -> Result<u64, String> {
+    let _operation = ctx
+        .session_operation
+        .try_lock()
+        .map_err(|_| "Finish the current operation before changing shortcuts.".to_owned())?;
+    if !matches!(
+        *ctx.state_enum.read(),
+        AppStateEnum::Ready | AppStateEnum::Idle | AppStateEnum::Error
+    ) {
+        return Err("Finish recording before changing shortcuts.".into());
+    }
+    Ok(crate::hotkey::capture::begin())
+}
+
+#[tauri::command]
+pub fn end_shortcut_capture(id: u64) {
+    crate::hotkey::capture::end(id);
+}
+
+fn capture_shortcut(app: &AppHandle, action: &str, shortcut: &str, pressed: bool) -> bool {
+    let Some(id) = crate::hotkey::capture::active() else {
+        return false;
+    };
+    let assigned = platform::desktop::snapshot().assigned_shortcuts;
+    let shortcut = assigned.get(action).map(String::as_str).unwrap_or(shortcut);
+    let _ = app.emit(
+        "hotkey:capture",
+        serde_json::json!({ "id": id, "action": action, "shortcut": shortcut, "pressed": pressed }),
+    );
+    true
+}
+
+fn hotkey_dispatcher(app: AppHandle, action: String, shortcut: String) -> DispatchCallbacks {
     // One queue per binding preserves press/release order across slow ASR admission.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(HotkeyEvent, Instant, u64)>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(HotkeyEvent, Instant, u64, u64)>();
     let guard = Arc::new(crate::hotkey::dispatch_guard::DispatchGuard::default());
     let worker_guard = Arc::clone(&guard);
     let cancel_ctx = app.state::<AppContext>().inner().clone();
+    let capture_app = app.clone();
+    let capture_action = action.clone();
     tauri::async_runtime::spawn(async move {
         let ctx = app.state::<AppContext>().inner().clone();
+        use crate::hotkey::gesture::{Action, Gesture};
         let mut owned = None;
-        while let Some((event, at, generation)) = rx.recv().await {
+        let mut gesture = Gesture::default();
+        let mut gesture_epoch = crate::hotkey::capture::epoch();
+        loop {
+            let next = if let Some(deadline) = gesture.deadline() {
+                tokio::select! {
+                    biased;
+                    event = rx.recv() => event,
+                    _ = tokio::time::sleep_until(deadline.into()) => {
+                        Some((HotkeyEvent::Expire, deadline, worker_guard.generation(), gesture_epoch))
+                    }
+                }
+            } else {
+                rx.recv().await
+            };
+            let Some((event, at, generation, capture_epoch)) = next else {
+                break;
+            };
             if event == HotkeyEvent::Cancel {
+                gesture = Gesture::default();
                 if let Some(id) = owned.take() {
                     let _ = session::cancel_owned_wait(&ctx, Some(id)).await;
                 }
                 worker_guard.own(None);
                 continue;
             }
-            if !worker_guard.current(generation) {
-                continue;
-            }
-            if event == HotkeyEvent::Release
-                || (event == HotkeyEvent::Toggle
-                    && owned.is_some()
-                    && *ctx.current_session_id.read() == owned)
+            if !worker_guard.current(generation)
+                || capture_epoch != crate::hotkey::capture::epoch()
+                || crate::hotkey::capture::active().is_some()
             {
-                if let Some(id) = owned.take() {
-                    if event == HotkeyEvent::Release {
-                        let _ = session::stop_hotkey_owned_at(&ctx, id, at).await;
-                    } else {
-                        let _ = session::stop_owned(&ctx, true, id).await;
-                    }
-                }
+                gesture = Gesture::default();
+                continue;
+            }
+            if owned.is_some() && *ctx.current_session_id.read() != owned {
+                owned = None;
                 worker_guard.own(None);
-                continue;
+                gesture = Gesture::default();
             }
-            if owned.is_some() && *ctx.current_session_id.read() == owned {
-                continue;
+            if gesture_epoch != capture_epoch {
+                gesture = Gesture::default();
+                gesture_epoch = capture_epoch;
             }
-            let (intent, mode_id) = match action.as_str() {
-                "command" => (crate::dory::SessionIntent::Command, None),
-                "assistant" => (crate::dory::SessionIntent::Assistant, None),
-                "note" => (crate::dory::SessionIntent::Note, None),
-                value if value.starts_with("mode:") => {
-                    (crate::dory::SessionIntent::Dictate, Some(&value[5..]))
-                }
-                _ => (crate::dory::SessionIntent::Dictate, None),
+            let actions = match event {
+                HotkeyEvent::Press => gesture.input(true, at),
+                HotkeyEvent::Release => gesture.input(false, at),
+                HotkeyEvent::Expire => gesture.expire(),
+                HotkeyEvent::Toggle if owned.is_some() => vec![Action::Stop(at)],
+                HotkeyEvent::Toggle => vec![Action::Start(at)],
+                HotkeyEvent::Cancel => unreachable!(),
             };
-            match session::start_microphone_with_intent_at(&ctx, Some(at), intent, mode_id).await {
-                Ok(id) => {
-                    worker_guard.own(Some(id));
-                    if worker_guard.current(generation) {
-                        owned = Some(id);
-                    } else {
-                        let _ = session::cancel_owned_wait(&ctx, Some(id)).await;
-                        worker_guard.own(None);
-                        owned = None;
+            for effect in actions {
+                let at = match effect {
+                    Action::Lock => {
+                        if owned.is_some() {
+                            crate::hotkey::hook::set_hands_free(true);
+                        }
+                        continue;
                     }
+                    Action::Stop(at) => {
+                        if let Some(id) = owned.take() {
+                            let _ = session::stop_hotkey_owned_at(&ctx, id, at).await;
+                        }
+                        worker_guard.own(None);
+                        continue;
+                    }
+                    Action::Start(at) => at,
+                };
+                if owned.is_some() {
+                    continue;
                 }
-                Err(err) => {
-                    owned = None;
-                    let _ = app.emit("recording:error", err.message);
+                let (intent, mode_id) = match action.as_str() {
+                    "command" => (crate::dory::SessionIntent::Command, None),
+                    "assistant" => (crate::dory::SessionIntent::Assistant, None),
+                    "note" => (crate::dory::SessionIntent::Note, None),
+                    value if value.starts_with("mode:") => {
+                        (crate::dory::SessionIntent::Dictate, Some(&value[5..]))
+                    }
+                    _ => (crate::dory::SessionIntent::Dictate, None),
+                };
+                match session::start_microphone_with_intent_at(&ctx, Some(at), intent, mode_id)
+                    .await
+                {
+                    Ok(id) => {
+                        worker_guard.own(Some(id));
+                        if worker_guard.current(generation) {
+                            owned = Some(id);
+                        } else {
+                            let _ = session::cancel_owned_wait(&ctx, Some(id)).await;
+                            worker_guard.own(None);
+                            owned = None;
+                        }
+                    }
+                    Err(err) => {
+                        owned = None;
+                        gesture = Gesture::default();
+                        let _ = app.emit("recording:error", err.message);
+                    }
                 }
             }
         }
@@ -188,19 +268,57 @@ fn hotkey_dispatcher(app: AppHandle, action: String) -> DispatchCallbacks {
     let press_guard = Arc::clone(&guard);
     let release_guard = Arc::clone(&guard);
     let toggle_guard = Arc::clone(&guard);
+    let press_app = capture_app.clone();
+    let release_app = capture_app.clone();
+    let press_action = capture_action.clone();
+    let release_action = capture_action.clone();
+    let press_shortcut = shortcut.clone();
+    let release_shortcut = shortcut.clone();
     DispatchCallbacks {
         press: Arc::new(move |at| {
-            let _ = press.send((HotkeyEvent::Press, at, press_guard.generation()));
+            let capture_epoch = crate::hotkey::capture::epoch();
+            if capture_shortcut(&press_app, &press_action, &press_shortcut, true) {
+                return;
+            }
+            let _ = press.send((
+                HotkeyEvent::Press,
+                at,
+                press_guard.generation(),
+                capture_epoch,
+            ));
         }),
         release: Arc::new(move |at| {
-            let _ = release.send((HotkeyEvent::Release, at, release_guard.generation()));
+            let capture_epoch = crate::hotkey::capture::epoch();
+            if capture_shortcut(&release_app, &release_action, &release_shortcut, false) {
+                return;
+            }
+            let _ = release.send((
+                HotkeyEvent::Release,
+                at,
+                release_guard.generation(),
+                capture_epoch,
+            ));
         }),
         toggle: Arc::new(move |at| {
-            let _ = tx.send((HotkeyEvent::Toggle, at, toggle_guard.generation()));
+            let capture_epoch = crate::hotkey::capture::epoch();
+            if capture_shortcut(&capture_app, &capture_action, &shortcut, true) {
+                return;
+            }
+            let _ = tx.send((
+                HotkeyEvent::Toggle,
+                at,
+                toggle_guard.generation(),
+                capture_epoch,
+            ));
         }),
         cancel: Arc::new(move |at| {
             guard.revoke(&cancel_ctx);
-            let _ = cancel.send((HotkeyEvent::Cancel, at, guard.generation()));
+            let _ = cancel.send((
+                HotkeyEvent::Cancel,
+                at,
+                guard.generation(),
+                crate::hotkey::capture::epoch(),
+            ));
         }),
     }
 }
@@ -225,6 +343,15 @@ pub(crate) fn global_cancel_callback(app: &AppHandle) -> HotkeyCallback {
     let app = app.clone();
     Arc::new(move |_| {
         let context = app.state::<AppContext>().inner().clone();
+        let shortcut = context
+            .settings_store
+            .get()
+            .hotkeys
+            .cancel
+            .unwrap_or_else(|| "Escape".into());
+        if capture_shortcut(&app, "cancel", &shortcut, true) {
+            return;
+        }
         let owned = *context.current_session_id.read();
         if let Some(id) = owned {
             tauri::async_runtime::spawn(async move {
@@ -328,7 +455,11 @@ fn apply_hotkeys(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
                             cancel: Arc::new(|_| {}),
                         }
                     } else {
-                        hotkey_dispatcher(app.clone(), binding.action.clone())
+                        hotkey_dispatcher(
+                            app.clone(),
+                            binding.action.clone(),
+                            binding.shortcut.clone(),
+                        )
                     };
                     crate::hotkey::portal::PortalBinding {
                         action: binding.action,
@@ -383,9 +514,33 @@ fn apply_hotkeys(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
             release,
             toggle,
             ..
-        } = hotkey_dispatcher(app.clone(), binding.action);
+        } = hotkey_dispatcher(app.clone(), binding.action, binding.shortcut.clone());
         if let Some(flags) = HotkeyManager::modifier_only_flags(&binding.shortcut) {
-            if !crate::hotkey::hook::set_combo(flags, press, release) {
+            let press_app = app.clone();
+            let release_app = app.clone();
+            let hook_press: HotkeyCallback = Arc::new(move |at| {
+                if press_app
+                    .state::<AppContext>()
+                    .settings_store
+                    .get()
+                    .push_to_talk
+                {
+                    press(at);
+                } else {
+                    toggle(at);
+                }
+            });
+            let hook_release: HotkeyCallback = Arc::new(move |at| {
+                if release_app
+                    .state::<AppContext>()
+                    .settings_store
+                    .get()
+                    .push_to_talk
+                {
+                    release(at);
+                }
+            });
+            if !crate::hotkey::hook::set_combo(flags, hook_press, hook_release) {
                 return Err(format!(
                     "Could not install keyboard hook for {}",
                     binding.shortcut
@@ -514,19 +669,19 @@ pub fn update_settings(
     }
     ctx.history_store
         .require_encryption(updated.history_encryption);
-    if let Err(error) =
-        crate::network_policy::configure(updated.offline_mode, &PlatformSys::get_app_dir())
+    let policy_recovered = match ctx
+        .asr_handle
+        .configure_network_policy(updated.offline_mode, &PlatformSys::get_app_dir())
     {
-        if updated.offline_mode {
-            if let Err(stop_error) = ctx.asr_handle.unload_model_blocking() {
-                log::error!("Could not stop the speech runtime after policy failure: {stop_error}");
-            }
+        Ok(recovered) => recovered,
+        Err(error) => {
+            let _ = app.emit(
+                "recording:error",
+                format!("Network policy could not be saved for the speech sidecar: {error}"),
+            );
+            false
         }
-        let _ = app.emit(
-            "recording:error",
-            format!("Network policy could not be saved for the speech sidecar: {error}"),
-        );
-    }
+    };
 
     if audio_retention_requested || updated.audio_retention != previous.audio_retention {
         if let Err(error) = ctx
@@ -548,7 +703,10 @@ pub fn update_settings(
     } else if updated.asr.python_path != previous.asr.python_path {
         ctx.asr_handle.unload_model_blocking()?;
         schedule_asr_reload(&app, ctx.inner());
-    } else if updated.asr.model != previous.asr.model {
+    } else if updated.asr.model != previous.asr.model
+        || updated.asr.device != previous.asr.device
+        || policy_recovered
+    {
         schedule_asr_reload(&app, ctx.inner());
     }
     let _ = app.emit("settings:changed", &updated);
@@ -589,12 +747,16 @@ pub fn update_settings(
                             }
                             ctx.history_store
                                 .require_encryption(reverted.history_encryption);
-                            if let Err(error) = crate::network_policy::configure(
+                            let policy_recovered = match ctx.asr_handle.configure_network_policy(
                                 reverted.offline_mode,
                                 &PlatformSys::get_app_dir(),
                             ) {
-                                log::error!("Could not restore the network policy: {error}");
-                            }
+                                Ok(recovered) => recovered,
+                                Err(error) => {
+                                    log::error!("Could not restore the network policy: {error}");
+                                    false
+                                }
+                            };
                             if reverted.audio_retention != updated.audio_retention {
                                 if let Err(error) = ctx
                                     .history_store
@@ -613,6 +775,9 @@ pub fn update_settings(
                                         "Could not restore the speech model state: {error}"
                                     );
                                 }
+                            }
+                            if policy_recovered {
+                                schedule_asr_reload(&app, ctx.inner());
                             }
                             // The inner rollback only restores the dictation
                             // binding; re-register from the reverted settings so
@@ -752,7 +917,13 @@ pub fn get_current_audio_level(ctx: State<'_, AppContext>) -> f32 {
 pub async fn test_microphone(
     ctx: State<'_, AppContext>,
 ) -> Result<crate::audio::health::MicrophoneHealth, String> {
-    let _operation = ctx.session_operation.lock().await;
+    let operation = ctx
+        .session_operation
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| {
+            "The audio system is busy. Finish the current operation before testing the microphone."
+        })?;
     if !matches!(
         *ctx.state_enum.read(),
         AppStateEnum::Ready | AppStateEnum::Idle | AppStateEnum::Error
@@ -762,10 +933,11 @@ pub async fn test_microphone(
         );
     }
     let settings = ctx.settings_store.get();
-    let (health, _samples) = crate::audio::preflight::capture_sample(
+    let (health, _samples, _operation) = crate::audio::preflight::capture_sample_with_admission(
         &settings,
         3,
         Some(Arc::clone(&ctx.last_audio_level)),
+        operation,
     )
     .await?;
     Ok(health)
@@ -775,7 +947,13 @@ pub async fn test_microphone(
 pub async fn test_recognition(
     ctx: State<'_, AppContext>,
 ) -> Result<crate::audio::preflight::RecognitionTest, String> {
-    let _operation = ctx.session_operation.lock().await;
+    let operation = ctx
+        .session_operation
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| {
+            "The audio system is busy. Finish the current operation before testing recognition."
+        })?;
     if !matches!(
         *ctx.state_enum.read(),
         AppStateEnum::Ready | AppStateEnum::Idle
@@ -787,10 +965,11 @@ pub async fn test_recognition(
         return Err("Load the speech model before testing recognition.".into());
     }
     let settings = ctx.settings_store.get();
-    let (health, samples) = crate::audio::preflight::capture_sample(
+    let (health, samples, _operation) = crate::audio::preflight::capture_sample_with_admission(
         &settings,
         3,
         Some(Arc::clone(&ctx.last_audio_level)),
+        operation,
     )
     .await?;
     if health.peak < 0.001 || health.dropped_chunks > 0 {
@@ -1085,6 +1264,12 @@ pub fn get_model_status(ctx: State<'_, AppContext>) -> ModelStatus {
 pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), String> {
     let settings = ctx.settings_store.get();
     let requested = settings.asr.model.clone();
+    if settings.asr.runtime != "native"
+        && requested != "zipformer-20m"
+        && settings.asr.device != "cpu"
+    {
+        ctx.asr_handle.discover_capabilities_blocking()?;
+    }
     // The runtime-qualified selection this resolution answers for — recorded
     // beside the result so a stale resolution can never bless the engine's
     // model as current under a new selection.
@@ -1100,13 +1285,16 @@ pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), St
     let store = crate::profile::measurements::Measurements::load();
     let measured = crate::profile::measurements::lookup_fn(&store, &caps);
     let automatic = preset != crate::profile::Preset::Custom;
-    if let Some(choice) = crate::calibration::cached_choice(ctx, &caps, &settings) {
+    if let Some(choice) = crate::calibration::cached_choice(ctx, &caps, &settings)
+        .filter(|choice| settings.asr.device == "auto" || settings.asr.device == choice.device)
+    {
         let fits = crate::profile::asr_manifest(&choice.model).is_some_and(|manifest| {
             if choice.device == "cpu" {
                 caps.ram.available_mb > manifest.estimated_cpu_ram_mb() + 1024.0
             } else {
                 crate::profile::Precision::parse(&choice.precision).is_some_and(|precision| {
                     caps.free_vram_mb() > manifest.estimated_vram_mb(precision) + 384.0
+                        && caps.ram.available_mb > manifest.overhead_mb + 1024.0
                 })
             }
         });
@@ -1118,18 +1306,19 @@ pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), St
                 choice.device.clone(),
                 choice.precision.clone(),
             ));
-            return Ok((choice.model, choice.device, choice.precision));
+            let backend = if settings.asr.device == "auto" && choice.device != "cpu" {
+                "auto".to_string()
+            } else {
+                choice.device
+            };
+            return Ok((choice.model, backend, choice.precision));
         }
     }
     let selection = crate::profile::select_asr_load_for_runtime(
         &settings.asr.runtime,
         preset,
         &requested,
-        if automatic {
-            "auto"
-        } else {
-            &settings.asr.device
-        },
+        &settings.asr.device,
         if automatic {
             "auto"
         } else {
@@ -1167,9 +1356,18 @@ pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), St
         selection.precision.as_str().to_string(),
     ));
 
+    // Keep explicit GPU intent distinct from an automatically selected GPU.
+    // Both use the discovered adapter, but Auto may retry CPU after checking
+    // live RAM when a GPU kernel/launch fails.
+    let backend =
+        if settings.asr.device == "auto" && selection.device != crate::profile::Device::Cpu {
+            "auto"
+        } else {
+            selection.device.as_str()
+        };
     Ok((
         selection.model_id.to_string(),
-        selection.device.as_str().to_string(),
+        backend.to_string(),
         selection.precision.as_str().to_string(),
     ))
 }
@@ -1241,13 +1439,23 @@ pub fn install_model(
         .try_lock()
         .map_err(|_| "Finish the current operation before installing a model.")?;
     let settings = ctx.settings_store.get();
-    let active = crate::model::manager::runtime_model_id(
-        &model_size.unwrap_or(settings.asr.model),
-        &settings.asr.runtime,
-    );
+    let requested_model = model_size.unwrap_or(settings.asr.model.clone());
+    let active = crate::model::manager::runtime_model_id(&requested_model, &settings.asr.runtime);
+    if !matches!(
+        *ctx.state_enum.read(),
+        AppStateEnum::Ready | AppStateEnum::Idle | AppStateEnum::Error
+    ) {
+        return Err("Finish dictation before installing a speech model.".into());
+    }
+    if settings.asr.runtime == "python" {
+        crate::asr::python_setup::verify_speech_runtime_inner(ctx.inner(), Some(&requested_model))?;
+    } else {
+        crate::rewrite::runtime_install::verify_active(None)?;
+    }
     prepare_asr_runtime(ctx.inner(), &app)?;
     let model_dir = ctx.model_manager.get_model_dir(&active);
     let repo = ctx.model_manager.repo_for(&active);
+    ctx.model_manager.prepare_repair(&active)?;
     // Resolving here — not just for the bundled small models — keeps the
     // post-install auto-load on the same device/precision the load resolver
     // picked. Otherwise a first Qwen install loaded at "auto"/"auto" and
@@ -1264,6 +1472,11 @@ pub fn install_model(
     drop(_operation);
     kick_pending_asr_reload(&app, ctx.inner());
     Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_model_download(model_id: String, ctx: State<'_, AppContext>) -> Result<(), String> {
+    ctx.asr_handle.cancel_model_download_blocking(&model_id)
 }
 
 #[tauri::command]
@@ -1971,7 +2184,7 @@ pub async fn set_desktop_shortcut(
             .map_err(|_| "Finish the current operation before changing shortcuts.".to_owned())?;
         if !matches!(
             *ctx.state_enum.read(),
-            AppStateEnum::Ready | AppStateEnum::Idle
+            AppStateEnum::Ready | AppStateEnum::Idle | AppStateEnum::Error
         ) {
             return Err("Finish the current dictation before changing shortcuts.".into());
         }
@@ -2053,8 +2266,8 @@ pub async fn configure_global_shortcuts(
 }
 
 #[tauri::command]
-pub fn get_api_status(ctx: State<'_, AppContext>) -> ApiStatus {
-    api::current_status(ctx.inner())
+pub fn get_api_status(ctx: State<'_, AppContext>, pairing_host: Option<String>) -> ApiStatus {
+    crate::api::server::current_status_for_host(ctx.inner(), pairing_host.as_deref())
 }
 
 #[tauri::command]
@@ -2089,6 +2302,7 @@ pub fn revoke_api_device(id: String, ctx: State<'_, AppContext>) -> Result<bool,
 
 #[derive(serde::Serialize)]
 pub struct FlowStatus {
+    pub runtime_download: Option<crate::rewrite::runtime_install::RuntimeDownloadEvent>,
     pub active_tier: String,
     pub active_model: String,
     /// `true` when the GGUF weights for the active flow model are present on
@@ -2167,12 +2381,11 @@ fn build_flow_status(ctx: &AppContext) -> FlowStatus {
     let any_active = ctx
         .active_intelligence_downloads
         .lock()
-        .contains(&active_tier);
-    let runtime_active = ctx
-        .active_runtime_downloads
-        .lock()
-        .contains(crate::rewrite::runtime_install::RUNTIME_LOCK_KEY);
+        .get(&active_tier)
+        .is_some_and(crate::rewrite::model_install::ModelDownload::active);
+    let runtime_active = crate::rewrite::runtime_install::download_active(ctx);
     FlowStatus {
+        runtime_download: crate::rewrite::runtime_install::download_status(ctx),
         active_tier,
         active_model,
         installed: gguf_exists,
@@ -2214,6 +2427,7 @@ pub struct IntelligenceTierState {
     pub installed: bool,
     pub weights_installed: bool,
     pub downloading: bool,
+    pub download: Option<crate::rewrite::model_install::ModelDownloadEvent>,
 }
 
 #[tauri::command]
@@ -2232,7 +2446,10 @@ pub fn get_intelligence_tiers(ctx: State<'_, AppContext>) -> Vec<IntelligenceTie
             model_id: (*model_id).to_string(),
             installed: gguf_path.exists() && runtime_present,
             weights_installed: gguf_path.exists(),
-            downloading: active.contains(*tier),
+            downloading: active
+                .get(*tier)
+                .is_some_and(crate::rewrite::model_install::ModelDownload::active),
+            download: active.get(*tier).map(|job| job.snapshot.clone()),
         }
     })
     .collect()
@@ -2385,279 +2602,27 @@ pub fn set_polish_enabled(
 }
 
 #[tauri::command]
-pub fn install_intelligence_model(
+pub async fn install_intelligence_model(
     tier: String,
     app: AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<(), String> {
-    crate::network_policy::require_online(ctx.settings_store.get().offline_mode)?;
-    use std::time::Instant;
-    let normalized = tier.trim().to_ascii_lowercase();
-    let spec = match normalized.as_str() {
-        "smart_flow" => crate::rewrite::server::flow_model_spec("qwen3.5-0.8b"),
-        "deep_context" => crate::rewrite::server::flow_model_spec("qwen3.5-2b"),
-        _ => return Err(format!("Tier '{tier}' has no model to install")),
-    };
-    let manifest = crate::profile::manifest::refinement_manifest(spec.id)
-        .ok_or("Refinement manifest missing")?;
-    let final_dest = crate::rewrite::flow_gguf_path(spec.id);
-    let dest = final_dest.with_extension("gguf.part");
-    if let Some(parent) = dest.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let already_downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-    crate::network_policy::check_disk_space(
-        dest.parent().unwrap_or(&final_dest),
-        spec.approx_bytes.saturating_sub(already_downloaded),
-    )?;
-    let url = format!(
-        "https://huggingface.co/{}/resolve/{}/{}",
-        manifest.repo, manifest.revision, manifest.filename
-    );
-
-    // Re-entry guard: refuse to start a second concurrent download for the same tier.
-    // The button can be clicked again while a download is in progress (e.g. after
-    // the app regains focus). Without this, two threads race on the same file and
-    // the second one truncates the partial work back to 0 bytes.
-    let mut active = ctx.active_intelligence_downloads.lock();
-    if active.contains(&normalized) {
-        return Err(format!(
-            "A download for '{normalized}' is already in progress"
-        ));
-    }
-    active.insert(normalized.clone());
-    drop(active);
-
-    let app_handle = app.clone();
-    let filename = spec.filename.to_string();
-    let tier_label = normalized.clone();
-    let ctx_for_thread = ctx.inner().clone();
-    std::thread::spawn(move || {
-        let _ = app_handle.emit(
-            "intelligence:download-progress",
-            serde_json::json!({
-                "tier": tier_label,
-                "progress_pct": 0,
-                "speed_mbps": 0.0,
-                "phase": "starting",
-            }),
-        );
-        let client = match reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60 * 30))
-            // Without this, a black-holed connection sits in the handshake
-            // until the 30-minute body timeout instead of failing to retry.
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .redirect(crate::network_policy::redirect_policy())
-            .build()
-        {
-            Ok(c) => c,
-            Err(err) => {
-                emit_error(&app_handle, &tier_label, 0, err.to_string());
-                clear_active(&ctx_for_thread, &tier_label);
-                return;
-            }
-        };
-
-        // Resume from the existing file size if a partial file is on disk.
-        let resume_from: u64 = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-
-        let started = Instant::now();
-        let mut last_emit = Instant::now();
-        let mut response =
-            match crate::rewrite::runtime_install::send_with_retry(&client, &url, resume_from) {
-                Ok(r) => r,
-                Err(err) => {
-                    emit_error(
-                        &app_handle,
-                        &tier_label,
-                        pct_from(resume_from, spec.approx_bytes),
-                        err.to_string(),
-                    );
-                    clear_active(&ctx_for_thread, &tier_label);
-                    return;
-                }
-            };
-        let status = response.status();
-        // If the server doesn't honor Range, it replies 200 and we restart from zero.
-        let already_have: u64 = if status == reqwest::StatusCode::PARTIAL_CONTENT {
-            resume_from
-        } else if status.is_success() {
-            // Server ignored Range; discard any partial file and start over.
-            let _ = std::fs::remove_file(&dest);
-            0
-        } else {
-            emit_error(
-                &app_handle,
-                &tier_label,
-                pct_from(resume_from, spec.approx_bytes),
-                format!("HTTP {status}"),
-            );
-            clear_active(&ctx_for_thread, &tier_label);
-            return;
-        };
-        // content_length is the number of bytes remaining when resuming, or the full size otherwise.
-        let remaining = response
-            .content_length()
-            .unwrap_or(spec.approx_bytes.saturating_sub(already_have));
-        let total = already_have + remaining;
-
-        // Open the destination without truncating so we append to the existing partial file.
-        use std::io::{Read, Seek, SeekFrom, Write};
-        let mut dest_file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&dest)
-        {
-            Ok(f) => f,
-            Err(err) => {
-                emit_error(
-                    &app_handle,
-                    &tier_label,
-                    pct_from(already_have, total),
-                    err.to_string(),
-                );
-                clear_active(&ctx_for_thread, &tier_label);
-                return;
-            }
-        };
-        if let Err(err) = dest_file.seek(SeekFrom::Start(already_have)) {
-            emit_error(
-                &app_handle,
-                &tier_label,
-                pct_from(already_have, total),
-                err.to_string(),
-            );
-            clear_active(&ctx_for_thread, &tier_label);
-            return;
-        }
-
-        // Emit the current state so the UI doesn't display 0% if we're resuming.
-        if already_have > 0 {
-            let elapsed = started.elapsed().as_secs_f32().max(0.001);
-            let speed_mbps = (already_have as f32 / 1_048_576.0) / elapsed;
-            let _ = app_handle.emit(
-                "intelligence:download-progress",
-                serde_json::json!({
-                    "tier": tier_label,
-                    "progress_pct": pct_from(already_have, total),
-                    "speed_mbps": speed_mbps,
-                    "phase": "downloading",
-                }),
-            );
-            last_emit = Instant::now();
-        }
-
-        let mut downloaded: u64 = already_have;
-        let mut buffer = vec![0u8; 64 * 1024];
-        loop {
-            match response.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if let Err(err) = dest_file.write_all(&buffer[..n]) {
-                        emit_error(
-                            &app_handle,
-                            &tier_label,
-                            pct_from(downloaded, total),
-                            err.to_string(),
-                        );
-                        // Keep the partial file so the next attempt can resume it.
-                        clear_active(&ctx_for_thread, &tier_label);
-                        return;
-                    }
-                    downloaded += n as u64;
-                    if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
-                        let elapsed = started.elapsed().as_secs_f32().max(0.001);
-                        let speed_mbps =
-                            ((downloaded - already_have) as f32 / 1_048_576.0) / elapsed;
-                        let pct = pct_from(downloaded, total);
-                        let _ = app_handle.emit(
-                            "intelligence:download-progress",
-                            serde_json::json!({
-                                "tier": tier_label,
-                                "progress_pct": pct,
-                                "speed_mbps": speed_mbps,
-                                "phase": "downloading",
-                            }),
-                        );
-                        last_emit = Instant::now();
-                    }
-                }
-                Err(err) => {
-                    emit_error(
-                        &app_handle,
-                        &tier_label,
-                        pct_from(downloaded, total),
-                        err.to_string(),
-                    );
-                    // Keep the partial file so the next attempt can resume it.
-                    clear_active(&ctx_for_thread, &tier_label);
-                    return;
-                }
-            }
-        }
-        let verification = dest_file
-            .flush()
-            .map_err(|e| e.to_string())
-            .and_then(|_| crate::rewrite::runtime_install::verify_sha256(&dest, manifest.sha256));
-        drop(dest_file);
-        if let Err(err) = verification {
-            let _ = std::fs::remove_file(&dest);
-            emit_error(
-                &app_handle,
-                &tier_label,
-                100,
-                format!("Model SHA-256 verification failed: {err}"),
-            );
-            clear_active(&ctx_for_thread, &tier_label);
-            return;
-        }
-        let finalize = if final_dest.exists() {
-            std::fs::remove_file(&final_dest)
-        } else {
-            Ok(())
-        }
-        .and_then(|_| std::fs::rename(&dest, &final_dest));
-        if let Err(err) = finalize {
-            emit_error(&app_handle, &tier_label, 100, err.to_string());
-            clear_active(&ctx_for_thread, &tier_label);
-            return;
-        }
-        let _ = app_handle.emit(
-            "intelligence:download-progress",
-            serde_json::json!({
-                "tier": tier_label,
-                "progress_pct": 100,
-                "speed_mbps": 0.0,
-                "phase": "complete",
-                "filename": filename,
-            }),
-        );
-        clear_active(&ctx_for_thread, &tier_label);
-    });
-    Ok(())
+    let context = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::rewrite::model_install::start(tier, app, context)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
-fn pct_from(downloaded: u64, total: u64) -> u32 {
-    (downloaded * 100 / total.max(1)) as u32
-}
-
-fn emit_error(app: &AppHandle, tier: &str, progress_pct: u32, error: String) {
-    let _ = app.emit(
-        "intelligence:download-progress",
-        serde_json::json!({
-            "tier": tier,
-            "progress_pct": progress_pct,
-            "speed_mbps": 0.0,
-            "phase": "error",
-            "error": error,
-        }),
-    );
-}
-
-fn clear_active(ctx: &AppContext, tier: &str) {
-    let mut active = ctx.active_intelligence_downloads.lock();
-    active.remove(tier);
+#[tauri::command]
+pub fn cancel_intelligence_download(
+    tier: String,
+    attempt_id: String,
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<(), String> {
+    crate::rewrite::model_install::cancel(ctx.inner(), &app, &tier, &attempt_id)
 }
 
 #[tauri::command]
@@ -2675,7 +2640,8 @@ pub fn remove_intelligence_model(tier: String, ctx: State<'_, AppContext>) -> Re
     if ctx
         .active_intelligence_downloads
         .lock()
-        .contains(&normalized)
+        .get(&normalized)
+        .is_some_and(crate::rewrite::model_install::ModelDownload::active)
     {
         return Err("A download for this model is still in progress.".into());
     }
@@ -2721,26 +2687,43 @@ pub fn install_llama_runtime(
 /// error path.
 #[tauri::command]
 pub fn remove_llama_runtime(ctx: State<'_, AppContext>) -> Result<(), String> {
-    if ctx.asr_runtime.lock().as_str() == "native" {
-        ctx.asr_handle.unload_model_blocking()?;
-    }
-    ctx.flow_runtime.shutdown();
-    let bin = crate::rewrite::llama_server_bin();
-    if bin.exists() {
-        // Refuse to delete a path the user pointed at via env var —
-        // they probably want to keep their custom build.
-        if std::env::var(crate::rewrite::runtime_install::ENV_OVERRIDE_BIN).is_ok() {
-            return Ok(());
+    crate::rewrite::runtime_install::remove_runtime(
+        ctx.inner(),
+        &PlatformSys::get_app_dir().join("bin"),
+    )
+}
+
+#[tauri::command]
+pub async fn verify_llama_runtime(ctx: State<'_, AppContext>) -> Result<String, String> {
+    let ctx = ctx.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = ctx
+            .session_operation
+            .try_lock()
+            .map_err(|_| "Finish the active operation before checking the runtime")?;
+        if crate::rewrite::runtime_install::download_active(&ctx) {
+            return Err("Runtime setup is still running".into());
         }
-        std::fs::remove_file(&bin)
-            .map_err(|e| format!("Could not remove llama-server binary: {e}"))?;
-        let marker = crate::rewrite::runtime_kind_path();
-        if marker.exists() {
-            std::fs::remove_file(marker)
-                .map_err(|e| format!("Could not remove runtime kind marker: {e}"))?;
-        }
-    }
-    Ok(())
+        crate::rewrite::runtime_install::verify_active(None)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn get_runtime_download_status(
+    ctx: State<'_, AppContext>,
+) -> Option<crate::rewrite::runtime_install::RuntimeDownloadEvent> {
+    crate::rewrite::runtime_install::download_status(&ctx)
+}
+
+#[tauri::command]
+pub fn cancel_runtime_download(
+    attempt_id: String,
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<(), String> {
+    crate::rewrite::runtime_install::cancel_download(&ctx, &app, &attempt_id)
 }
 
 /// Result of the format + optional LLM-polish pipeline. Shared by
@@ -2762,21 +2745,15 @@ fn run_cleanup_pipeline(
     tier: Option<String>,
     style: Option<String>,
     focused: &str,
-    app: &AppHandle,
+    _app: &AppHandle,
     ctx: &AppContext,
 ) -> Result<CleanupRun, String> {
     let tier_label = tier
         .as_deref()
         .map(|t| t.trim().to_ascii_lowercase())
         .unwrap_or_else(|| "smart_flow".into());
-    let model_id = match tier_label.as_str() {
-        "deep_context" => "qwen3.5-2b",
-        "raw_verbatim" => "none",
-        _ => "qwen3.5-0.8b",
-    };
     let mut settings = ctx.settings_store.get();
     settings.intelligence_tier = tier_label.clone();
-    settings.flow_model = model_id.to_string();
     settings.style = style.unwrap_or_else(|| "neutral".into());
     let caps = crate::capability::capabilities();
     let measurements = crate::profile::measurements::Measurements::load();
@@ -2790,38 +2767,11 @@ fn run_cleanup_pipeline(
         crate::runtime::refinement_is_resident(ctx, &settings),
     );
     settings = crate::runtime::effective_settings(&settings, &plan);
-    let replacement_rules = CustomReplacements::new(settings.custom_replacements.clone());
-    let level = CleanupLevel::parse(&settings.resolved_cleanup_level());
-    let mut smart = format_transcript_ex(
-        text,
-        FormatRequest {
-            cleanup_level: level,
-            dictation_mode: &settings.dictation_mode,
-            style: VoiceStyle::parse(&settings.style),
-            filler_removal_enabled: settings.filler_removal_enabled,
-            spoken_punctuation_enabled: settings.spoken_punctuation_enabled,
-            custom_replacements: &replacement_rules,
-            focused_process: if focused.is_empty() {
-                None
-            } else {
-                Some(focused)
-            },
-        },
-    );
-    if level != CleanupLevel::Raw {
-        let glossary: Vec<(String, String)> = settings
-            .dictionary_terms
-            .iter()
-            .map(|t| (t.term.clone(), t.preferred_spelling.clone()))
-            .collect();
-        smart = crate::formatting::TextCleaner::apply_glossary(&smart, &glossary);
-    }
+    let intent = settings.resolve_intent();
+    let model_id = intent.flow_model.clone();
     let started = Instant::now();
-    let wants_flow = settings.resolve_intent().run_llm
-        && !settings.dictation_mode.eq_ignore_ascii_case("coding");
-    let mut out = smart.clone();
-    let mut used = false;
-    let mut rewriter_error: Option<String> = None;
+    let wants_flow = intent.run_llm && !settings.dictation_mode.eq_ignore_ascii_case("coding");
+    let mut ensure_error = None;
     if wants_flow {
         let runtime = std::sync::Arc::clone(&ctx.flow_runtime);
         let compute_backend = settings.refinement.device.clone();
@@ -2831,46 +2781,55 @@ fn run_cleanup_pipeline(
             Some(settings.refinement.gpu_layers.max(0) as u32)
         };
         let vram_reserve_mb = settings.memory_policy.vram_reserve_mb;
-        // Direct call: this command is synchronous, so there is no async
-        // context to preserve. The previous `block_in_place` panicked outright
-        // when Tauri dispatched this onto a current-thread runtime.
-        let ensure_result = runtime.ensure(
-            model_id,
-            &compute_backend,
-            override_layers,
-            vram_reserve_mb,
-            settings.refinement.context_size,
-        );
-        if let Err(err) = &ensure_result {
-            crate::rewrite::auto_install_if_missing(app, ctx, &compute_backend, err);
+        // Do not install a missing local model or runtime from preview. The
+        // shared postprocessor will return deterministic text with a reason.
+        let model_present = crate::rewrite::flow_gguf_path(&model_id).is_file();
+        let runtime_present = crate::rewrite::llama_server_bin().is_file();
+        if !model_present {
+            ensure_error = Some("The selected local refinement model is not installed.".to_owned());
+        } else if !runtime_present {
+            ensure_error =
+                Some("The local llama.cpp refinement runtime is not installed.".to_owned());
+        } else {
+            // Direct call: this command is synchronous, so there is no async
+            // context to preserve. The previous `block_in_place` panicked outright
+            // when Tauri dispatched this onto a current-thread runtime.
+            let ensure_result = runtime.ensure(
+                &model_id,
+                &compute_backend,
+                override_layers,
+                vram_reserve_mb,
+                settings.refinement.context_size,
+            );
+            if let Err(err) = &ensure_result {
+                ensure_error = Some(err.clone());
+            }
+            if ensure_result.is_ok() {
+                runtime.set_deadline_ms(settings.refinement.deadline_ms);
+            }
         }
-        if ensure_result.is_ok() {
-            runtime.set_deadline_ms(settings.refinement.deadline_ms);
-        }
-        let client = ctx.flow_runtime.client.read().clone();
-        let req = RewriteRequest {
-            text: smart.clone(),
-            cleanup_level: settings.resolved_cleanup_level(),
-            style: settings.style.clone(),
-            dictation_mode: settings.dictation_mode.clone(),
-            vocabulary: crate::session::session_vocabulary(&settings),
-            app_process: focused.to_string(),
-            model_id: model_id.to_string(),
-        };
-        let outcome = crate::rewrite::polish_or_fallback(&client, &smart, &req);
-        out = outcome.final_text;
-        used = outcome.used;
-        rewriter_error = outcome.error;
     }
-    out = crate::formatting::snippets::apply_snippets(&out, &settings.snippets);
+    let client = if wants_flow && ensure_error.is_some() {
+        crate::rewrite::FlowClient::new_missing()
+    } else {
+        ctx.flow_runtime.client.read().clone()
+    };
+    let processed = session::postprocess_with_context(
+        text,
+        &settings,
+        focused,
+        &client,
+        None,
+        &session::SessionContext::default(),
+    );
     Ok(CleanupRun {
-        smart,
-        final_text: out,
-        rewriter_used: used,
-        model_id: model_id.into(),
-        tier_label,
+        smart: processed.smart,
+        final_text: processed.final_text,
+        rewriter_used: processed.rewriter_used,
+        model_id,
+        tier_label: intent.tier,
         latency_ms: started.elapsed().as_millis() as u64,
-        rewriter_error,
+        rewriter_error: ensure_error.or(processed.rewriter_error),
     })
 }
 
@@ -2889,24 +2848,51 @@ pub fn preview_tier_cleanup(
         }
         let settings = ctx.settings_store.get().settings_for_mode("preview", &mode);
         let intent = settings.resolve_intent();
-        let model = if intent.flow_model == "none" && !mode.custom_instructions.is_empty() {
+        let model = if intent.flow_model == "none"
+            && (!mode.custom_instructions.is_empty() || mode.translate_to.is_some())
+        {
             "qwen3.5-0.8b"
         } else {
             &intent.flow_model
         };
-        if !mode.dictation_mode.eq_ignore_ascii_case("coding") && model != "none" {
-            ctx.flow_runtime.ensure(
-                model,
-                &settings.refinement.device,
-                (settings.refinement.gpu_layers >= 0)
-                    .then_some(settings.refinement.gpu_layers as u32),
-                settings.memory_policy.vram_reserve_mb,
-                settings.refinement.context_size,
-            )?;
-            ctx.flow_runtime
-                .set_deadline_ms(settings.refinement.deadline_ms);
-        }
-        let client = ctx.flow_runtime.client.read().clone();
+        let mut ensure_error = None;
+        let client = if !mode.dictation_mode.eq_ignore_ascii_case("coding")
+            && intent.cleanup_level != "raw"
+            && model != "none"
+        {
+            let model_present = crate::rewrite::flow_gguf_path(model).is_file();
+            let runtime_present = crate::rewrite::llama_server_bin().is_file();
+            if !model_present {
+                ensure_error =
+                    Some("The selected local refinement model is not installed.".to_owned());
+                crate::rewrite::FlowClient::new_missing()
+            } else if !runtime_present {
+                ensure_error =
+                    Some("The local llama.cpp refinement runtime is not installed.".to_owned());
+                crate::rewrite::FlowClient::new_missing()
+            } else {
+                match ctx.flow_runtime.ensure(
+                    model,
+                    &settings.refinement.device,
+                    (settings.refinement.gpu_layers >= 0)
+                        .then_some(settings.refinement.gpu_layers as u32),
+                    settings.memory_policy.vram_reserve_mb,
+                    settings.refinement.context_size,
+                ) {
+                    Ok(()) => {
+                        ctx.flow_runtime
+                            .set_deadline_ms(settings.refinement.deadline_ms);
+                        ctx.flow_runtime.client.read().clone()
+                    }
+                    Err(error) => {
+                        ensure_error = Some(error);
+                        crate::rewrite::FlowClient::new_missing()
+                    }
+                }
+            }
+        } else {
+            ctx.flow_runtime.client.read().clone()
+        };
         let result = session::postprocess_with_context(
             &text,
             &settings,
@@ -2915,12 +2901,17 @@ pub fn preview_tier_cleanup(
             Some(&mode),
             &session::SessionContext::default(),
         );
-        if let Some(error) = result.rewriter_error {
-            return Err(error);
+        let mut payload = serde_json::json!({
+            "text": result.final_text,
+            "latency_ms": result.formatting_ms + result.rewrite_ms.unwrap_or(0),
+            "tier_used": intent.tier,
+            "model_used": model,
+            "rewriter_used": result.rewriter_used,
+        });
+        if let Some(error) = ensure_error.or(result.rewriter_error) {
+            payload["rewriter_error"] = serde_json::Value::String(error);
         }
-        return Ok(
-            serde_json::json!({"text": result.final_text, "latency_ms": result.formatting_ms + result.rewrite_ms.unwrap_or(0), "tier_used": intent.tier, "model_used": model, "rewriter_used": result.rewriter_used}),
-        );
+        return Ok(payload);
     }
     let run = run_cleanup_pipeline(&text, tier, style, "preview", &app, ctx.inner())?;
     let mut payload = serde_json::json!({
@@ -3011,7 +3002,10 @@ pub async fn retry_history_transcript(
             } else {
                 &intent.flow_model
             };
-            if !mode.dictation_mode.eq_ignore_ascii_case("coding") && model != "none" {
+            if !mode.dictation_mode.eq_ignore_ascii_case("coding")
+                && intent.cleanup_level != "raw"
+                && model != "none"
+            {
                 ctx_clone.flow_runtime.ensure(
                     model,
                     &effective.refinement.device,
@@ -3181,6 +3175,7 @@ mod tests {
 
     fn status() -> ModelStatus {
         ModelStatus {
+            selected_model: "1.7b".into(),
             installed: true,
             loaded: true,
             name: "repo".into(),

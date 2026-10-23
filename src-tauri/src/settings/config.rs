@@ -195,7 +195,7 @@ pub(super) fn default_true() -> bool {
 }
 
 fn default_context_size() -> u32 {
-    1024
+    crate::rewrite::client::DEFAULT_CONTEXT_SIZE
 }
 
 fn default_deadline_ms() -> u64 {
@@ -578,6 +578,14 @@ pub struct AppSettings {
     pub processing_mode: String,
     #[serde(default = "default_cleanup_level")]
     pub cleanup_level: String,
+    /// Optional LLM formatting layered over the existing cleanup pipeline.
+    /// `off` preserves the existing behavior for saved installations.
+    #[serde(default = "default_transcript_format")]
+    pub transcript_format: String,
+    /// Optional user preference for formatting only; never overrides factual
+    /// safety rules or per-mode task instructions.
+    #[serde(default)]
+    pub custom_format_instructions: String,
     #[serde(default = "default_intelligence_tier")]
     pub intelligence_tier: String,
     /// The tier to restore when polishing is switched back on.
@@ -772,6 +780,12 @@ fn default_cleanup_level() -> String {
     "light".into()
 }
 
+fn default_transcript_format() -> String {
+    "off".into()
+}
+
+const MAX_CUSTOM_FORMAT_INSTRUCTION_CHARS: usize = 500;
+
 fn default_intelligence_tier() -> String {
     "smart_flow".into()
 }
@@ -842,6 +856,8 @@ impl Default for AppSettings {
             // Fresh installs start with natural cleanup. Field-level serde
             // defaults retain the legacy light behavior for saved documents.
             cleanup_level: "medium".into(),
+            transcript_format: default_transcript_format(),
+            custom_format_instructions: String::new(),
             // A fresh install is deterministic-only until the user picks an
             // LLM tier: `raw_verbatim` keeps `run_llm` false while the clamped
             // "light" cleanup still applies basic deterministic cleanup.
@@ -1027,21 +1043,12 @@ fn processing_mode_for_cleanup(level: &str) -> &'static str {
 
 impl AppSettings {
     pub fn for_application(&self, process: &str) -> Self {
-        fn name(process: &str) -> String {
-            process
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(process)
-                .trim()
-                .to_ascii_lowercase()
-                .trim_end_matches(".exe")
-                .to_owned()
-        }
+        let process = super::expansion::process_basename(process);
         let mut effective = self.clone();
         if let Some(profile) = self
             .application_profiles
             .iter()
-            .find(|p| name(&p.process) == name(process))
+            .find(|p| super::expansion::process_basename(&p.process) == process)
         {
             if matches!(
                 profile.style.as_str(),
@@ -1124,6 +1131,18 @@ impl AppSettings {
             .take()
             .map(|path| path.trim().to_owned())
             .filter(|path| !path.is_empty());
+        self.transcript_format = match self.transcript_format.trim().to_ascii_lowercase().as_str() {
+            "auto" | "natural" | "technical" | "brainstorm" | "meeting" | "steps" => {
+                self.transcript_format.trim().to_ascii_lowercase()
+            }
+            _ => default_transcript_format(),
+        };
+        self.custom_format_instructions = self
+            .custom_format_instructions
+            .trim()
+            .chars()
+            .take(MAX_CUSTOM_FORMAT_INSTRUCTION_CHARS)
+            .collect();
         if crate::history::db::audio_retention_ms(&self.audio_retention).is_err() {
             self.audio_retention = default_audio_retention();
         }
@@ -1284,6 +1303,36 @@ impl SettingsStore {
         } else {
             AppSettings::default()
         };
+
+        // Recovery defaults may only replace the document after its exact bytes
+        // have been durably preserved. Failure to back up blocks all writes.
+        if file_path.exists() && !loaded_from_disk && write_block_reason.is_none() {
+            let backup = file_path.with_extension(format!("corrupt-{}.json", uuid::Uuid::new_v4()));
+            let preserved = (|| -> std::io::Result<()> {
+                use std::io::Write;
+                let bytes = fs::read(&file_path)?;
+                let mut file = fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&backup)?;
+                file.write_all(&bytes)?;
+                file.sync_all()
+            })();
+            match preserved {
+                Ok(()) => {
+                    recovery_notice = Some(format!(
+                        "{} Recovery copy: {}",
+                        recovery_notice.unwrap_or_default(),
+                        backup.display()
+                    ))
+                }
+                Err(error) => {
+                    let reason = format!("Settings recovery copy could not be saved ({error}). Settings writes are blocked to preserve the original.");
+                    recovery_notice = Some(reason.clone());
+                    write_block_reason = Some(reason);
+                }
+            }
+        }
 
         let mut normalized = loaded.normalized();
         let repaired_hotkeys = loaded_from_disk
@@ -1563,6 +1612,8 @@ mod tests {
         let settings = AppSettings::default();
         assert!(!settings.developer_mode);
         assert_eq!(settings.cleanup_level, "medium");
+        assert_eq!(settings.transcript_format, "off");
+        assert!(settings.custom_format_instructions.is_empty());
         // Fresh installs are deterministic-only; the LLM tiers are opt-in.
         assert_eq!(settings.intelligence_tier, "raw_verbatim");
         assert!(!settings.resolve_intent().run_llm);
@@ -1571,6 +1622,42 @@ mod tests {
         assert!(!settings.auto_style_from_app);
         assert_eq!(settings.processing_mode, "smart");
         assert_eq!(settings.asr.precision, "auto");
+    }
+
+    #[test]
+    fn formatting_settings_default_validate_and_round_trip() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("transcript_format");
+        object.remove("custom_format_instructions");
+        let legacy: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.transcript_format, "off");
+        assert!(legacy.custom_format_instructions.is_empty());
+
+        let normalized = AppSettings {
+            transcript_format: "MEETING".into(),
+            custom_format_instructions: "  concise headings  ".into(),
+            ..AppSettings::default()
+        }
+        .normalized();
+        assert_eq!(normalized.transcript_format, "meeting");
+        assert_eq!(normalized.custom_format_instructions, "concise headings");
+        let serialized = serde_json::to_value(&normalized).unwrap();
+        let restored: AppSettings = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.transcript_format, "meeting");
+        assert_eq!(restored.custom_format_instructions, "concise headings");
+
+        let bounded = AppSettings {
+            transcript_format: "unknown".into(),
+            custom_format_instructions: "x".repeat(MAX_CUSTOM_FORMAT_INSTRUCTION_CHARS + 1),
+            ..AppSettings::default()
+        }
+        .normalized();
+        assert_eq!(bounded.transcript_format, "off");
+        assert_eq!(
+            bounded.custom_format_instructions.chars().count(),
+            MAX_CUSTOM_FORMAT_INSTRUCTION_CHARS
+        );
     }
 
     /// `cleanup_level: raw` is a request for the words back verbatim, so it is
@@ -1801,5 +1888,28 @@ mod tests {
         assert!(current.asr.keep_loaded);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod audit_recovery_tests {
+    use super::*;
+    #[test]
+    fn ordinary_save_preserves_exact_unreadable_settings_bytes() {
+        let directory =
+            std::env::temp_dir().join(format!("reflow-corrupt-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        let bytes = b"\xff{broken original dictionary";
+        fs::write(&path, bytes).unwrap();
+        let store = SettingsStore::new(path.clone());
+        assert!(!store.loaded_from_disk());
+        store.update(store.get()).unwrap();
+        assert!(fs::read_dir(&directory)
+            .unwrap()
+            .flatten()
+            .any(|entry| fs::read(entry.path()).is_ok_and(|found| found == bytes)));
+        assert!(serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).is_ok());
+        let _ = fs::remove_dir_all(directory);
     }
 }

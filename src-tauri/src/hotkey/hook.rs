@@ -1,27 +1,23 @@
-//! Low-level keyboard hook for modifier-only push-to-talk and double-tap auto-mode combos (Shift+Win).
+//! Low-level keyboard hook for modifier-only shortcut transitions (Shift+Win).
 //!
 //! Windows' RegisterHotKey API cannot register a hotkey made purely of
 //! modifier keys, so combos like Shift+Win are tracked with a
 //! WH_KEYBOARD_LL hook instead.
 //!
-//! Features:
-//! 1. Push-to-Talk (Hold): Holding Shift+Win for >350ms starts recording immediately; releasing stops recording & transcribes.
-//! 2. Auto Mode (Double-Tap): Double-tapping Shift+Win within 350ms locks recording indefinitely; pressing Shift+Win once stops recording.
-//! 3. Single-Tap Timeout: A quick single tap (<350ms) waits for a possible 2nd tap; if none arrives within 350ms, it stops recording & transcribes.
+//! Hold and double-tap gestures are handled by the shared shortcut dispatcher.
 //!
 //! The hook is transparent — it never swallows keys — except the Win
 //! key-up right after a dictation, which is suppressed so the Start
 //! menu doesn't open when the combo is released.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
 /// `true` while a hands-free (double-tap) session is running.
 ///
-/// Lives here rather than in `AppContext` because the hook is the only thing that
-/// knows: hands-free is entered on the *second* tap, by which time recording has
-/// already started and its duration guard is already armed. The session layer
-/// consults this to decide whether that guard still applies.
+/// Set by the shared shortcut dispatcher on the second tap. The session layer
+/// consults this to decide whether the hold-to-talk duration guard still applies.
 static HANDS_FREE: AtomicBool = AtomicBool::new(false);
 
 /// `true` when the current dictation was locked on with a double-tap.
@@ -34,137 +30,16 @@ pub fn hands_free_engaged() -> bool {
     HANDS_FREE.load(Ordering::Acquire)
 }
 
-fn set_hands_free(engaged: bool) {
+pub(crate) fn set_hands_free(engaged: bool) {
     HANDS_FREE.store(engaged, Ordering::Release);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HookMode {
-    /// No recording active.
-    Idle,
-    /// Shift+Win is physically held down for a potential Push-to-Talk or first tap of a double tap.
-    Holding { pressed_at: Instant },
-    /// First tap was released within double_tap_max_hold.
-    /// Recording continues running; waiting for a 2nd press within double_tap_window.
-    PendingDoubleTap {
-        released_at: Instant,
-        generation: u64,
-    },
-    /// Double-tap confirmed! Recording is locked in Auto Mode (hands-free).
-    AutoLocked,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StateMachineAction {
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+enum StateMachineAction {
     None,
     StartRecording,
     StopRecording,
-    ScheduleDoubleTapTimer { generation: u64, delay_ms: u64 },
-    CancelTimer,
-}
-
-#[derive(Debug, Clone)]
-pub struct HotkeyStateMachine {
-    pub mode: HookMode,
-    pub generation: u64,
-    pub double_tap_max_hold: Duration,
-    pub double_tap_window: Duration,
-}
-
-impl Default for HotkeyStateMachine {
-    fn default() -> Self {
-        Self {
-            mode: HookMode::Idle,
-            generation: 0,
-            double_tap_max_hold: Duration::from_millis(350),
-            double_tap_window: Duration::from_millis(350),
-        }
-    }
-}
-
-impl HotkeyStateMachine {
-    pub fn new(max_hold_ms: u64, window_ms: u64) -> Self {
-        Self {
-            mode: HookMode::Idle,
-            generation: 0,
-            double_tap_max_hold: Duration::from_millis(max_hold_ms),
-            double_tap_window: Duration::from_millis(window_ms),
-        }
-    }
-
-    pub fn on_combo_down(&mut self, now: Instant) -> StateMachineAction {
-        match self.mode {
-            HookMode::Idle => {
-                self.mode = HookMode::Holding { pressed_at: now };
-                StateMachineAction::StartRecording
-            }
-            HookMode::PendingDoubleTap { .. } => {
-                // Second tap within window -> promote to auto locked hands-free mode!
-                self.generation = self.generation.wrapping_add(1);
-                self.mode = HookMode::AutoLocked;
-                StateMachineAction::CancelTimer
-            }
-            HookMode::AutoLocked => {
-                // Press combo while in auto mode -> stop recording immediately
-                self.mode = HookMode::Idle;
-                StateMachineAction::StopRecording
-            }
-            HookMode::Holding { .. } => {
-                // Key repeats or already held
-                StateMachineAction::None
-            }
-        }
-    }
-
-    pub fn on_combo_up(&mut self, now: Instant) -> StateMachineAction {
-        match self.mode {
-            HookMode::Holding { pressed_at } => {
-                let duration = now.saturating_duration_since(pressed_at);
-                if duration > self.double_tap_max_hold {
-                    // Normal hold-to-talk release!
-                    self.mode = HookMode::Idle;
-                    StateMachineAction::StopRecording
-                } else {
-                    // Quick tap release -> wait for possible second tap
-                    self.generation = self.generation.wrapping_add(1);
-                    let gen = self.generation;
-                    self.mode = HookMode::PendingDoubleTap {
-                        released_at: now,
-                        generation: gen,
-                    };
-                    StateMachineAction::ScheduleDoubleTapTimer {
-                        generation: gen,
-                        delay_ms: self.double_tap_window.as_millis() as u64,
-                    }
-                }
-            }
-            HookMode::AutoLocked => {
-                // Release during auto mode is ignored (keeps recording hands-free)
-                StateMachineAction::None
-            }
-            HookMode::PendingDoubleTap { .. } | HookMode::Idle => StateMachineAction::None,
-        }
-    }
-
-    pub fn on_timer_expired(&mut self, generation: u64) -> StateMachineAction {
-        if let HookMode::PendingDoubleTap {
-            generation: cur_gen,
-            ..
-        } = self.mode
-        {
-            if cur_gen == generation {
-                self.mode = HookMode::Idle;
-                return StateMachineAction::StopRecording;
-            }
-        }
-        StateMachineAction::None
-    }
-
-    pub fn reset(&mut self) {
-        self.mode = HookMode::Idle;
-        self.generation = self.generation.wrapping_add(1);
-        set_hands_free(false);
-    }
 }
 
 /// Which entries of a held-key set survive live-state reconciliation in the
@@ -232,7 +107,6 @@ pub mod platform {
         down: HashSet<i32>,
         swallowed: HashSet<i32>,
         active: bool,
-        sm: HotkeyStateMachine,
     }
 
     static HOOK: OnceLock<Mutex<Vec<HookState>>> = OnceLock::new();
@@ -354,51 +228,15 @@ pub mod platform {
         on_combo: &ComboFn,
         on_release: &ComboFn,
     ) {
+        // Gesture recognition belongs to the shared dispatcher. Deliver raw
+        // transitions synchronously so release cannot overtake press.
         match action {
             StateMachineAction::StartRecording => {
-                let cb = on_combo.clone();
-                std::thread::spawn(move || {
-                    log::info!("Hotkey combo engaged -> Start recording");
-                    inject_dummy_key();
-                    cb(event_at);
-                });
+                inject_dummy_key();
+                on_combo(event_at);
             }
-            StateMachineAction::StopRecording => {
-                let cb = on_release.clone();
-                super::set_hands_free(false);
-                std::thread::spawn(move || {
-                    log::info!("Hotkey combo released/stopped -> Stop recording");
-                    cb(event_at);
-                });
-            }
-            StateMachineAction::ScheduleDoubleTapTimer {
-                generation,
-                delay_ms,
-            } => {
-                let cb = on_release.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(delay_ms));
-                    let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
-                    if let Some(st) = guard.iter_mut().find(|st| Arc::ptr_eq(&st.on_release, &cb)) {
-                        let act = st.sm.on_timer_expired(generation);
-                        if act == StateMachineAction::StopRecording {
-                            drop(guard);
-                            log::info!("Single-tap double-tap window expired -> Stop recording");
-                            // The user stopped speaking when they released the
-                            // key, not when the double-tap window closed.
-                            cb(event_at);
-                        }
-                    }
-                });
-            }
-            StateMachineAction::CancelTimer => {
-                // The double-tap promotion. Recording is already running; this is
-                // the point at which it becomes open-ended, so the duration guard
-                // must stop applying to it.
-                super::set_hands_free(true);
-                log::info!("Hotkey double-tap confirmed -> Auto Mode engaged (hands-free)");
-            }
-            StateMachineAction::None => {}
+            StateMachineAction::StopRecording => on_release(event_at),
+            _ => {}
         }
     }
 
@@ -458,12 +296,12 @@ pub mod platform {
                     st.active = true;
                     st.swallowed.insert(vk);
                     swallow = true;
-                    st.sm.on_combo_down(event_at)
+                    StateMachineAction::StartRecording
                 } else if st.active && !combo_matched {
                     st.active = false;
                     swallow |= st.swallowed.remove(&vk);
                     st.swallowed.clear();
-                    st.sm.on_combo_up(event_at)
+                    StateMachineAction::StopRecording
                 } else {
                     if st.active && is_required_modifier(st, vk) && is_down {
                         st.swallowed.insert(vk);
@@ -540,19 +378,15 @@ pub mod platform {
                 down: HashSet::new(),
                 swallowed: HashSet::new(),
                 active: false,
-                sm: HotkeyStateMachine::default(),
             });
         }
         ensure_hook()
     }
 
     pub fn reset_mode() {
-        let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
-        for st in guard.iter_mut() {
-            st.sm.reset();
-            st.active = false;
-            st.swallowed.clear();
-        }
+        super::set_hands_free(false);
+        // Keep physical key state until key-up. Clearing `active` while the
+        // stop key is held would interpret its auto-repeat as a fresh press.
     }
 
     pub fn clear_combo() {
@@ -606,7 +440,9 @@ pub mod platform {
     }
     pub fn set_cancel(_callback: Option<ComboFn>) {}
     pub fn clear_combo() {}
-    pub fn reset_mode() {}
+    pub fn reset_mode() {
+        super::set_hands_free(false);
+    }
     pub const fn flags(_shift: bool, _ctrl: bool, _alt: bool, _win: bool) -> u8 {
         0
     }
@@ -618,100 +454,6 @@ pub use platform::{clear_combo, flags, reset_mode, set_cancel, set_combo};
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_hold_to_talk_workflow() {
-        let mut sm = HotkeyStateMachine::new(350, 350);
-        let t0 = Instant::now();
-
-        // 1. Press combo -> Start recording
-        let act = sm.on_combo_down(t0);
-        assert_eq!(act, StateMachineAction::StartRecording);
-        assert!(matches!(sm.mode, HookMode::Holding { .. }));
-
-        // 2. Held for 1.2s (> 350ms) -> Release stops recording
-        let act2 = sm.on_combo_up(t0 + Duration::from_millis(1200));
-        assert_eq!(act2, StateMachineAction::StopRecording);
-        assert_eq!(sm.mode, HookMode::Idle);
-    }
-
-    #[test]
-    fn test_double_tap_auto_mode_workflow() {
-        let mut sm = HotkeyStateMachine::new(350, 350);
-        let t0 = Instant::now();
-
-        // Tap 1 Down -> Start recording
-        let a1 = sm.on_combo_down(t0);
-        assert_eq!(a1, StateMachineAction::StartRecording);
-
-        // Tap 1 Up at 100ms (< 350ms) -> Schedule timer, mode is PendingDoubleTap
-        let a2 = sm.on_combo_up(t0 + Duration::from_millis(100));
-        assert!(matches!(
-            a2,
-            StateMachineAction::ScheduleDoubleTapTimer {
-                generation: 1,
-                delay_ms: 350
-            }
-        ));
-        assert!(matches!(
-            sm.mode,
-            HookMode::PendingDoubleTap { generation: 1, .. }
-        ));
-
-        // Tap 2 Down at 220ms -> Promotes to AutoLocked, cancels timer
-        let a3 = sm.on_combo_down(t0 + Duration::from_millis(220));
-        assert_eq!(a3, StateMachineAction::CancelTimer);
-        assert_eq!(sm.mode, HookMode::AutoLocked);
-
-        // Tap 2 Up at 300ms -> Ignored, remains AutoLocked
-        let a4 = sm.on_combo_up(t0 + Duration::from_millis(300));
-        assert_eq!(a4, StateMachineAction::None);
-        assert_eq!(sm.mode, HookMode::AutoLocked);
-
-        // Old timer expires at 450ms -> Ignored because generation changed
-        let a5 = sm.on_timer_expired(1);
-        assert_eq!(a5, StateMachineAction::None);
-        assert_eq!(sm.mode, HookMode::AutoLocked);
-
-        // User speaks hands-free for 10 seconds, then presses combo again to stop
-        let a6 = sm.on_combo_down(t0 + Duration::from_secs(10));
-        assert_eq!(a6, StateMachineAction::StopRecording);
-        assert_eq!(sm.mode, HookMode::Idle);
-
-        // Release after stop -> Ignored
-        let a7 = sm.on_combo_up(t0 + Duration::from_secs(10) + Duration::from_millis(100));
-        assert_eq!(a7, StateMachineAction::None);
-        assert_eq!(sm.mode, HookMode::Idle);
-    }
-
-    #[test]
-    fn test_single_tap_timeout_workflow() {
-        let mut sm = HotkeyStateMachine::new(350, 350);
-        let t0 = Instant::now();
-
-        // Single quick tap
-        let a1 = sm.on_combo_down(t0);
-        assert_eq!(a1, StateMachineAction::StartRecording);
-
-        let a2 = sm.on_combo_up(t0 + Duration::from_millis(50));
-        assert!(matches!(
-            a2,
-            StateMachineAction::ScheduleDoubleTapTimer { generation: 1, .. }
-        ));
-
-        // No second tap -> timer fires
-        let a3 = sm.on_timer_expired(1);
-        assert_eq!(a3, StateMachineAction::StopRecording);
-        assert_eq!(sm.mode, HookMode::Idle);
-    }
-
-    #[test]
-    fn test_reset_mode_clears_state() {
-        let mut sm = HotkeyStateMachine::new(350, 350);
-        sm.mode = HookMode::AutoLocked;
-        sm.reset();
-        assert_eq!(sm.mode, HookMode::Idle);
-    }
 
     #[test]
     fn reconcile_keeps_swallowed_modifiers_despite_reported_key_up() {

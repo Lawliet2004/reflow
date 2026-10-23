@@ -17,6 +17,48 @@ const UNRELATED_SHOP_REWRITE: &str =
     "Once you need three things:\n\n• The mobile\n• The power bank\n• The earbuds";
 
 #[test]
+fn a_later_correction_keeps_paragraphs_through_cleanup_and_validation() {
+    let source = "Ship the browser first.\n\nUse Node.js no wait use Python FastAPI.\n\nKeep `npm run check` unchanged.";
+    let expected =
+        "Ship the browser first.\n\nUse Python FastAPI.\n\nKeep `npm run check` unchanged.";
+    let prepared = format_transcript(
+        source,
+        "flow",
+        "normal",
+        true,
+        true,
+        &CustomReplacements::new(vec![]),
+    );
+    assert_eq!(prepared, expected);
+    assert_eq!(
+        accept_rewrite(source, expected, "high").as_deref(),
+        Some(expected)
+    );
+    assert!(accept_rewrite(source, &expected.replace('\n', " "), "high").is_none());
+    assert!(accept_rewrite(&prepared, &expected.replace('\n', " "), "high").is_none());
+}
+
+#[test]
+fn reported_interjections_are_punctuated_before_rewrite_and_remain_protected() {
+    let polished = format_transcript(
+        "he shouted no no no",
+        "flow",
+        "normal",
+        true,
+        true,
+        &CustomReplacements::new(vec![]),
+    );
+    assert_eq!(polished, "He shouted, 'No, no, no!'");
+    assert_eq!(
+        accept_rewrite(&polished, &polished, "high").as_deref(),
+        Some(polished.as_str())
+    );
+    for candidate in ["He shouted, 'No!'", "He shouted, 'Yes, yes, yes!'"] {
+        assert!(accept_rewrite(&polished, candidate, "high").is_none());
+    }
+}
+
+#[test]
 fn quoted_hesitations_and_commands_survive_ai_cleanup() {
     for (source, safe, unsafe_rewrite) in [
         (
@@ -751,7 +793,13 @@ impl LocalModel {
                                             ["content"]
                                             .as_str()
                                             .unwrap();
-                                    let (_, transcript) = user.split_once('\n').unwrap();
+                                    let transcript = user
+                                        .split_once("<transcript>\n")
+                                        .unwrap()
+                                        .1
+                                        .rsplit_once("\n</transcript>")
+                                        .unwrap()
+                                        .0;
                                     let candidate = response(transcript);
                                     Json(json!({
                                         "choices": [{
@@ -856,13 +904,8 @@ fn valid_model_cleanup_reaches_the_final_dictation() {
 
 #[test]
 fn truncating_a_list_item_preserves_the_complete_structured_inventory() {
-    let model = LocalModel::responding_to(|part| {
-        if part == "My power bank" {
-            "My power".into()
-        } else {
-            part.to_owned()
-        }
-    });
+    let model =
+        LocalModel::responding_to(|transcript| transcript.replace("My power bank", "My power"));
     let mut request = polish_request(NUMBERED_INVENTORY);
     request.cleanup_level = "high".into();
     request.dictation_mode = "notes".into();

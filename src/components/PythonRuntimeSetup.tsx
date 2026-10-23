@@ -1,7 +1,13 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Download, Loader2, Trash2 } from "lucide-react";
 import { AppSettings, ModelStatus, PythonRuntimeStatus, PythonSetupProgress } from "../types";
-import { api, safeListen } from "../services/tauriApi";
+import { api } from "../services/tauriApi";
+import { createEventScope } from "../services/eventScope";
+import {
+  canCancelSpeechSetup,
+  newestSpeechSetupProgress,
+  SPEECH_SETUP_PHASE,
+} from "../services/speechSetup";
 
 const IN_FLIGHT = new Set([
   "downloading",
@@ -10,16 +16,8 @@ const IN_FLIGHT = new Set([
   "installing_torch",
   "installing_packages",
   "verifying",
+  "activating",
 ]);
-
-const PHASE_LABEL: Record<string, string> = {
-  downloading: "Downloading Python",
-  extracting: "Extracting Python",
-  creating_env: "Creating the speech environment",
-  installing_torch: "Installing torch",
-  installing_packages: "Installing speech packages",
-  verifying: "Verifying the environment",
-};
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -49,11 +47,11 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
   showRemove = false,
 }) => {
   const [status, setStatus] = useState<PythonRuntimeStatus | null>(null);
-  const [progress, setProgress] = useState<PythonSetupProgress | null>(null);
+  const [eventProgress, setProgress] = useState<PythonSetupProgress | null>(null);
   const [removing, setRemoving] = useState(false);
 
   const refresh = useCallback(() => {
-    api
+    return api
       .getPythonRuntimeStatus()
       .then(setStatus)
       .catch(() => {});
@@ -64,11 +62,9 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
   }, [refresh, modelStatus?.failure_kind]);
 
   useEffect(() => {
-    let alive = true;
-    let unlisten: (() => void) | undefined;
-    safeListen<PythonSetupProgress>("python-runtime:setup-progress", (payload) => {
-      if (!alive) return;
-      setProgress(payload);
+    const scope = createEventScope();
+    void scope.listen<PythonSetupProgress>("python-runtime:setup-progress", (payload) => {
+      setProgress((current) => newestSpeechSetupProgress(current, payload));
       if (
         payload.phase === "complete" ||
         payload.phase === "error" ||
@@ -76,19 +72,44 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
       ) {
         refresh();
       }
-    })
-      .then((stop) => {
-        if (alive) unlisten = stop;
-        else stop();
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-      unlisten?.();
-    };
+    });
+    return () => scope.dispose();
   }, [refresh]);
 
+  const settingUp = status?.setting_up;
+  const snapshotAttempt = status?.progress?.attempt_id;
+  useEffect(() => {
+    if (!settingUp || !snapshotAttempt) return;
+    let attached = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const snapshot = await api.getPythonSetupProgress();
+        if (!attached) return;
+        setProgress((current) => newestSpeechSetupProgress(current, snapshot));
+        if (
+          snapshot?.attempt_id !== snapshotAttempt ||
+          ["complete", "error", "cancelled"].includes(snapshot.phase)
+        )
+          await refresh();
+      } catch {
+        // A temporary IPC failure does not start a replacement installer.
+      }
+      if (attached) timer = setTimeout(poll, 1000);
+    };
+    timer = setTimeout(poll, 1000);
+    return () => {
+      attached = false;
+      clearTimeout(timer);
+    };
+  }, [settingUp, snapshotAttempt, refresh]);
+
   if (!status) return null;
+  // Local request/error state has no owner yet; native observations are ordered separately.
+  const progress =
+    eventProgress && !eventProgress.attempt_id
+      ? eventProgress
+      : newestSpeechSetupProgress(status.progress, eventProgress);
 
   const failureKind = modelStatus?.failure_kind;
   const needsSetup =
@@ -96,13 +117,15 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
     (failureKind === "python_missing" ||
       failureKind === "missing_dependency" ||
       !status.managed_installed);
-  const inFlight = status.setting_up || (progress != null && IN_FLIGHT.has(progress.phase));
+  const inFlight = progress ? IN_FLIGHT.has(progress.phase) : status.setting_up;
   const failed = progress?.phase === "error";
 
   const startSetup = async () => {
     setProgress({ phase: "downloading" });
     try {
       await api.setupPythonRuntime();
+      await refresh();
+      setProgress((current) => (current?.attempt_id ? current : null));
     } catch (error) {
       setProgress({ phase: "error", error: String(error) });
     }
@@ -162,13 +185,14 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm text-ink flex items-center gap-2">
             <Loader2 className="w-4 h-4 animate-spin" />
-            {PHASE_LABEL[phase] ?? "Setting up the speech runtime"}…
+            {SPEECH_SETUP_PHASE[phase]}…
           </p>
           <button
             type="button"
             className="btn btn-secondary btn-sm shrink-0"
+            disabled={!canCancelSpeechSetup(progress)}
             onClick={() => {
-              api.cancelPythonRuntimeSetup().catch(() => {});
+              api.cancelPythonRuntimeSetup(progress?.attempt_id).catch(() => {});
             }}
           >
             Cancel
@@ -222,13 +246,18 @@ export const PythonRuntimeSetup: React.FC<PythonRuntimeSetupProps> = ({
     return (
       <div className="rounded-xl border border-line bg-base-2 px-3 py-2.5 space-y-2">
         <p className="text-xs text-muted leading-snug">
-          Reflow needs internet once to download the speech runtime. Nothing else leaves this
-          computer — you can turn Airplane mode back on right after.
+          Offline mode is on. Setup can use a complete runtime pack saved on this computer. If it is
+          missing or damaged, allow downloads to replace it.
         </p>
-        <button type="button" className="btn btn-primary" onClick={allowDownloads}>
-          <Download className="w-4 h-4" />
-          Allow downloads
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn btn-primary" onClick={startSetup}>
+            Try cached dependencies
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={allowDownloads}>
+            <Download className="w-4 h-4" />
+            Allow downloads
+          </button>
+        </div>
       </div>
     );
   }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -147,8 +147,9 @@ pub struct AppContext {
     pub api_identity: Arc<std::sync::OnceLock<Result<crate::api::tls::LanIdentity, String>>>,
     pub api_identity_path: Arc<std::path::PathBuf>,
     pub flow_runtime: Arc<FlowRuntime>,
-    pub active_intelligence_downloads: Arc<Mutex<HashSet<String>>>,
-    pub active_runtime_downloads: Arc<Mutex<HashSet<String>>>,
+    pub active_intelligence_downloads:
+        Arc<Mutex<HashMap<String, crate::rewrite::model_install::ModelDownload>>>,
+    pub runtime_download: Arc<Mutex<Option<crate::rewrite::runtime_install::RuntimeDownload>>>,
     /// Guards the single long-lived model-status poller.
     ///
     /// The poller is the only thing that refreshes `asr_handle`'s status
@@ -200,10 +201,10 @@ impl AppContext {
         let history_store = Arc::new(HistoryStore::open_recovering(db_path));
         let initial_settings =
             apply_startup_history_preferences(&settings_store, &history_store, existing_history);
-        if let Err(error) = crate::network_policy::configure(
-            initial_settings.offline_mode,
-            &PlatformSys::get_app_dir(),
-        ) {
+        let asr_handle = AsrHandle::new_runtime(&initial_settings.asr.runtime);
+        if let Err(error) = asr_handle
+            .configure_network_policy(initial_settings.offline_mode, &PlatformSys::get_app_dir())
+        {
             log::error!("Network policy could not be saved: {error}");
         }
         let model_manager = Arc::new(ModelManager::new(models_dir));
@@ -218,7 +219,7 @@ impl AppContext {
             history_store,
             model_manager,
             audio_engine: Arc::new(RwLock::new(AudioCaptureEngine::new())),
-            asr_handle: AsrHandle::new_runtime(&initial_settings.asr.runtime),
+            asr_handle,
             asr_runtime: Arc::new(parking_lot::Mutex::new(
                 initial_settings.asr.runtime.clone(),
             )),
@@ -259,8 +260,8 @@ impl AppContext {
                     .join("lan-identity.json"),
             ),
             flow_runtime: Arc::new(FlowRuntime::default()),
-            active_intelligence_downloads: Arc::new(Mutex::new(HashSet::new())),
-            active_runtime_downloads: Arc::new(Mutex::new(HashSet::new())),
+            active_intelligence_downloads: Arc::new(Mutex::new(HashMap::new())),
+            runtime_download: Arc::new(Mutex::new(None)),
             model_status_watch_active: Arc::new(AtomicBool::new(false)),
             asr_selection_notice: Arc::new(RwLock::new(None)),
             last_asr_load: Arc::new(RwLock::new(None)),
@@ -320,8 +321,8 @@ impl AppContext {
             api_identity: Arc::new(std::sync::OnceLock::new()),
             api_identity_path: Arc::new(dir.join("lan-identity.json")),
             flow_runtime: Arc::new(FlowRuntime::default()),
-            active_intelligence_downloads: Arc::new(Mutex::new(HashSet::new())),
-            active_runtime_downloads: Arc::new(Mutex::new(HashSet::new())),
+            active_intelligence_downloads: Arc::new(Mutex::new(HashMap::new())),
+            runtime_download: Arc::new(Mutex::new(None)),
             model_status_watch_active: Arc::new(AtomicBool::new(false)),
             asr_selection_notice: Arc::new(RwLock::new(None)),
             last_asr_load: Arc::new(RwLock::new(None)),

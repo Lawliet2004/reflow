@@ -309,7 +309,14 @@ fn builtin_email_mode_requests_layout_even_with_its_light_defaults() {
         model_id: intent.flow_model,
     };
     let (_, user) = build_prompts(&request);
-    let (instruction, transcript) = user.split_once('\n').unwrap();
+    let (instruction, _) = user.split_once('\n').unwrap();
+    let transcript = user
+        .split_once("<transcript>\n")
+        .unwrap()
+        .1
+        .rsplit_once("\n</transcript>")
+        .unwrap()
+        .0;
     let instruction = instruction.to_lowercase();
     assert!(instruction.contains("paragraph"));
     assert!(instruction.contains("greeting"));
@@ -350,7 +357,7 @@ impl LocalModel {
                         let response = response.clone();
                         async move {
                             let user = request["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap();
-                            let (_, transcript) = user.split_once('\n').unwrap();
+                            let transcript = user.split_once("<transcript>\n").unwrap().1.rsplit_once("\n</transcript>").unwrap().0;
                             let candidate = response(transcript);
                             Json(json!({"choices": [{"message": {"content": candidate}, "finish_reason": "stop"}]}))
                         }
@@ -461,4 +468,42 @@ fn builtin_email_mode_formats_a_short_greeting_body_and_signoff_in_the_pipeline(
     assert_eq!(fallback.smart, polished);
     assert_eq!(fallback.final_text, polished);
     assert!(!fallback.rewriter_used);
+}
+
+#[test]
+fn adaptive_formatting_reaches_final_output_and_unsafe_edits_fall_back() {
+    let source = "Rahul will finish frontend by Friday. Priya will do the API integration. Testing is Saturday. Whole thing before Monday.";
+    let candidate = "Meeting notes\n- Rahul will finish frontend by Friday.\n- Priya will do the API integration.\n- Testing is Saturday.\n- Whole thing before Monday.";
+    for (output, expected_used) in [
+        (candidate.to_owned(), true),
+        (candidate.replace("Friday", "Thursday"), false),
+        (
+            candidate.replace("Testing is Saturday", "Priya will do testing on Saturday"),
+            false,
+        ),
+        (candidate.replace("- Whole thing before Monday.", ""), false),
+    ] {
+        let model_output = output.clone();
+        let model = LocalModel::responding_to(move |_| model_output.clone());
+        let settings = AppSettings {
+            cleanup_level: "medium".into(),
+            intelligence_tier: "smart_flow".into(),
+            transcript_format: "auto".into(),
+            auto_style_from_app: false,
+            ..Default::default()
+        };
+        let outcome = postprocess_transcript(source, &settings, "notepad", &model.client());
+        assert_eq!(
+            outcome.rewriter_used, expected_used,
+            "{:?}: {output}",
+            outcome.rewriter_error
+        );
+        if expected_used {
+            assert_eq!(outcome.final_text, output);
+            assert!(outcome.rewriter_error.is_none());
+        } else {
+            assert_eq!(outcome.final_text, outcome.smart);
+            assert!(outcome.rewriter_error.is_some());
+        }
+    }
 }

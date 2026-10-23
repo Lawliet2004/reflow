@@ -25,10 +25,13 @@ def require_dependencies():
         from importlib.metadata import version
         if version("fermion-research") != "0.2.7":
             raise ImportError("Reflow requires fermion-research==0.2.7")
-    except ImportError as error:
+        from fermion._speech import engine_phonon2_cpu  # noqa: F401
+        from transformers import ParakeetForTDT, ParakeetTDTConfig  # noqa: F401
+    except (ImportError, RuntimeError, OSError) as error:
         raise RuntimeError(
-            "Install the Phonon runtime with: python -m pip install -r "
-            "model-runtime/requirements-phonon.txt (beside Reflow's runtime)."
+            "Phonon speech dependencies are unavailable. Repair speech dependencies in Reflow's "
+            "Model settings. Custom Python interpreters need the pinned "
+            "model-runtime/requirements-phonon.txt dependencies."
         ) from error
 
 

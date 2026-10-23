@@ -1,12 +1,13 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   AppSettings,
   IntelligenceTier,
-  IntelligenceTierState,
   INTELLIGENCE_TIERS,
   ModelStatus,
   RuntimeDownloadEvent,
   TranscriptStyle,
+  TranscriptFormat,
+  tierState,
 } from "../../types";
 import { api } from "../../services/tauriApi";
 import { ApplicationProfiles } from "./ApplicationProfiles";
@@ -42,7 +43,6 @@ interface Props {
   runtimeDownloadActive: boolean;
   runtimeDownloadError: string | null;
   onInstallRuntime: () => void;
-  onRemoveRuntime: () => void;
 }
 
 const STYLE_OPTIONS: { value: TranscriptStyle; label: string }[] = [
@@ -51,6 +51,16 @@ const STYLE_OPTIONS: { value: TranscriptStyle; label: string }[] = [
   { value: "decisive", label: "Decisive" },
   { value: "email", label: "Email" },
   { value: "chat", label: "Chat" },
+];
+
+const TRANSCRIPT_FORMATS: { value: TranscriptFormat; label: string }[] = [
+  { value: "off", label: "Off / Existing behavior" },
+  { value: "auto", label: "Auto · recommended" },
+  { value: "natural", label: "Natural" },
+  { value: "technical", label: "Technical" },
+  { value: "brainstorm", label: "Brainstorm" },
+  { value: "meeting", label: "Meeting Notes" },
+  { value: "steps", label: "Steps" },
 ];
 
 const TIER_ICONS: Record<IntelligenceTier, React.ReactNode> = {
@@ -72,7 +82,6 @@ export const CleanupPage: React.FC<Props> = ({
   runtimeDownloadActive,
   runtimeDownloadError,
   onInstallRuntime,
-  onRemoveRuntime: _onRemoveRuntime,
 }) => {
   const { flowStatus, intelligenceTiers, systemMetrics } = intelligence;
 
@@ -85,21 +94,25 @@ export const CleanupPage: React.FC<Props> = ({
   const [previewNotice, setPreviewNotice] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [removing, setRemoving] = useState<IntelligenceTier | null>(null);
+  const [formatInstructionDraft, setFormatInstructionDraft] = useState(
+    settings.custom_format_instructions ?? "",
+  );
+  const [formatSaving, setFormatSaving] = useState(false);
+  const [formatError, setFormatError] = useState<string | null>(null);
 
   const tier: IntelligenceTier = settings.intelligence_tier ?? "smart_flow";
+  const transcriptFormat = settings.transcript_format ?? "off";
+  const formattingEnabled = transcriptFormat !== "off";
+
+  useEffect(() => {
+    setFormatInstructionDraft(settings.custom_format_instructions ?? "");
+  }, [settings.custom_format_instructions]);
 
   const hasGpu = Boolean(systemMetrics?.gpu_present || modelStatus?.gpu_available);
   const totalRamMb = systemMetrics?.total_ram_mb ?? 0;
   const lowSpecPc = !hasGpu || totalRamMb < 8 * 1024;
 
-  const tierState = (t: IntelligenceTier): IntelligenceTierState | null => {
-    if (t === "raw_verbatim") {
-      return { tier: t, model_id: "none", installed: true, downloading: false };
-    }
-    return intelligenceTiers?.find((x) => x.tier === t) ?? null;
-  };
-
-  const isInstalled = (t: IntelligenceTier) => tierState(t)?.installed ?? false;
+  const isInstalled = (t: IntelligenceTier) => tierState(intelligenceTiers, t)?.installed ?? false;
 
   // The runtime is a single binary that gates every non-raw tier. We
   // know a tier is "weights only" when its GGUF is on disk (per the
@@ -108,18 +121,66 @@ export const CleanupPage: React.FC<Props> = ({
   const runtimeInstalled = flowStatus?.runtime_installed ?? false;
   const isWeightsOnly = (t: IntelligenceTier) => {
     if (t === "raw_verbatim") return false;
-    const ggufInstalled = tierState(t)?.weights_installed ?? tierState(t)?.installed ?? false;
+    const state = tierState(intelligenceTiers, t);
+    const ggufInstalled = state?.weights_installed ?? state?.installed ?? false;
     if (!ggufInstalled) return false;
     return !runtimeInstalled;
   };
 
   const isDownloading = (t: IntelligenceTier) => activeDownloadTiers.has(t);
 
-  const downloadProgress = (t: IntelligenceTier) =>
-    isDownloading(t) && intelligenceDownload?.tier === t ? intelligenceDownload.progress_pct : 0;
+  const selectedMode = settings.modes?.find(
+    (mode) => mode.id === settings.default_mode_id && mode.enabled,
+  );
+  const previewMode = selectedMode?.id !== "dictation" ? selectedMode : undefined;
+  const formattingTier = previewMode?.intelligence_tier ?? tier;
+  const formattingUnavailable = formattingEnabled
+    ? previewMode?.dictation_mode === "coding"
+      ? "Literal Coding mode keeps code unchanged and skips AI formatting."
+      : previewMode &&
+          (previewMode.intelligence_tier === "raw_verbatim" || previewMode.cleanup_level === "raw")
+        ? `The ${previewMode.name} mode is set to No LLM or Raw cleanup, so intelligent formatting is paused.`
+        : formattingTier === "raw_verbatim"
+          ? "Select Qwen3.5 0.8B or Qwen3.5 2B in Cleanup models to enable AI formatting. Reflow will not change your model selection automatically."
+          : isWeightsOnly(formattingTier)
+            ? "The selected model weights are present, but the llama.cpp runtime is missing. Install the runtime in Cleanup models to use AI formatting."
+            : !isInstalled(formattingTier)
+              ? "The selected local model is not installed. Formatting will use deterministic cleanup until it is available."
+              : null
+    : null;
 
+  const updateTranscriptFormat = async (value: TranscriptFormat) => {
+    setFormatError(null);
+    try {
+      if (!(await onUpdateSettings({ transcript_format: value }))) {
+        setFormatError("Could not save the formatting preference. Try again.");
+      }
+    } catch {
+      setFormatError("Could not save the formatting preference. Try again.");
+    }
+  };
+
+  const saveCustomFormatInstruction = async (value: string) => {
+    setFormatSaving(true);
+    setFormatError(null);
+    try {
+      if (!(await onUpdateSettings({ custom_format_instructions: value.slice(0, 500) }))) {
+        setFormatError("Could not save the custom instruction. Try again.");
+      }
+    } catch {
+      setFormatError("Could not save the custom instruction. Try again.");
+    } finally {
+      setFormatSaving(false);
+    }
+  };
+
+  const eventForTier = (t: IntelligenceTier) =>
+    intelligence.intelligenceDownloads?.[t] ??
+    (intelligenceDownload?.tier === t ? intelligenceDownload : null);
+  const downloadProgress = (t: IntelligenceTier) =>
+    isDownloading(t) ? (eventForTier(t)?.progress_pct ?? 0) : 0;
   const downloadSpeed = (t: IntelligenceTier) =>
-    isDownloading(t) && intelligenceDownload?.tier === t ? intelligenceDownload.speed_mbps : 0;
+    isDownloading(t) ? (eventForTier(t)?.speed_mbps ?? 0) : 0;
 
   const handleSelectTier = (t: IntelligenceTier) =>
     onUpdateSettings(llmSelectionPatch(settings, flowModelForTier(t)));
@@ -127,7 +188,7 @@ export const CleanupPage: React.FC<Props> = ({
   const handleInstall = async (t: IntelligenceTier) => {
     if (t === "raw_verbatim") return;
     if (activeDownloadTiers.has(t)) return;
-    if (tierState(t)?.installed) return;
+    if (tierState(intelligenceTiers, t)?.installed) return;
     setInstalling(t);
     try {
       await api.installIntelligenceModel(t);
@@ -165,7 +226,7 @@ export const CleanupPage: React.FC<Props> = ({
     setPreviewLatency(null);
     setPreviewNotice(null);
     try {
-      const result = await api.previewTierCleanup(sample, tier, settings.style);
+      const result = await api.previewTierCleanup(sample, tier, settings.style, previewMode);
       setPreviewOut(result.text);
       setPreviewLatency(result.latency_ms);
       setPreviewModel(result.model_used);
@@ -204,6 +265,88 @@ export const CleanupPage: React.FC<Props> = ({
         Cleanup keeps your meaning, numbers and technical identifiers. If the model is unavailable
         or its edit is rejected, Reflow keeps the rule-cleaned transcript and reports the reason.
       </p>
+      <div className="rounded-xl border border-line bg-surface p-3.5 space-y-3">
+        <div className="space-y-1">
+          <label htmlFor="transcript-format" className="text-sm font-semibold text-ink">
+            Intelligent Formatting
+          </label>
+          <p id="transcript-format-help" className="text-xs text-muted leading-relaxed">
+            Uses one pass with the selected local LLM. Off keeps your current cleanup behavior.
+          </p>
+        </div>
+        <select
+          id="transcript-format"
+          className="field w-full"
+          value={transcriptFormat}
+          aria-describedby="transcript-format-help"
+          onChange={(event) => {
+            void updateTranscriptFormat(event.target.value as TranscriptFormat);
+          }}
+        >
+          {TRANSCRIPT_FORMATS.map((format) => (
+            <option key={format.value} value={format.value}>
+              {format.label}
+            </option>
+          ))}
+        </select>
+        {formattingUnavailable && (
+          <p role="status" className="text-xs text-warning leading-relaxed">
+            {formattingUnavailable}
+          </p>
+        )}
+        <details>
+          <summary className="text-sm text-ink cursor-pointer">
+            Custom formatting instruction
+          </summary>
+          <div className="space-y-2.5 pt-2">
+            <textarea
+              aria-label="Custom formatting instruction"
+              className="field w-full min-h-[72px] resize-y"
+              value={formatInstructionDraft}
+              maxLength={500}
+              onChange={(event) => setFormatInstructionDraft(event.target.value)}
+              placeholder="Add a short preference for structure or presentation. Factual safeguards always apply."
+            />
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-2xs text-muted">
+                {Array.from(formatInstructionDraft).length}/500 characters
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="btn btn-ghost !py-1.5 !px-2.5 !text-xs"
+                  disabled={formatSaving || !settings.custom_format_instructions}
+                  onClick={() => {
+                    setFormatInstructionDraft("");
+                    void saveCustomFormatInstruction("");
+                  }}
+                >
+                  Restore default
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary !py-1.5 !px-2.5 !text-xs"
+                  disabled={formatSaving}
+                  onClick={() => {
+                    void saveCustomFormatInstruction(formatInstructionDraft);
+                  }}
+                >
+                  {formatSaving ? "Saving…" : "Save instruction"}
+                </button>
+              </div>
+            </div>
+            <p className="text-2xs text-muted leading-relaxed">
+              Changes presentation only. It cannot change facts, follow dictated instructions or
+              affect Raw/Verbatim and literal Coding modes.
+            </p>
+          </div>
+        </details>
+        {formatError && (
+          <p role="alert" className="text-xs text-danger leading-relaxed">
+            {formatError}
+          </p>
+        )}
+      </div>
       {runtimeDownloadError && (
         <p role="alert" className="text-sm text-danger">
           Runtime installation failed: {runtimeDownloadError}
@@ -343,7 +486,15 @@ export const CleanupPage: React.FC<Props> = ({
                         <div className="flex items-center justify-between text-xs">
                           <span className="inline-flex items-center gap-1.5 text-accent font-medium">
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            Downloading {meta.modelFile}
+                            {eventForTier(id)?.phase === "checking_runtime"
+                              ? "Checking writing runtime…"
+                              : eventForTier(id)?.phase === "verifying"
+                                ? "Verifying model…"
+                                : eventForTier(id)?.phase === "committing"
+                                  ? "Finishing setup…"
+                                  : eventForTier(id)?.phase === "cancelling"
+                                    ? "Stopping download…"
+                                    : `Downloading ${meta.modelFile}`}
                           </span>
                           <span className="text-muted">
                             {progress}% · {speed.toFixed(1)} MB/s
@@ -357,19 +508,63 @@ export const CleanupPage: React.FC<Props> = ({
                             }}
                           />
                         </div>
+                        {eventForTier(id)?.attempt_id &&
+                          eventForTier(id)?.phase !== "committing" && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost !py-1.5 !px-3 !text-xs"
+                              disabled={eventForTier(id)?.phase === "cancelling"}
+                              onClick={() => {
+                                void api
+                                  .cancelIntelligenceDownload(id, eventForTier(id)!.attempt_id!)
+                                  .catch((failure) =>
+                                    intelligence.notifyToast(
+                                      "error",
+                                      `Could not cancel the download: ${String(failure)}`,
+                                    ),
+                                  );
+                              }}
+                            >
+                              Cancel download
+                            </button>
+                          )}
                       </div>
-                    ) : isWeightsOnly(id) ? (
+                    ) : isWeightsOnly(id) || !runtimeInstalled ? (
                       <>
                         <span className="inline-flex items-center gap-1.5 text-xs text-warning font-medium">
                           <AlertTriangle className="w-3.5 h-3.5" />
-                          Weights only — runtime missing
+                          {isWeightsOnly(id)
+                            ? "Weights only — runtime missing"
+                            : "Install the writing runtime first"}
                         </span>
                         <div className="flex-1" />
                         {runtimeDownloadActive ? (
-                          <span className="inline-flex items-center gap-1.5 text-2xs text-accent font-medium">
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                            Installing runtime… {runtimeDownload?.progress_pct ?? 0}%
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1.5 text-2xs text-accent font-medium">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              {runtimeDownload?.phase === "cancelling"
+                                ? "Stopping setup…"
+                                : "Installing runtime…"}{" "}
+                              {runtimeDownload?.progress_pct ?? 0}%
+                            </span>
+                            {runtimeDownload?.attempt_id &&
+                              runtimeDownload.phase !== "activating" && (
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  disabled={runtimeDownload.phase === "cancelling"}
+                                  onClick={() => {
+                                    api
+                                      .cancelRuntimeDownload(runtimeDownload.attempt_id!)
+                                      .catch((error) =>
+                                        intelligence.notifyToast("error", String(error)),
+                                      );
+                                  }}
+                                >
+                                  Cancel runtime setup
+                                </button>
+                              )}
+                          </div>
                         ) : (
                           <button
                             type="button"
@@ -489,15 +684,22 @@ export const CleanupPage: React.FC<Props> = ({
           {previewLatency !== null && (
             <span className="text-xs text-muted">
               {previewUsed
-                ? `Cleaned in ${previewLatency}ms`
-                : `Basic cleanup · ${previewLatency}ms`}
+                ? formattingEnabled
+                  ? `LLM formatting · ${previewLatency}ms`
+                  : `Cleaned in ${previewLatency}ms`
+                : formattingEnabled
+                  ? `Deterministic fallback · ${previewLatency}ms`
+                  : `Basic cleanup · ${previewLatency}ms`}
               {previewUsed && previewModel && previewModel !== "none" && ` with ${previewModel}`}
             </span>
           )}
         </div>
         {previewNotice && (
           <p role="status" className="text-xs text-warning leading-relaxed">
-            AI rewrite was not applied. {previewNotice}
+            {formattingEnabled
+              ? "Intelligent formatting was not applied."
+              : "AI rewrite was not applied."}{" "}
+            {previewNotice}
           </p>
         )}
         <div className="rounded-lg bg-surface-2 border border-line px-3 py-2.5">

@@ -11,6 +11,7 @@ import {
   AppSettings,
   isModelLoading,
   ModelStatus,
+  tierState,
 } from "./index";
 
 describe("normalizeSettings", () => {
@@ -43,6 +44,18 @@ describe("normalizeSettings", () => {
     expect(normalized.memory_policy).toEqual(DEFAULT_MEMORY_POLICY);
     expect(normalized.preset).toBe("auto");
     expect(normalized.audio_retention).toBe("disabled");
+    expect(normalized.transcript_format).toBe("off");
+    expect(normalized.custom_format_instructions).toBe("");
+  });
+
+  it("keeps formatting preferences bounded and preserves explicit selections", () => {
+    const normalized = normalizeSettings({
+      ...minimalSettings,
+      transcript_format: "steps",
+      custom_format_instructions: `  ${"x".repeat(501)}  `,
+    });
+    expect(normalized.transcript_format).toBe("steps");
+    expect(normalized.custom_format_instructions).toHaveLength(500);
   });
 
   it("preserves partial nested configuration while backfilling missing fields", () => {
@@ -189,5 +202,22 @@ describe("cleanup and tier helpers", () => {
     expect(tierForCleanupLevel("light")).toBe("smart_flow");
     expect(tierForCleanupLevel("medium")).toBe("smart_flow");
     expect(tierForCleanupLevel("high")).toBe("deep_context");
+  });
+
+  it("reads raw_verbatim as installed and other tiers from the server list", () => {
+    expect(tierState(undefined, "raw_verbatim")).toMatchObject({
+      tier: "raw_verbatim",
+      installed: true,
+    });
+    const tiers = [
+      {
+        tier: "smart_flow" as const,
+        model_id: "qwen3.5-0.8b" as const,
+        installed: false,
+        downloading: true,
+      },
+    ];
+    expect(tierState(tiers, "smart_flow")).toEqual(tiers[0]);
+    expect(tierState(tiers, "deep_context")).toBeNull();
   });
 });

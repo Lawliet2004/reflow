@@ -166,7 +166,10 @@ function FileTranscriptionView({
   const preparing = running && !job?.total_s;
   let progressText = `${Math.round(job?.done_s ?? 0)} of ${Math.round(job?.total_s ?? 0)} seconds transcribed`;
   if (cancelRequested) progressText = "Stopping the import…";
-  else if (preparing) progressText = "Preparing audio…";
+  else if (preparing)
+    progressText = job?.done_s
+      ? `${Math.round(job.done_s)} seconds transcribed…`
+      : "Preparing audio…";
   useEffect(() => {
     if (!isTauri()) return;
     let alive = true;
@@ -231,7 +234,7 @@ function FileTranscriptionView({
           disabled={locked}
           onChange={(e) => setAllowLarge(e.target.checked)}
         />
-        Allow files larger than 100 MB (uses more memory)
+        Allow files larger than 100 MB (takes longer to process)
       </label>
       {running ? (
         <div role="status" className="space-y-2">
@@ -270,6 +273,11 @@ function FileTranscriptionView({
             Open completed transcript in History
           </button>
         </div>
+      )}
+      {job?.warning && (
+        <p role="status" className="text-sm text-muted">
+          {job.warning}
+        </p>
       )}
       {cancelled && (
         <p role="status" className="text-xs text-muted">

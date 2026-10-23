@@ -75,7 +75,7 @@ class NetworkPolicyTests(unittest.TestCase):
             model = pathlib.Path(directory, "model")
             with mock.patch.dict(os.environ, {"REFLOW_NETWORK_POLICY": str(policy)}), \
                     mock.patch.object(httpx.HTTPTransport, "handle_request", side_effect=transport), \
-                    mock.patch.object(runtime.time, "sleep") as sleep, \
+                    mock.patch.object(runtime._DOWNLOAD_CANCEL, "wait", return_value=False) as sleep, \
                     mock.patch.object(runtime, "log_err"):
                 runtime.install_network_guard()
                 runtime.download_snapshot_with_retry("fixture/model", revision=revision,
@@ -91,7 +91,7 @@ class NetworkPolicyTests(unittest.TestCase):
         import huggingface_hub
         with mock.patch.object(runtime, "require_network_online"), \
                 mock.patch.object(huggingface_hub, "snapshot_download", side_effect=httpx.ConnectError("temporary")) as download, \
-                mock.patch.object(runtime.time, "sleep") as sleep, mock.patch.object(runtime, "log_err"):
+                mock.patch.object(runtime._DOWNLOAD_CANCEL, "wait", return_value=False) as sleep, mock.patch.object(runtime, "log_err"):
             with self.assertRaises(httpx.ConnectError):
                 runtime.download_snapshot_with_retry("fixture/model")
             self.assertEqual(download.call_count, 3)
@@ -103,7 +103,7 @@ class NetworkPolicyTests(unittest.TestCase):
                 policy.write_text('{"offline_mode":true}', encoding="utf-8")
             with mock.patch.dict(os.environ, {"REFLOW_NETWORK_POLICY": str(policy)}), \
                     mock.patch.object(huggingface_hub, "snapshot_download", side_effect=httpx.ConnectError("temporary")) as download, \
-                    mock.patch.object(runtime.time, "sleep", side_effect=airplane_mode), \
+                    mock.patch.object(runtime._DOWNLOAD_CANCEL, "wait", side_effect=airplane_mode), \
                     mock.patch.object(runtime, "log_err"):
                 with self.assertRaisesRegex(RuntimeError, "Offline mode"):
                     runtime.download_snapshot_with_retry("fixture/model")
@@ -120,7 +120,7 @@ class NetworkPolicyTests(unittest.TestCase):
         for error in errors:
             with self.subTest(error=error), mock.patch.object(runtime, "require_network_online"), \
                     mock.patch.object(huggingface_hub, "snapshot_download", side_effect=error) as download, \
-                    mock.patch.object(runtime.time, "sleep") as sleep:
+                    mock.patch.object(runtime._DOWNLOAD_CANCEL, "wait", return_value=False) as sleep:
                 with self.assertRaises(type(error)):
                     runtime.download_snapshot_with_retry("fixture/model")
                 self.assertEqual(download.call_count, 1)

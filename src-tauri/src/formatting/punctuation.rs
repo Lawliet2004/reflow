@@ -119,9 +119,15 @@ impl PunctuationInferer {
         }
 
         // Check if begins or trailing clause begins with common question words
+        let quoted = quoted_spans(trimmed);
         let sentence_start = trimmed
             .char_indices()
-            .filter(|(index, ch)| *ch == '\n' || is_sentence_boundary(trimmed, *index, *ch))
+            .filter(|(index, ch)| {
+                (*ch == '\n' || is_sentence_boundary(trimmed, *index, *ch))
+                    && !quoted
+                        .iter()
+                        .any(|(start, end)| start <= index && index < end)
+            })
             .map(|(index, ch)| index + ch.len_utf8())
             .next_back()
             .unwrap_or(0);
@@ -156,7 +162,20 @@ impl PunctuationInferer {
             || last_clause.starts_with("are we ")
             || last_clause.starts_with("kya ");
 
-        if is_question {
+        let inside_closing_quote = trimmed.trim_end_matches(['"', '\'', '”', '’']);
+        let already_closed = inside_closing_quote.len() < trimmed.len()
+            && inside_closing_quote.ends_with(['.', '!', '?'])
+            && quoted.iter().any(|(start, end)| {
+                *start < inside_closing_quote.len()
+                    && *end == trimmed.len()
+                    && matches!(
+                        (trimmed[*start..].chars().next(), last_char),
+                        (Some('"'), '"') | (Some('\''), '\'') | (Some('“'), '”') | (Some('‘'), '’')
+                    )
+            });
+        if already_closed && (!is_question || inside_closing_quote.ends_with('?')) {
+            trimmed.to_string()
+        } else if is_question {
             format!("{}?", trimmed)
         } else {
             format!("{}.", trimmed)
@@ -374,6 +393,30 @@ mod tests {
         let input = "Can you check the deployment status";
         let inferred = PunctuationInferer::infer_terminal_punctuation(input);
         assert_eq!(inferred, "Can you check the deployment status?");
+    }
+
+    #[test]
+    fn closed_quotations_keep_terminal_punctuation_and_outer_questions() {
+        for (input, expected) in [
+            ("He shouted, 'No, no, no!'", "He shouted, 'No, no, no!'"),
+            ("She said \"Stop.\"", "She said \"Stop.\""),
+            ("They asked, “Why?”", "They asked, “Why?”"),
+            ("Can you say 'No!'", "Can you say 'No!'?"),
+            ("Can you say \"hello\"", "Can you say \"hello\"?"),
+            ("Can you ask 'Why?'", "Can you ask 'Why?'"),
+            ("He said 'hello'", "He said 'hello'."),
+            ("She said 'No!\"", "She said 'No!\"."),
+            (
+                "This ends in a stray quote!\"",
+                "This ends in a stray quote!\".",
+            ),
+        ] {
+            assert_eq!(
+                PunctuationInferer::infer_terminal_punctuation(input),
+                expected,
+                "{input}"
+            );
+        }
     }
 
     #[test]

@@ -13,6 +13,8 @@ export type AppState =
 export type ProcessingMode = "raw" | "smart" | "flow";
 export type DictationMode = "normal" | "coding" | "developer_prompt" | "email" | "chat" | "notes";
 export type CleanupLevel = "raw" | "light" | "medium" | "high";
+export type TranscriptFormat =
+  "off" | "auto" | "natural" | "technical" | "brainstorm" | "meeting" | "steps";
 export type FlowModel = "qwen3.5-0.8b" | "qwen3.5-2b" | "none";
 export type IntelligenceTier = "raw_verbatim" | "smart_flow" | "deep_context";
 
@@ -271,6 +273,10 @@ export interface AppSettings {
   hud_opacity?: number;
   developer_mode: boolean;
   cleanup_level: CleanupLevel;
+  /** Optional LLM structure preference; absent legacy values mean "off". */
+  transcript_format?: TranscriptFormat;
+  /** Style-only instructions, capped at 500 characters by both app layers. */
+  custom_format_instructions?: string;
   intelligence_tier: IntelligenceTier;
   flow_model: FlowModel;
   style: TranscriptStyle;
@@ -726,14 +732,6 @@ export interface RuntimePlan {
   error: string | null;
 }
 
-export function isAsrOnly(profile: ResolvedProfile): boolean {
-  return profile.refinement_model === null;
-}
-
-export function findReason(profile: ResolvedProfile, code: string): ProfileReason | undefined {
-  return profile.reasons.find((r) => r.code === code);
-}
-
 /** The full, honest picture of the machine. */
 export interface Capabilities {
   gpus: GpuInfo[];
@@ -791,6 +789,8 @@ export interface DesktopIntegrationStatus {
 }
 
 export interface InjectionFeedback {
+  session_id?: number;
+  tier_status?: string | null;
   pasted: boolean;
   fallback_copy: boolean;
   paste_chord: string;
@@ -799,6 +799,7 @@ export interface InjectionFeedback {
 }
 
 export interface ModelStatus {
+  selected_model?: string;
   installed: boolean;
   loaded: boolean;
   version: string;
@@ -847,6 +848,7 @@ export interface DownloadedModel {
 }
 
 export interface FlowStatus {
+  runtime_download?: RuntimeDownloadEvent | null;
   active_tier: IntelligenceTier;
   active_model: FlowModel;
   /** True when the GGUF weights for the active flow model are on disk. */
@@ -866,6 +868,30 @@ export interface FlowStatus {
   vram_used_mb?: number;
 }
 
+export interface IntelligenceDownloadEvent {
+  tier: IntelligenceTier;
+  progress_pct: number;
+  speed_mbps: number;
+  phase:
+    | "checking_runtime"
+    | "starting"
+    | "downloading"
+    | "verifying"
+    | "committing"
+    | "cancelling"
+    | "cancelled"
+    | "complete"
+    | "error";
+  error?: string | null;
+  filename?: string;
+  attempt_id?: string;
+  revision?: number;
+  model_revision?: string;
+  runtime_generation?: string;
+  downloaded_bytes?: number;
+  total_bytes?: number;
+}
+
 /** Per-tier install state. Returned by `get_intelligence_tiers`. */
 export interface IntelligenceTierState {
   tier: IntelligenceTier;
@@ -878,14 +904,38 @@ export interface IntelligenceTierState {
   installed: boolean;
   /** True while a download is in flight for this tier. */
   downloading: boolean;
+  download?: IntelligenceDownloadEvent | null;
+}
+
+/** Per-tier install state, with raw_verbatim always ready because it needs no model. */
+export function tierState(
+  tiers: IntelligenceTierState[] | null | undefined,
+  tier: IntelligenceTier,
+): IntelligenceTierState | null {
+  if (tier === "raw_verbatim") {
+    return { tier, model_id: "none", installed: true, downloading: false };
+  }
+  return tiers?.find((t) => t.tier === tier) ?? null;
 }
 
 /** Phases of the `llama-server` runtime downloader. */
 export type RuntimeDownloadPhase =
-  "starting" | "downloading" | "verifying" | "extracting" | "complete" | "error";
+  | "starting"
+  | "downloading"
+  | "verifying"
+  | "extracting"
+  | "activating"
+  | "cancelling"
+  | "cancelled"
+  | "complete"
+  | "error";
 
 /** Payload for the `runtime:download-progress` event. */
 export interface RuntimeDownloadEvent {
+  attempt_id?: string;
+  revision?: number;
+  downloaded_bytes?: number;
+  total_bytes?: number;
   /** Pinned llama.cpp release tag, e.g. "b10621". */
   version: string;
   progress_pct: number;
@@ -977,12 +1027,6 @@ export function inferCleanupLevel(
   return "light";
 }
 
-export function processingModeForCleanup(level: CleanupLevel): ProcessingMode {
-  if (level === "raw") return "raw";
-  if (level === "medium" || level === "high") return "flow";
-  return "smart";
-}
-
 export const DEFAULT_ASR_SETTINGS: AsrSettings = {
   runtime: "python",
   python_path: null,
@@ -996,7 +1040,7 @@ export const DEFAULT_REFINEMENT_SETTINGS: RefinementSettings = {
   model: "qwen3.5-0.8b",
   device: "auto",
   gpu_layers: -1,
-  context_size: 1024,
+  context_size: 4096,
   keep_warm: true,
   deadline_ms: 12_000,
 };
@@ -1024,6 +1068,17 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   const intelligence_tier =
     settings.intelligence_tier ?? tierForCleanupLevel(inferCleanupLevel(settings));
   const flow_model = flowModelForTier(intelligence_tier);
+  const transcriptFormat = [
+    "off",
+    "auto",
+    "natural",
+    "technical",
+    "brainstorm",
+    "meeting",
+    "steps",
+  ].includes(settings.transcript_format ?? "off")
+    ? (settings.transcript_format ?? "off")
+    : "off";
   return {
     ...settings,
     sounds_enabled: settings.sounds_enabled ?? true,
@@ -1058,6 +1113,10 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     snippets: settings.snippets ?? [],
     audio_retention: settings.audio_retention ?? "disabled",
     cleanup_level: inferCleanupLevel(settings),
+    transcript_format: transcriptFormat as TranscriptFormat,
+    custom_format_instructions: Array.from((settings.custom_format_instructions ?? "").trim())
+      .slice(0, 500)
+      .join(""),
     intelligence_tier,
     flow_model,
     preset: settings.preset ?? "auto",
@@ -1131,6 +1190,7 @@ export interface InjectionResult {
 }
 
 export interface FileProgress {
+  warning?: string | null;
   job_id: string;
   done_s: number;
   total_s: number;
@@ -1175,6 +1235,7 @@ export interface PythonRuntimeStatus {
   /** "cu130" | "cpu" | "default" | "none" — "none" means no torch wheel for
    * this platform (Intel macOS): only the Zipformer speech path is set up. */
   torch_variant: string;
+  progress?: PythonSetupProgress | null;
 }
 
 export type PythonSetupPhase =
@@ -1184,11 +1245,16 @@ export type PythonSetupPhase =
   | "installing_torch"
   | "installing_packages"
   | "verifying"
+  | "activating"
   | "complete"
   | "error"
   | "cancelled";
 
 export interface PythonSetupProgress {
+  attempt_id?: string;
+  revision?: number;
+  model?: string;
+  device?: string;
   phase: PythonSetupPhase;
   progress_pct?: number;
   detail?: string;

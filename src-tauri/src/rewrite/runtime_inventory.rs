@@ -190,60 +190,13 @@ pub fn write_manifest(root: &Path, manifest: &RuntimeManifest) -> Result<(), Str
 }
 
 pub fn write_pointer(root: &Path, pointer: &RuntimePointer) -> Result<(), String> {
-    use std::io::Write;
     safe_name(&pointer.current)?;
     if let Some(previous) = &pointer.previous {
         safe_name(previous)?;
     }
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    let temporary = root.join(format!(".runtime-pointer-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(|e| e.to_string())?;
-        file.write_all(&serde_json::to_vec_pretty(pointer).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        drop(file);
-        atomic_replace(&temporary, &root.join(POINTER))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    result
-}
-
-#[cfg(windows)]
-fn atomic_replace(source: &Path, target: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-    }
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    // Both names are NUL-terminated and valid for the duration of the call.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 1 | 8) } != 0 {
-            return Ok(());
-        }
-        let error = std::io::Error::last_os_error();
-        // Antivirus and transient file readers can deny replacement. Retrying
-        // preserves the previous pointer; deleting it would break atomicity.
-        if matches!(error.raw_os_error(), Some(5 | 32 | 33)) && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-        return Err(format!("Could not atomically activate runtime: {error}"));
-    }
-}
-#[cfg(not(windows))]
-fn atomic_replace(source: &Path, target: &Path) -> Result<(), String> {
-    std::fs::rename(source, target)
+    let bytes = serde_json::to_vec_pretty(pointer).map_err(|e| e.to_string())?;
+    crate::platform::persistence::write_atomic(&root.join(POINTER), &bytes)
         .map_err(|e| format!("Could not atomically activate runtime: {e}"))
 }
 

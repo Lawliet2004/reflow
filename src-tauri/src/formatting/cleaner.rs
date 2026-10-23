@@ -20,6 +20,14 @@ impl TextCleaner {
     }
 
     fn remove_unquoted_fillers(text: &str, at_start: bool, at_end: bool) -> String {
+        let text = if at_start {
+            Regex::new(r"(?i)^(?:so[\s,]+){2,}(i|we)\b")
+                .unwrap()
+                .replace(text, "$1")
+                .into_owned()
+        } else {
+            text.to_owned()
+        };
         // Fillers that carry their own trailing separator. Handled first and
         // as one unit, because matching the bare word first would strip the
         // word and leave the separator behind.
@@ -28,7 +36,7 @@ impl TextCleaner {
         let filler_with_sep =
             Regex::new(r"(?i)\b(um+|uhm+|uh+|erm|er+|ah+|hmm+)[ \t]*[,;:]+[ \t]*").unwrap();
         let mut out = filler_with_sep
-            .replace_all(text, filler_replacement)
+            .replace_all(&text, filler_replacement)
             .to_string();
 
         // Bare fillers. The leading `\s*` keeps "to ah do" from collapsing

@@ -536,6 +536,8 @@ pub struct SystemMetrics {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelStatus {
+    #[serde(default)]
+    pub selected_model: String,
     pub installed: bool,
     pub loaded: bool,
     pub version: String,
@@ -584,6 +586,7 @@ impl Default for ModelStatus {
         // and loaded, or every consumer that falls back to it (web preview,
         // tests, early startup) reports a healthy engine that does not exist.
         Self {
+            selected_model: String::new(),
             installed: false,
             loaded: false,
             version: String::new(),
@@ -608,6 +611,8 @@ impl Default for ModelStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InjectionFeedback {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
     pub pasted: bool,
     pub fallback_copy: bool,
     pub paste_chord: String,

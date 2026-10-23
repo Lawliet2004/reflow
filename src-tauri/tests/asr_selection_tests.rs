@@ -32,7 +32,7 @@ fn phonon_keeps_its_own_engine_under_every_preset() {
             "cpu",
             "auto",
             &|_| true,
-            &Capabilities::default(),
+            &caps_with_free_vram(0.0),
             &no_measurements,
         );
         assert_eq!(chosen.model_id, "phonon-2");
@@ -64,7 +64,7 @@ fn phonon_uses_cuda_when_it_fits_and_cpu_when_it_does_not() {
         "cpu",
         "int4",
         &|_| true,
-        &Capabilities::default(),
+        &caps_with_free_vram(0.0),
         &no_measurements,
     );
     assert!(chosen.error.is_some());
@@ -99,7 +99,7 @@ fn zipformer_stays_cpu_int8_under_every_preset_and_runtime() {
 }
 
 #[test]
-fn zipformer_explains_ignored_gpu_and_rejects_forced_precision() {
+fn zipformer_rejects_gpu_only_and_forced_precision() {
     let chosen = select_asr_load(
         Preset::Custom,
         "zipformer-20m",
@@ -110,9 +110,9 @@ fn zipformer_explains_ignored_gpu_and_rejects_forced_precision() {
         &no_measurements,
     );
     assert_eq!(chosen.device, Device::Cpu);
-    assert!(
-        chosen.downgrade.is_some(),
-        "an ignored GPU request is explained"
+    assert_eq!(
+        chosen.error.as_ref().map(|e| e.code.as_str()),
+        Some("gpu_required")
     );
 
     let chosen = select_asr_load(
@@ -133,6 +133,7 @@ fn zipformer_explains_ignored_gpu_and_rejects_forced_precision() {
 /// A 4 GB card with `free_mb` actually available.
 fn caps_with_free_vram(free_mb: f32) -> Capabilities {
     let mut caps = Capabilities::default();
+    caps.ram.available_mb = 32000.0;
     caps.gpus.push(GpuInfo {
         index: 0,
         name: "NVIDIA GeForce RTX 2050".into(),

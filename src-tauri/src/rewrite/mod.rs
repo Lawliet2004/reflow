@@ -1,4 +1,5 @@
 pub mod client;
+pub mod model_install;
 pub mod prompt;
 pub mod runtime_install;
 pub mod runtime_inventory;

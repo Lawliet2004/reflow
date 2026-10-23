@@ -1,10 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { CleanupPage } from "./CleanupPage";
 import { api } from "../../services/tauriApi";
 import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
 
 async function renderPage() {
+  const onUpdateSettings = vi.fn().mockResolvedValue(true);
   const intelligence: IntelligenceHub = {
     flowStatus: null,
     systemMetrics: null,
@@ -24,7 +25,7 @@ async function renderPage() {
     <CleanupPage
       settings={await api.getSettings()}
       intelligence={intelligence}
-      onUpdateSettings={vi.fn().mockResolvedValue(true)}
+      onUpdateSettings={onUpdateSettings}
       modelStatus={null}
       intelligenceDownload={null}
       activeDownloadTiers={new Set()}
@@ -32,10 +33,39 @@ async function renderPage() {
       runtimeDownloadActive={false}
       runtimeDownloadError={null}
       onInstallRuntime={vi.fn()}
-      onRemoveRuntime={vi.fn()}
     />,
   );
+  return onUpdateSettings;
 }
+
+it("keeps existing behavior off until the user enables intelligent formatting", async () => {
+  await renderPage();
+  expect(screen.getByLabelText("Intelligent Formatting")).toHaveValue("off");
+  fireEvent.change(screen.getByLabelText("Intelligent Formatting"), {
+    target: { value: "auto" },
+  });
+});
+
+it("persists a selected formatting mode without changing the model setting", async () => {
+  const update = await renderPage();
+  fireEvent.change(screen.getByLabelText("Intelligent Formatting"), {
+    target: { value: "auto" },
+  });
+  await waitFor(() => {
+    expect(update).toHaveBeenCalledWith({ transcript_format: "auto" });
+  });
+  expect(update).not.toHaveBeenCalledWith(
+    expect.objectContaining({ intelligence_tier: expect.anything() }),
+  );
+});
+
+it("limits custom format guidance and provides a default restore action", async () => {
+  await renderPage();
+  fireEvent.click(screen.getByText("Custom formatting instruction"));
+  const instruction = screen.getByLabelText("Custom formatting instruction");
+  expect(instruction).toHaveAttribute("maxLength", "500");
+  expect(screen.getByRole("button", { name: "Restore default" })).toBeDisabled();
+});
 
 it("reports rule cleanup when the requested AI edit is rejected", async () => {
   vi.spyOn(api, "previewTierCleanup").mockResolvedValue({

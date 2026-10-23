@@ -13,7 +13,9 @@
 //!
 //! These tests pin the parts of that which are testable without a GPU.
 
-use reflow_lib::hotkey::hook::{hands_free_engaged, HookMode, HotkeyStateMachine};
+#[path = "../src/hotkey/gesture.rs"]
+mod gesture;
+use gesture::{Action, Gesture};
 use reflow_lib::rewrite::FlowClient;
 use reflow_lib::settings::AppSettings;
 use std::time::{Duration, Instant};
@@ -22,46 +24,33 @@ use std::time::{Duration, Instant};
 /// is what exempts the session from the stuck-key duration guard.
 #[test]
 fn double_tap_engages_hands_free() {
-    let mut sm = HotkeyStateMachine::new(350, 350);
+    let mut gesture = Gesture::default();
     let t0 = Instant::now();
-
-    // First tap: press and quick release -> waiting for a second tap.
-    sm.on_combo_down(t0);
-    sm.on_combo_up(t0 + Duration::from_millis(100));
-    assert!(
-        matches!(sm.mode, HookMode::PendingDoubleTap { .. }),
-        "a quick tap should wait for a second one, got {:?}",
-        sm.mode
+    assert_eq!(gesture.input(true, t0), vec![Action::Start(t0)]);
+    assert!(gesture
+        .input(false, t0 + Duration::from_millis(100))
+        .is_empty());
+    assert!(gesture.deadline().is_some());
+    assert_eq!(
+        gesture.input(true, t0 + Duration::from_millis(220)),
+        vec![Action::Lock]
     );
-
-    // Second tap inside the window -> locked on.
-    sm.on_combo_down(t0 + Duration::from_millis(220));
-    assert_eq!(sm.mode, HookMode::AutoLocked);
-
-    // Releasing does not stop a hands-free session.
-    sm.on_combo_up(t0 + Duration::from_millis(300));
-    assert_eq!(sm.mode, HookMode::AutoLocked);
-
-    // Tapping again ends it.
-    sm.on_combo_down(t0 + Duration::from_millis(5_000));
-    assert_eq!(sm.mode, HookMode::Idle);
+    assert!(gesture
+        .input(false, t0 + Duration::from_millis(300))
+        .is_empty());
+    assert_eq!(gesture.deadline(), None);
+    let stop = t0 + Duration::from_secs(5);
+    assert_eq!(gesture.input(true, stop), vec![Action::Stop(stop)]);
 }
 
-/// A held key still gets a duration guard, because a missed key-up would
-/// otherwise record forever.
 #[test]
 fn a_plain_hold_is_not_hands_free() {
-    let mut sm = HotkeyStateMachine::new(350, 350);
+    let mut gesture = Gesture::default();
     let t0 = Instant::now();
-    sm.on_combo_down(t0);
-    assert!(matches!(sm.mode, HookMode::Holding { .. }));
-    // Held past the double-tap window, then released: a normal hold-to-talk.
-    sm.on_combo_up(t0 + Duration::from_millis(1_200));
-    assert_eq!(sm.mode, HookMode::Idle);
-    assert!(
-        !hands_free_engaged(),
-        "a hold must not be treated as a hands-free session"
-    );
+    assert_eq!(gesture.input(true, t0), vec![Action::Start(t0)]);
+    let released = t0 + Duration::from_millis(1200);
+    assert_eq!(gesture.input(false, released), vec![Action::Stop(released)]);
+    assert_eq!(gesture.deadline(), None);
 }
 
 /// The completion budget has to scale with the context window, or a long

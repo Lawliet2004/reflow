@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::audio::AudioResampler;
 use crate::context::AppContext;
 use crate::dory::{CaptureKind, DoryEvent, Stage};
 use crate::formatting::{
@@ -254,8 +253,25 @@ pub fn postprocess_with_context(
     let wants_flow = (intent.run_llm
         || mode
             .is_some_and(|m| !m.custom_instructions.trim().is_empty() || m.translate_to.is_some()))
+        && level != CleanupLevel::Raw
         && !settings.dictation_mode.eq_ignore_ascii_case("coding")
         && !smart.is_empty();
+    let formatting_requested = settings.transcript_format != "off";
+    let formatting_block_reason = if formatting_requested
+        && !settings.dictation_mode.eq_ignore_ascii_case("coding")
+        && level != CleanupLevel::Raw
+        && !intent.run_llm
+        && !mode
+            .is_some_and(|m| !m.custom_instructions.trim().is_empty() || m.translate_to.is_some())
+    {
+        Some("Intelligent formatting needs an enabled local refinement model. Select Qwen3.5 0.8B or Qwen3.5 2B; Reflow will keep your current selection unchanged.".to_owned())
+    } else if formatting_requested && settings.dictation_mode.eq_ignore_ascii_case("coding") {
+        Some("Literal Coding mode preserves code and skips AI formatting.".to_owned())
+    } else if formatting_requested && level == CleanupLevel::Raw {
+        Some("Intelligent formatting is skipped while Raw/Verbatim cleanup is active.".to_owned())
+    } else {
+        None
+    };
 
     let formatting_ms = formatting_started.elapsed().as_millis() as u64;
 
@@ -264,7 +280,7 @@ pub fn postprocess_with_context(
             smart: smart.clone(),
             final_text: crate::formatting::snippets::apply_snippets(&smart, &settings.snippets),
             rewriter_used: false,
-            rewriter_error: None,
+            rewriter_error: formatting_block_reason,
             formatting_ms,
             rewrite_ms: None,
         };
@@ -303,6 +319,14 @@ pub fn postprocess_with_context(
             None
         }
     });
+    let formatting = if formatting_requested && task_instruction.is_none() {
+        Some((
+            settings.transcript_format.as_str(),
+            settings.custom_format_instructions.as_str(),
+        ))
+    } else {
+        None
+    };
     let (polished, used, rewriter_error) = if let Some(instruction) = task_instruction {
         match instruction.and_then(|instruction| {
             crate::rewrite::tasks::complete_task(
@@ -321,6 +345,7 @@ pub fn postprocess_with_context(
             client,
             &smart,
             &req,
+            formatting,
             &context.inputs(client.context_size),
         );
         (outcome.final_text, outcome.used, outcome.error)
@@ -517,6 +542,7 @@ async fn start_microphone_with_source_at(
     if crate::settings::AppSettings::process_is_excluded(&process, &exclusions) {
         let message = format!("Recording paused in {process}");
         ctx.bus.emit(DoryEvent::Injection(InjectionFeedback {
+            session_id: None,
             pasted: false,
             fallback_copy: false,
             paste_chord: String::new(),
@@ -790,28 +816,6 @@ pub fn validate_sample_rate(sample_rate: u32) -> Result<(), SessionError> {
         ));
     }
     Ok(())
-}
-
-pub fn push_pcm_s16le(
-    ctx: &AppContext,
-    bytes: &[u8],
-    sample_rate: u32,
-) -> Result<(), SessionError> {
-    if *ctx.state_enum.read() != AppStateEnum::Recording {
-        return Err(SessionError::other("Not recording"));
-    }
-    validate_sample_rate(sample_rate)?;
-    if !bytes.len().is_multiple_of(2) {
-        return Err(SessionError::other(
-            "PCM audio must contain complete 16-bit samples",
-        ));
-    }
-    let mut samples = AudioResampler::pcm16_bytes_to_f32(bytes);
-    if sample_rate != 0 && sample_rate != 16000 {
-        let mut resampler = AudioResampler::new(sample_rate, 1);
-        samples = resampler.resample_f32(&samples);
-    }
-    push_f32(ctx, &samples)
 }
 
 pub fn push_f32_owned(
@@ -1188,6 +1192,7 @@ async fn finish_stop(
                 stage: String::new(),
             }));
             ctx.bus.emit(DoryEvent::Injection(InjectionFeedback {
+                session_id: Some(session_id),
                 pasted,
                 fallback_copy: command == VoiceCommand::Undo && !pasted && !text.is_empty(),
                 paste_chord: String::new(),
@@ -1207,6 +1212,7 @@ async fn finish_stop(
             let language = ctx.asr_handle.get_detected_language();
             ctx.bus.emit(DoryEvent::SessionFinished {
                 session_id,
+                dictation: false,
                 raw: raw_transcript.clone(),
                 text: text.clone(),
                 language: language.clone(),
@@ -1270,6 +1276,7 @@ async fn finish_stop(
     let wants_flow = (session_intent == crate::dory::SessionIntent::Assistant
         || command_input.is_some()
         || ((intent.run_llm || task_requested)
+            && intent.cleanup_level != "raw"
             && !settings.dictation_mode.eq_ignore_ascii_case("coding")))
         && !processing_text.trim().is_empty();
     if wants_flow && intent.flow_model == "none" {
@@ -1569,6 +1576,7 @@ async fn finish_stop(
             .as_ref()
             .map(|err| format!("rewriter_error: {err}"));
         let feedback = InjectionFeedback {
+            session_id: Some(session_id),
             pasted: outcome.pasted,
             fallback_copy: outcome.fallback_copy,
             paste_chord: outcome.paste_chord.clone(),
@@ -1605,6 +1613,7 @@ async fn finish_stop(
                 asr_warning: asr_warning.as_deref(),
             });
             ctx.bus.emit(DoryEvent::Injection(InjectionFeedback {
+                session_id: Some(session_id),
                 pasted: false,
                 fallback_copy: false,
                 paste_chord: String::new(),
@@ -1763,6 +1772,8 @@ async fn finish_stop(
     }
     ctx.bus.emit(DoryEvent::SessionFinished {
         session_id,
+        dictation: capture_kind == CaptureKind::Microphone
+            && session_intent == crate::dory::SessionIntent::Dictate,
         raw: raw_transcript.clone(),
         text: final_transcript.clone(),
         language: language.clone(),
@@ -1902,9 +1913,6 @@ fn style_from_process(process: &str, fallback: &str) -> VoiceStyle {
     }
     if p.contains("outlook") || p.contains("mail") || p.contains("thunderbird") {
         return VoiceStyle::Email;
-    }
-    if p.contains("code") || p.contains("devenv") || p.contains("idea64") {
-        return VoiceStyle::parse(fallback);
     }
     VoiceStyle::parse(fallback)
 }
@@ -2730,6 +2738,86 @@ mod tests {
         );
         assert!(!out.final_text.contains("tauri"));
         assert!(!out.rewriter_used);
+    }
+
+    #[test]
+    fn intelligent_formatting_respects_no_llm_raw_and_literal_coding_selections() {
+        let sample = "build a backend using node js no wait actually python fast api";
+        let no_llm = crate::settings::AppSettings {
+            transcript_format: "auto".into(),
+            ..crate::settings::AppSettings::default()
+        };
+        let fallback =
+            postprocess_transcript(sample, &no_llm, "notepad", &FlowClient::new_missing());
+        assert!(!fallback.rewriter_used);
+        assert_eq!(fallback.final_text, fallback.smart);
+        assert!(fallback
+            .rewriter_error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("enabled local refinement model")));
+
+        let raw = crate::settings::AppSettings {
+            transcript_format: "technical".into(),
+            intelligence_tier: "smart_flow".into(),
+            cleanup_level: "raw".into(),
+            ..crate::settings::AppSettings::default()
+        };
+        let raw_out = postprocess_transcript(sample, &raw, "notepad", &FlowClient::new_missing());
+        assert_eq!(raw_out.final_text, sample);
+        assert!(!raw_out.rewriter_used);
+        assert!(raw_out
+            .rewriter_error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Raw/Verbatim")));
+
+        let coding = crate::settings::AppSettings {
+            transcript_format: "technical".into(),
+            intelligence_tier: "smart_flow".into(),
+            cleanup_level: "raw".into(),
+            dictation_mode: "coding".into(),
+            ..crate::settings::AppSettings::default()
+        };
+        let coding_out =
+            postprocess_transcript(sample, &coding, "notepad", &FlowClient::new_missing());
+        assert_eq!(coding_out.final_text, sample);
+        assert!(!coding_out.rewriter_used);
+        assert!(coding_out
+            .rewriter_error
+            .as_deref()
+            .is_some_and(|reason| reason.to_ascii_lowercase().contains("literal coding mode")));
+    }
+
+    #[test]
+    fn raw_cleanup_cannot_be_overridden_by_custom_mode_tasks() {
+        let settings = crate::settings::AppSettings {
+            transcript_format: "auto".into(),
+            intelligence_tier: "smart_flow".into(),
+            cleanup_level: "raw".into(),
+            ..Default::default()
+        };
+        for translation in [None, Some("bn".to_owned())] {
+            let mode = crate::settings::Mode {
+                custom_instructions: "Turn this into meeting notes".into(),
+                translate_to: translation,
+                ..Default::default()
+            };
+            let source = "um do not change getUserById in src/api.ts";
+            let result = postprocess_with_context(
+                source,
+                &settings,
+                "notepad",
+                &FlowClient::new_missing(),
+                Some(&mode),
+                &SessionContext::default(),
+            );
+            assert_eq!(result.final_text, source);
+            assert!(!result.rewriter_used);
+            assert_eq!(
+                result.rewrite_ms, None,
+                "raw must never attempt a task request"
+            );
+            assert!(result.rewriter_error.unwrap().contains("Raw/Verbatim"));
+        }
     }
 
     #[tokio::test]

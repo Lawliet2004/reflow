@@ -44,7 +44,7 @@ jobs:
       - name: Unit tests (vitest)
         run: npm run test
       - name: Packaging/platform contracts
-        run: node --test scripts/package.test.cjs scripts/kill-running.test.cjs scripts/release.test.cjs
+        run: node --test scripts/package.test.cjs scripts/kill-running.test.cjs scripts/release.test.cjs scripts/acceptance.test.cjs
       - name: Dependency security
         run: npm audit --audit-level=high
       - name: Production build
@@ -73,6 +73,7 @@ jobs:
         run: |
           python -m unittest discover -s scripts -p test_benchmark_runtime.py
           python -m unittest discover -s scripts -p test_zipformer_protocol.py
+          python -m unittest discover -s scripts -p test_runtime_packs.py
 
   rust-lint:
     runs-on: ubuntu-latest

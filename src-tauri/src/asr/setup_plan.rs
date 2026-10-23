@@ -9,6 +9,15 @@ fn version(value: Option<&str>) -> Option<(u32, u32)> {
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn supported_windows_version(value: &str) -> bool {
+    value
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 10)
+}
+
 /// Match the adapter the sidecar targets (cuda:0), rather than any faster GPU.
 /// CUDA 13 wheels require Turing+; CUDA 12.6 retains Maxwell/Pascal/Volta.
 /// Unknown hardware stays on CPU instead of downloading unusable GPU wheels.
@@ -73,26 +82,100 @@ pub(crate) fn disk_estimate(variant: TorchVariant) -> u64 {
     }
 }
 
+pub(crate) fn peak_disk_estimate(variant: TorchVariant, model: &str) -> u64 {
+    let weights = crate::profile::asr_manifest(model)
+        .map(|m| m.download_bytes)
+        .unwrap_or(0);
+    // New environment, download cache, unpacked packages and model staging.
+    // Existing generations occupy space already and are never counted as free.
+    disk_estimate(variant) * 2 + weights * 2 + 512_000_000
+}
+
+pub(crate) fn platform_compatibility(variant: TorchVariant) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        #[cfg(target_env = "musl")]
+        return Err("Automatic speech setup requires glibc Linux; musl is not supported.".into());
+        let output = std::process::Command::new("getconf")
+            .arg("GNU_LIBC_VERSION")
+            .output()
+            .map_err(|_| "Could not verify Linux libc compatibility before downloading.")?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let found =
+            version(text.split_whitespace().last()).ok_or("Could not determine glibc version.")?;
+        let minimum = if variant == TorchVariant::None_ {
+            (2, 27)
+        } else {
+            (2, 28)
+        };
+        if found < minimum {
+            return Err(format!("This speech package set requires glibc {}.{} or later. Upgrade your OS before setup.", minimum.0, minimum.1));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let minimum = if cfg!(target_arch = "x86_64") && variant == TorchVariant::None_ {
+            (10, 15)
+        } else {
+            (14, 0)
+        };
+        if version(Some(text.trim())).is_none_or(|found| found < minimum) {
+            return Err(format!(
+                "This speech runtime requires macOS {}.{} or later.",
+                minimum.0, minimum.1
+            ));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let supported =
+            sysinfo::System::os_version().is_some_and(|value| supported_windows_version(&value));
+        if !supported {
+            return Err("Automatic speech setup requires Windows 10 or later.".into());
+        }
+    }
+    if variant != TorchVariant::None_ && cpu_has_avx2() == Some(false) {
+        return Err(
+            "This speech runtime requires AVX2. Select Zipformer 20M for a lighter CPU runtime."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub async fn get_speech_setup_plan() -> Result<SpeechSetupPlan, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+pub async fn get_speech_setup_plan(
+    ctx: tauri::State<'_, crate::context::AppContext>,
+) -> Result<SpeechSetupPlan, String> {
+    let settings = ctx.settings_store.get();
+    tauri::async_runtime::spawn_blocking(move || {
         let caps = crate::capability::capabilities_uncached();
-        let variant = super::python_setup::resolved_torch_variant_for(&caps);
+        let variant = super::python_setup::variant_for(&settings.asr.model, &settings.asr.device, &caps);
         let target = target_triple();
         let avx2 = cpu_has_avx2();
         let app_dir = crate::platform::PlatformSys::get_app_dir();
         let disks = sysinfo::Disks::new_with_refreshed_list();
         let available = disks.iter().filter(|disk| app_dir.starts_with(disk.mount_point()))
             .max_by_key(|disk| disk.mount_point().as_os_str().len()).map(|disk| disk.available_space());
-        let required = disk_estimate(variant);
+        let required = peak_disk_estimate(variant, &settings.asr.model);
         let blocker = if pin_for(target).is_none() {
             Some("Automatic speech setup is not available for this operating system and processor yet.".into())
+        } else if super::dependency_locks::locked_requirements(target, super::python_setup::dependency_profile(&settings.asr.model), variant.receipt_name()).is_none() {
+            Some("No verified package set exists for this platform and device. Select Zipformer 20M or CPU.".into())
+        } else if let Err(error) = platform_compatibility(variant) {
+            Some(error)
         } else if available.is_some_and(|free| free < required + required / 10) {
             Some("There is not enough storage for speech setup. Free some space, then check again. Model downloads need additional space.".into())
         } else { None };
         let (acceleration, explanation) = match variant {
             TorchVariant::Cuda | TorchVariant::CudaLegacy => ("NVIDIA GPU", "Your graphics card and driver support GPU speech. Setup includes the matching acceleration libraries; no separate CUDA toolkit is needed."),
-            TorchVariant::None_ => ("CPU", "This Intel Mac supports Zipformer speech. The other Python speech models require Apple Silicon on macOS."),
+            TorchVariant::None_ => ("CPU", "Zipformer uses a lightweight CPU runtime. Setup does not install PyTorch or the other speech engines."),
+            _ if settings.asr.device == "cpu" => ("CPU", "You selected CPU. Setup installs processor packages even when a compatible graphics card is present."),
             _ if caps.gpus.iter().any(|gpu| gpu.vendor == GpuVendor::Amd) => ("CPU", "AMD graphics detected. Automatic AMD acceleration is not supported by this speech runtime yet. CPU dictation works without extra GPU software."),
             _ if caps.cuda.nvidia_gpu_present => ("CPU", "NVIDIA graphics detected, but a compatible GPU and driver could not be verified. Setup uses CPU packages so you can get started. You can check again after updating your graphics driver."),
             _ => ("CPU", "Speech will run on your processor. No extra graphics software is needed."),
@@ -101,7 +184,7 @@ pub async fn get_speech_setup_plan() -> Result<SpeechSetupPlan, String> {
             hardware: caps, architecture: std::env::consts::ARCH.into(), cpu_has_avx2: avx2,
             torch_variant: variant.receipt_name().into(), acceleration: acceleration.into(), explanation: explanation.into(),
             required_disk_bytes: required, available_disk_bytes: available,
-            supported_models: if variant == TorchVariant::None_ { vec!["zipformer-20m".into()] } else {
+            supported_models: if target == "x86_64-apple-darwin" { vec!["zipformer-20m".into()] } else {
                 ["0.6b", "1.7b", "phonon-2", "zipformer-20m"].map(String::from).to_vec()
             }, blocker,
         }
@@ -111,6 +194,14 @@ pub async fn get_speech_setup_plan() -> Result<SpeechSetupPlan, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_preflight_accepts_sysinfo_build_number_format() {
+        assert!(supported_windows_version("11 (22631)"));
+        assert!(supported_windows_version("10 (19045)"));
+        assert!(!supported_windows_version("6.3 (9600)"));
+        assert!(!supported_windows_version("unknown"));
+    }
+
     #[test]
     fn selects_only_compatible_gpu_packages() {
         let mut caps: Capabilities = serde_json::from_value(serde_json::json!({

@@ -70,6 +70,18 @@ test("publication requires every platform installer, with correct version and no
       JSON.stringify(buildManifest(dir, "0.3.0", platform)),
     );
   assert.deepEqual(verifyAssets(dir, "0.3.0"), names.sort());
+  const catalog = path.join(dir, "runtime-packs.json");
+  fs.writeFileSync(catalog, '{"schema":1,"fixture":true}');
+  assert.throws(() => verifyAssets(dir, "0.3.0"), /different runtime pack catalog/);
+  for (const platform of ["windows", "linux", "macos-arm64", "macos-x64"])
+    fs.writeFileSync(
+      path.join(dir, `build-${platform}.json`),
+      JSON.stringify(buildManifest(dir, "0.3.0", platform, catalog)),
+    );
+  assert.deepEqual(verifyAssets(dir, "0.3.0"), names.sort());
+  fs.appendFileSync(catalog, " ");
+  assert.throws(() => verifyAssets(dir, "0.3.0"), /different runtime pack catalog/);
+  fs.rmSync(catalog);
   assert.throws(() => verifyAssets(dir, "0.4.0"), /Missing installer/);
   for (const name of names) {
     fs.writeFileSync(path.join(dir, name), "corrupted installer");

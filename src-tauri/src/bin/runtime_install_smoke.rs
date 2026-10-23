@@ -225,7 +225,9 @@ fn run_live_download(failures: &mut u32) {
     let mut extracted = false;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).expect("entry");
-        if entry.name().rsplit('/').next() == Some(spec.binary_basename.as_str()) {
+        if entry.name().expect("valid filename").rsplit('/').next()
+            == Some(spec.binary_basename.as_str())
+        {
             let mut out = std::fs::File::create(&dest).expect("create dest");
             std::io::copy(&mut entry, &mut out).expect("extract");
             extracted = true;

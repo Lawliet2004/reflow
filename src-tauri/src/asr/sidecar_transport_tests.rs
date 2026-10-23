@@ -45,7 +45,7 @@ fn stalled_stdin_write_obeys_the_command_deadline() {
         .take()
         .map(|stdin| Arc::new(parking_lot::Mutex::new(stdin)));
     engine.responses = child.stdout.take().map(spawn_response_reader);
-    engine.child = Some(child);
+    *engine.process.child.lock() = Some(child);
     // This exceeds anonymous-pipe capacity on supported platforms, ensuring
     // that the no-reader fixture blocks an unbounded synchronous writer.
     let command = json!({"cmd": "start_stream", "vocabulary": "x".repeat(8 * 1024 * 1024)});
@@ -55,7 +55,7 @@ fn stalled_stdin_write_obeys_the_command_deadline() {
     let elapsed = started.elapsed();
     // Complete teardown before asserting: even the pre-fix implementation
     // releases its writer when the fixture's watchdog closes the input pipe.
-    if let Some(mut child) = engine.child.take() {
+    if let Some(mut child) = engine.process.child.lock().take() {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -83,7 +83,7 @@ fn cancellation_callback_never_waits_for_a_stalled_pipe_writer() {
         .take()
         .map(|stdin| Arc::new(parking_lot::Mutex::new(stdin)));
     engine.responses = child.stdout.take().map(spawn_response_reader);
-    engine.child = Some(child);
+    *engine.process.child.lock() = Some(child);
     let writer = engine.writer().unwrap();
     let stdin = Arc::clone(engine.stdin.as_ref().unwrap());
     let cancel = engine.cancellation_signal().unwrap();
@@ -102,7 +102,7 @@ fn cancellation_callback_never_waits_for_a_stalled_pipe_writer() {
     cancel();
     let elapsed = started.elapsed();
     // Always close the child before asserting, releasing the blocked OS write.
-    engine.kill_child();
+    engine.kill_child().unwrap();
     let result = blocked.recv_timeout(Duration::from_secs(2));
     assert!(
         observed_blocked_writer,
@@ -128,7 +128,7 @@ fn cancelled_python_stop_discards_text_without_waiting_for_a_stalled_reader() {
         .take()
         .map(|stdin| Arc::new(parking_lot::Mutex::new(stdin)));
     engine.responses = child.stdout.take().map(spawn_response_reader);
-    engine.child = Some(child);
+    *engine.process.child.lock() = Some(child);
     engine.writer().unwrap();
     let cancel = engine.cancellation_signal().unwrap();
     let (finished_tx, finished_rx) = std::sync::mpsc::channel();

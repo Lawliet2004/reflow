@@ -82,14 +82,14 @@ fn model_load_deadline_retires_responsive_and_mute_loaders_and_allows_reload() {
     fixture
         .poll_at(started + TIMEOUT_MODEL_LOAD - Duration::from_nanos(1))
         .unwrap();
-    assert!(fixture.engine.child.is_some());
+    assert!(fixture.engine.process.child.lock().is_some());
     // Another accepted request must not reset a loader's existing budget.
     fixture.engine.load_model("fixture", "cpu").unwrap();
     assert_eq!(fixture.engine.model_load_started_at, Some(started));
     let error = fixture.poll_at(started + TIMEOUT_MODEL_LOAD).unwrap_err();
     assert!(is_engine_timeout(&error));
     assert!(error.contains("Reload the model"));
-    assert!(fixture.engine.child.is_none());
+    assert!(fixture.engine.process.child.lock().is_none());
     assert!(fixture.engine.stdin.is_none());
     assert!(fixture.engine.responses.is_none());
     assert!(writer.closed.load(Ordering::Acquire));
@@ -114,7 +114,7 @@ fn model_load_deadline_retires_responsive_and_mute_loaders_and_allows_reload() {
         started + TIMEOUT_MODEL_LOAD,
     );
     assert!(is_engine_timeout(&error));
-    assert!(fixture.engine.child.is_none());
+    assert!(fixture.engine.process.child.lock().is_none());
     assert_eq!(
         fixture.engine.status_cache.error.as_deref(),
         Some(error.as_str())
@@ -127,14 +127,17 @@ fn model_load_deadline_excludes_downloads_and_starts_after_they_finish() {
         return;
     };
     let started = fixture.load();
-    let pid = fixture.engine.child.as_ref().unwrap().id();
+    let pid = fixture.engine.process.child.lock().as_ref().unwrap().id();
     // Downloads take precedence, including when Python reports both flags.
     for mode in ["downloading", "both"] {
         fixture.mode(mode);
         fixture.poll_at(started + TIMEOUT_MODEL_LOAD * 4).unwrap();
         assert!(fixture.engine.status_cache.is_downloading);
         assert!(fixture.engine.model_load_started_at.is_none());
-        assert_eq!(fixture.engine.child.as_ref().unwrap().id(), pid);
+        assert_eq!(
+            fixture.engine.process.child.lock().as_ref().unwrap().id(),
+            pid
+        );
         fixture.engine.load_model("fixture", "cpu").unwrap();
         assert!(fixture.engine.model_load_started_at.is_none());
         fixture.engine.on_command_timeout_at(
@@ -142,7 +145,10 @@ fn model_load_deadline_excludes_downloads_and_starts_after_they_finish() {
             TIMEOUT_STATUS,
             started + TIMEOUT_MODEL_LOAD * 8,
         );
-        assert_eq!(fixture.engine.child.as_ref().unwrap().id(), pid);
+        assert_eq!(
+            fixture.engine.process.child.lock().as_ref().unwrap().id(),
+            pid
+        );
     }
 
     let after_download = started + TIMEOUT_MODEL_LOAD * 10;
@@ -152,11 +158,14 @@ fn model_load_deadline_excludes_downloads_and_starts_after_they_finish() {
     fixture
         .poll_at(after_download + TIMEOUT_MODEL_LOAD - Duration::from_nanos(1))
         .unwrap();
-    assert_eq!(fixture.engine.child.as_ref().unwrap().id(), pid);
+    assert_eq!(
+        fixture.engine.process.child.lock().as_ref().unwrap().id(),
+        pid
+    );
     assert!(fixture
         .poll_at(after_download + TIMEOUT_MODEL_LOAD)
         .is_err());
-    assert!(fixture.engine.child.is_none());
+    assert!(fixture.engine.process.child.lock().is_none());
 }
 
 #[test]
@@ -166,11 +175,14 @@ fn model_load_deadline_preserves_resolved_models_and_cuda_only_probes() {
     };
     for mode in ["ready", "failed"] {
         let started = fixture.load();
-        let pid = fixture.engine.child.as_ref().unwrap().id();
+        let pid = fixture.engine.process.child.lock().as_ref().unwrap().id();
         fixture.mode(mode);
         // Read the live resolution before considering an expired cached clock.
         fixture.poll_at(started + TIMEOUT_MODEL_LOAD * 2).unwrap();
-        assert_eq!(fixture.engine.child.as_ref().unwrap().id(), pid);
+        assert_eq!(
+            fixture.engine.process.child.lock().as_ref().unwrap().id(),
+            pid
+        );
         assert!(fixture.engine.model_load_started_at.is_none());
         assert!(!fixture.engine.load_in_flight);
         assert!(!fixture.engine.status_cache.is_loading);
@@ -188,12 +200,15 @@ fn model_load_deadline_preserves_resolved_models_and_cuda_only_probes() {
     fixture.engine.probe_cuda().unwrap();
     assert!(fixture.engine.load_in_flight);
     assert!(fixture.engine.model_load_started_at.is_none());
-    let pid = fixture.engine.child.as_ref().unwrap().id();
+    let pid = fixture.engine.process.child.lock().as_ref().unwrap().id();
     fixture.engine.on_command_timeout_at(
         "status",
         TIMEOUT_STATUS,
         Instant::now() + TIMEOUT_MODEL_LOAD * 2,
     );
-    assert_eq!(fixture.engine.child.as_ref().unwrap().id(), pid);
+    assert_eq!(
+        fixture.engine.process.child.lock().as_ref().unwrap().id(),
+        pid
+    );
     assert!(fixture.engine.status_cache.error.is_none());
 }

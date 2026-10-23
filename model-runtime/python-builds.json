@@ -1,0 +1,42 @@
+{
+  "pbs_tag": "20261003",
+  "python_version": "3.12.15",
+  "pip_version": "26.2.2",
+  "pins": [
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "asset": "cpython-3.12.15+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5",
+      "approx_bytes": 66924371
+    },
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "asset": "cpython-3.12.15+20261003-aarch64-unknown-linux-gnu-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "95c01982c9fcb9d95b0acfdb5eb8a6e0099dd11edf062314a474228d93f2b765",
+      "approx_bytes": 52330698
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "asset": "cpython-3.12.15+20261003-x86_64-apple-darwin-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-apple-darwin-install_only.tar.gz",
+      "sha256": "a8fd7a91852f19b6d959793ef41fad048631ccb2a334a9ecdf573255298f7978",
+      "approx_bytes": 24850741
+    },
+    {
+      "target": "aarch64-apple-darwin",
+      "asset": "cpython-3.12.15+20261003-aarch64-apple-darwin-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213",
+      "approx_bytes": 25146462
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "asset": "cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "4b6f0beebbb695a0f3ea237b8c3eaa5bd424f47a7bc25b2fbe3a43390c770f08",
+      "approx_bytes": 46509797
+    }
+  ]
+}

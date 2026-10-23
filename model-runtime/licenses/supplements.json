@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "packages": {
+    "tokenizers==0.22.2": {
+      "license": "Apache-2.0",
+      "file": "tokenizers-0.22.2.LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "source": "https://raw.githubusercontent.com/huggingface/tokenizers/f383101a26663708484cac0727792aad74f78234/LICENSE",
+      "upstream_tag": "v0.22.2",
+      "upstream_commit": "f383101a26663708484cac0727792aad74f78234",
+      "reason": "The pinned binary wheel omits License/License-Expression/License-File metadata and notice files. Retain the matching upstream source license; distribution review remains required."
+    }
+  }
+}

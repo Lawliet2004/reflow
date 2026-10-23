@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, Download, Keyboard, Mic, Loader2 } from "lucide-react";
 import {
   AppSettings,
-  AppState,
   AudioDevice,
   IntelligenceTierState,
   MicrophoneHealth,
@@ -11,13 +10,30 @@ import {
   SpeechSetupPlan,
   isModelReady,
 } from "../types";
-import { createEventScope } from "../services/eventScope";
 import { api } from "../services/tauriApi";
 import { DesktopIntegrationPanel } from "./DesktopIntegrationPanel";
-import { prepareSpeechRuntime, SPEECH_SETUP_PHASE } from "../services/speechSetup";
+import {
+  canCancelSpeechSetup,
+  prepareSpeechRuntime,
+  SPEECH_SETUP_PHASE,
+} from "../services/speechSetup";
+import { isModifierOnlyShortcut } from "../services/shortcutKeys";
 import { HotkeyPicker } from "./HotkeyPicker";
 import { SpeechDependencySetup } from "./SpeechDependencySetup";
-import { RecognitionCheck } from "./RecognitionCheck";
+import { ShortcutProbe } from "./ShortcutProbe";
+import { DictationTrial } from "./DictationTrial";
+import { NativeRuntimeSetup } from "./NativeRuntimeSetup";
+import {
+  dependencyConfiguration,
+  microphoneConfiguration,
+  readSetupCheckpoint,
+  resumeSetupStage,
+  shortcutConfiguration,
+  speechConfiguration,
+  trialConfiguration,
+  usableMicrophone,
+  writeSetupCheckpoint,
+} from "../services/onboarding";
 import { SPEECH_MODEL_GUIDANCE } from "../writingTasks";
 import logoUrl from "../assets/logo.png";
 
@@ -25,14 +41,17 @@ interface OnboardingProps {
   settings: AppSettings;
   modelStatus: ModelStatus | null;
   onUpdateSettings: (settings: Partial<AppSettings>) => Promise<boolean> | void;
-  onComplete: () => void;
+  onComplete: (outcome: "completed" | "deferred") => void;
   intelligenceTiers?: IntelligenceTierState[] | null;
 }
 
 const STEPS = [
   { id: "mic", label: "Microphone" },
-  { id: "hotkey", label: "Hotkey" },
+  { id: "hotkey", label: "Shortcut" },
+  { id: "hardware", label: "Computer" },
+  { id: "runtime", label: "Dependencies" },
   { id: "model", label: "Speech model" },
+  { id: "trial", label: "Try dictation" },
 ];
 
 export const Onboarding: React.FC<OnboardingProps> = ({
@@ -41,12 +60,23 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   onUpdateSettings: persistSettings,
   onComplete,
 }) => {
-  const ready = isModelReady(modelStatus);
-  const [step, setStep] = useState(0);
+  const selectedModel =
+    settings.asr.runtime === "native" ? `native-${settings.asr.model}` : settings.asr.model;
+  const ready =
+    isModelReady(modelStatus) &&
+    !modelStatus?.is_downloading &&
+    (!modelStatus?.selected_model || modelStatus.selected_model === selectedModel);
+  const [checkpoint] = useState(readSetupCheckpoint);
+  const [step, setStep] = useState(() => resumeSetupStage(checkpoint, settings));
+  const [microphoneProof, setMicrophoneProof] = useState(checkpoint.microphone);
+  const [shortcutProof, setShortcutProof] = useState(checkpoint.shortcut);
+  const [deliveryMode, setDeliveryMode] = useState<"inserted" | "clipboard">();
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [dependenciesBusy, setDependenciesBusy] = useState(false);
-  const [runtimePrepared, setRuntimePrepared] = useState(false);
+  const [trialBusy, setTrialBusy] = useState(false);
+  const [preparedProfile, setPreparedProfile] = useState<string>();
+  const runtimePrepared = preparedProfile === dependencyConfiguration(settings);
   const [setupPlan, setSetupPlan] = useState<SpeechSetupPlan | null>(null);
   const [runtimeProgress, setRuntimeProgress] = useState<PythonSetupProgress | null>(null);
   const setupController = useRef<AbortController | null>(null);
@@ -58,25 +88,35 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   const [micLevel, setMicLevel] = useState(0);
   const [testedConfiguration, setTestedConfiguration] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [hotkeyHeard, setHotkeyHeard] = useState(false);
-  const [tryText, setTryText] = useState("");
-  const [tryItWorked, setTryItWorked] = useState(false);
+  const hotkeyHeard =
+    shortcutProof?.mode === "shortcut" &&
+    shortcutProof.configuration === shortcutConfiguration(settings);
   const [recommended, setRecommended] = useState<string | null>(null);
   const [importPath, setImportPath] = useState("");
   const [importing, setImporting] = useState(false);
-  const stepRef = useRef(0);
-  const sessionSeenRef = useRef(false);
-  // Armed only while the hotkey step is displayed and still unconfirmed —
-  // a dictation the user started deliberately is never cancelled.
-  const probeArmedRef = useRef(false);
-  // Set the moment the user picks a model card — a late-arriving
-  // recommendation must never overwrite an explicit choice.
   const userPickedModelRef = useRef(false);
   useEffect(() => {
-    stepRef.current = step;
-    if (step !== 1) probeArmedRef.current = false;
-    else probeArmedRef.current = !hotkeyHeard && ready;
-  }, [step, hotkeyHeard, ready]);
+    writeSetupCheckpoint({
+      version: 1,
+      stage: step,
+      outcome: "in_progress",
+      microphone: microphoneProof,
+      shortcut: shortcutProof,
+      speech: speechConfiguration(settings),
+    });
+  }, [step, microphoneProof, shortcutProof, settings]);
+  const finish = (outcome: "completed" | "deferred") => {
+    writeSetupCheckpoint({
+      version: 1,
+      stage: step,
+      outcome,
+      microphone: microphoneProof,
+      shortcut: shortcutProof,
+      speech: speechConfiguration(settings),
+      ...(outcome === "completed" ? { delivery: deliveryMode } : {}),
+    });
+    onComplete(outcome);
+  };
   const onUpdateSettings = async (changes: Partial<AppSettings>) => {
     if (
       changes.asr ||
@@ -87,8 +127,10 @@ export const Onboarding: React.FC<OnboardingProps> = ({
       setTestedConfiguration(null);
       if ("microphone_device_id" in changes || "input_gain" in changes) {
         setMicHealth(null);
+        setMicrophoneProof(undefined);
       }
     }
+    if (changes.hotkey || "push_to_talk" in changes) setShortcutProof(undefined);
     setSaving(true);
     setError(null);
     try {
@@ -108,7 +150,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
       setSaving(false);
     }
   };
-  const configuration = `${settings.microphone_device_id}:${settings.input_gain}:${settings.language}:${settings.asr.model}:${settings.asr.runtime}:${settings.asr.device}:${settings.asr.precision}`;
+  const configuration = trialConfiguration(settings);
 
   const installed = Boolean(modelStatus?.installed);
   const downloading = Boolean(modelStatus?.is_downloading);
@@ -129,13 +171,30 @@ export const Onboarding: React.FC<OnboardingProps> = ({
         setRecommended(id);
         // Preselect only while the stored choice is still the factory
         // default — a user's explicit pick is never overwritten.
-        if (id === "0.6b" && !installed && !userPickedModelRef.current) {
+        if (
+          (id === "0.6b" || id === "zipformer-20m") &&
+          !installed &&
+          !userPickedModelRef.current
+        ) {
           // Read the current settings, not the mount-time snapshot — an asr
           // edit between mount and now must not be clobbered.
           void api.getSettings().then((current) => {
             if (!alive || userPickedModelRef.current) return;
-            if (current.asr.model === "1.7b") {
-              void persistSettings({ asr: { ...current.asr, model: "0.6b" } });
+            // A lightweight English engine must not silently replace a
+            // multilingual choice. Its card remains available for an explicit pick.
+            if (
+              current.asr.model === "1.7b" &&
+              (id !== "zipformer-20m" || current.language === "en")
+            ) {
+              void persistSettings({
+                asr: {
+                  ...current.asr,
+                  model: id,
+                  ...(id === "zipformer-20m"
+                    ? { runtime: "python" as const, precision: "auto" as const }
+                    : {}),
+                },
+              });
             }
           });
         }
@@ -147,32 +206,28 @@ export const Onboarding: React.FC<OnboardingProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // A press of the dictation shortcut starts a real session — so it doubles
-  // as proof the binding works, and a change in the try-it box is proof the
-  // whole loop (record → transcribe → insert) works.
-  useEffect(() => {
-    const scope = createEventScope();
-    void scope.listen<AppState>("app:state-changed", (state) => {
-      if (state !== "RECORDING") return;
-      sessionSeenRef.current = true;
-      if (stepRef.current === 1 && probeArmedRef.current) {
-        probeArmedRef.current = false;
-        setHotkeyHeard(true);
-        // The press was only a liveness probe; cancel silently so nothing
-        // records or injects during onboarding.
-        void api.cancelRecording().catch(() => {});
-      }
-    });
-    return () => scope.dispose();
-  }, []);
-
   useEffect(() => {
     let alive = true;
     const refreshDevices = () =>
       api
         .getAudioDevices()
         .then((list) => {
-          if (alive) setDevices(list);
+          if (alive) {
+            setDevices(list);
+            if (
+              settings.microphone_device_id &&
+              !list.some(
+                (device) =>
+                  device.id === settings.microphone_device_id && device.is_available !== false,
+              )
+            ) {
+              setMicrophoneProof(undefined);
+              setError(
+                "Your selected microphone is unavailable. Reconnect it or choose another microphone.",
+              );
+              setStep(0);
+            }
+          }
         })
         .catch(() => {
           if (alive)
@@ -184,7 +239,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
       alive = false;
       window.removeEventListener("focus", refreshDevices);
     };
-  }, []);
+  }, [settings.microphone_device_id]);
 
   useEffect(() => {
     if (!micTesting) return;
@@ -208,16 +263,13 @@ export const Onboarding: React.FC<OnboardingProps> = ({
     setMicLevel(0);
     setMicTesting(true);
     setMicHealth(null);
+    setMicrophoneProof(undefined);
+    setError(null);
     try {
-      // Bound the test — a wedged capture stack must not pin the button.
-      setMicHealth(
-        await Promise.race([
-          api.testMicrophone(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Microphone test timed out after 10 s")), 10_000),
-          ),
-        ]),
-      );
+      const health = await api.testMicrophone();
+      setMicHealth(health);
+      if (usableMicrophone(health)) setMicrophoneProof(microphoneConfiguration(settings));
+      else setError(health.assessment);
     } catch (failure) {
       setError(`Microphone test failed: ${String(failure)}`);
     } finally {
@@ -260,7 +312,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
           setRuntimeProgress,
           runtimePrepared ? null : modelStatus?.failure_kind,
         );
-        setRuntimePrepared(true);
+        setPreparedProfile(dependencyConfiguration(settings));
       }
       controller.signal.throwIfAborted();
       setRuntimeProgress(null);
@@ -320,9 +372,26 @@ export const Onboarding: React.FC<OnboardingProps> = ({
 
   const canContinue =
     !saving &&
+    !micTesting &&
     !dependenciesBusy &&
+    !trialBusy &&
     !installing &&
-    (step < 2 || (ready && testedConfiguration === configuration));
+    !importing &&
+    (step === 0
+      ? microphoneProof === microphoneConfiguration(settings)
+      : step === 1
+        ? shortcutProof?.configuration === shortcutConfiguration(settings)
+        : step === 2
+          ? Boolean(
+              setupPlan &&
+              (settings.asr.runtime === "native" ||
+                (!setupPlan.blocker && setupPlan.supported_models.includes(settings.asr.model))),
+            )
+          : step === 3
+            ? runtimePrepared
+            : step === 4
+              ? ready
+              : ready && testedConfiguration === configuration);
 
   const nativeRuntime = settings.asr.runtime === "native";
   const speechModels = [
@@ -349,7 +418,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
 
   const goNext = () => {
     if (step >= STEPS.length - 1) {
-      onComplete();
+      finish("completed");
       return;
     }
     setStep((s) => s + 1);
@@ -379,12 +448,15 @@ export const Onboarding: React.FC<OnboardingProps> = ({
           A few things. Then just speak.
         </h1>
         <p className="text-sm text-muted mt-1">
-          Three quick steps so dictation is ready on this computer.
+          We’ll check your input, prepare speech, and try a real dictation.
         </p>
 
-        <div className="flex items-center gap-2 mt-6 mb-8">
+        <ol
+          className="grid grid-cols-3 sm:grid-cols-6 gap-x-3 gap-y-4 mt-6 mb-8"
+          aria-label="Setup progress"
+        >
           {STEPS.map((s, i) => (
-            <div key={s.id} className="flex-1">
+            <li key={s.id} aria-current={i === step ? "step" : undefined}>
               <div className={`h-1 rounded-full ${i <= step ? "bg-accent" : "bg-line"}`} />
               <p
                 className={`text-2xs mt-1.5 truncate ${
@@ -393,9 +465,9 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               >
                 {s.label}
               </p>
-            </div>
+            </li>
           ))}
-        </div>
+        </ol>
 
         {step === 0 && (
           <section className="panel p-5 space-y-4">
@@ -485,19 +557,24 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 <Keyboard className="w-4 h-4" />
               </div>
               <div>
-                <h2 className="text-base font-semibold text-ink">Pick your shortcut</h2>
-                <p className="text-xs text-muted">
-                  Hold it to record anywhere. You can change it later in Settings.
-                </p>
+                <h2 className="text-base font-semibold text-ink">Your dictation shortcut</h2>
+                <p className="text-xs text-muted">Click the shortcut to change it.</p>
               </div>
             </div>
             <DesktopIntegrationPanel
+              compact
+              onShortcutSaved={() => setShortcutProof(undefined)}
               renderShortcuts={({ status, busy, configure, setShortcut }) => (
-                <div className="rounded-xl border border-accent-border bg-accent-soft px-4 py-5 flex flex-col items-center gap-3">
+                <div className="py-4 flex flex-col items-center gap-3">
                   <p className="text-xs text-muted">
-                    {status?.session === "wayland" && !status.shortcut_editable
-                      ? "Choose your key in desktop shortcuts"
-                      : "Press any key combination"}
+                    {status?.session === "wayland" &&
+                    isModifierOnlyShortcut(
+                      status.assigned_shortcuts.dictate ?? status.shortcut.assigned_trigger,
+                    )
+                      ? "Tap to speak. Tap again to finish."
+                      : settings.push_to_talk
+                        ? "Hold to speak. Release to finish."
+                        : "Press to speak. Press again to finish."}
                   </p>
                   {status?.session === "wayland" && status.shortcut_editable ? (
                     <HotkeyPicker
@@ -512,7 +589,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                         (status.shortcut.state !== "ready" &&
                           status.shortcut.state !== "unassigned")
                       }
-                      allowModifierOnly={false}
+                      allowModifierOnly
+                      ariaLabel="Change dictation shortcut"
                     />
                   ) : status?.session === "wayland" ? (
                     <button
@@ -521,23 +599,33 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                       disabled={busy}
                       onClick={configure}
                     >
-                      {status.assigned_shortcuts.dictation ??
+                      {status.assigned_shortcuts.dictate ??
+                        status.assigned_shortcuts.dictation ??
                         status.shortcut.assigned_trigger ??
                         "Choose shortcut…"}
                     </button>
                   ) : (
                     <HotkeyPicker
                       value={settings.hotkey}
-                      onChange={(value) => onUpdateSettings({ hotkey: value })}
+                      onChange={(value) => {
+                        setShortcutProof(undefined);
+                        void onUpdateSettings({ hotkey: value });
+                      }}
+                      disabled={busy || !status}
+                      ariaLabel="Change dictation shortcut"
                     />
                   )}
-                  <p className="text-xs text-muted">
-                    {settings.push_to_talk
-                      ? "Release to transcribe. Include a letter or Space in Linux shortcuts."
-                      : "Press again to stop."}
-                  </p>
                 </div>
               )}
+            />
+            <ShortcutProbe
+              key={settings.hotkey}
+              onSuccess={() =>
+                setShortcutProof({
+                  configuration: shortcutConfiguration(settings),
+                  mode: "shortcut",
+                })
+              }
             />
             <div aria-live="polite">
               {hotkeyHeard ? (
@@ -547,12 +635,29 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 </p>
               ) : (
                 <p className="text-xs text-muted">
-                  {ready
-                    ? "Try your shortcut now. We’ll confirm it works here."
-                    : "You can change this later in Settings."}
+                  Test the shortcut before installing speech. This test does not record audio.
                 </p>
               )}
             </div>
+            {!hotkeyHeard && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() =>
+                  setShortcutProof({
+                    configuration: shortcutConfiguration(settings),
+                    mode: "button",
+                  })
+                }
+              >
+                Use the Record button instead
+              </button>
+            )}
+            {shortcutProof?.mode === "button" && (
+              <p role="status" className="text-xs text-muted">
+                Record button selected. A global shortcut has not been verified.
+              </p>
+            )}
           </section>
         )}
 
@@ -563,29 +668,32 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 <Download className="w-4 h-4" />
               </div>
               <div>
-                <h2 className="text-base font-semibold text-ink">Set up dictation</h2>
+                <h2 className="text-base font-semibold text-ink">Check your computer</h2>
                 <p className="text-xs text-muted">
-                  One setup installs the selected speech model and its runtime on this computer.
+                  Review the suggested speech model and the hardware it will use.
                 </p>
               </div>
             </div>
 
-            {settings.asr.runtime === "python" && (
-              <SpeechDependencySetup
-                settings={settings}
-                failureKind={modelStatus?.failure_kind}
-                disabled={installing || downloading || Boolean(modelStatus?.is_loading)}
-                onUpdateSettings={onUpdateSettings}
-                onBusyChange={setDependenciesBusy}
-                onPlan={setSetupPlan}
-                onReady={() => setRuntimePrepared(true)}
-              />
-            )}
+            <SpeechDependencySetup
+              key={`hardware:${dependencyConfiguration(settings)}`}
+              settings={settings}
+              failureKind={modelStatus?.failure_kind}
+              inspectionOnly
+              disabled={saving}
+              onUpdateSettings={onUpdateSettings}
+              onPlan={setSetupPlan}
+            />
             <h3 className="text-sm font-semibold text-ink">Choose a speech model</h3>
             <p className="text-xs text-muted">
-              After dependencies are ready, download the model you want. The button below can also
-              complete both steps together.
+              Choose a model for your language and computer. Dependencies install next, followed by
+              model weights.
             </p>
+            {!nativeRuntime && setupPlan?.blocker && (
+              <p role="alert" className="text-sm text-danger whitespace-pre-line break-words">
+                {setupPlan.blocker}
+              </p>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {speechModels.map((m) => {
                 const active = settings.asr.model === m.id;
@@ -635,12 +743,52 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 );
               })}
             </div>
+          </section>
+        )}
 
-            {settings.asr.runtime === "python" && !ready && (
-              <p className="text-xs text-muted leading-relaxed">
-                Setup automatically reuses installed dependencies. Model downloads are separate and
-                stay on this computer.
-              </p>
+        {step === 3 && (
+          <section className="panel p-5 space-y-4">
+            <h2 className="text-base font-semibold text-ink">Prepare speech dependencies</h2>
+            {settings.asr.runtime === "python" ? (
+              <SpeechDependencySetup
+                key={dependencyConfiguration(settings)}
+                settings={settings}
+                failureKind={modelStatus?.failure_kind}
+                onUpdateSettings={onUpdateSettings}
+                onBusyChange={setDependenciesBusy}
+                onPlan={setSetupPlan}
+                onReady={() => setPreparedProfile(dependencyConfiguration(settings))}
+              />
+            ) : (
+              <NativeRuntimeSetup
+                settings={settings}
+                onUpdateSettings={onUpdateSettings}
+                onBusyChange={setDependenciesBusy}
+                onReady={() => setPreparedProfile(dependencyConfiguration(settings))}
+              />
+            )}
+          </section>
+        )}
+
+        {step === 4 && (
+          <section className="panel p-5 space-y-4">
+            <h2 className="text-base font-semibold text-ink">Download your speech model</h2>
+            <p className="text-sm text-muted">
+              {speechModels.find((model) => model.id === settings.asr.model)?.title ??
+                settings.asr.model}
+              . Your runtime will be checked again before the download starts.
+            </p>
+            {downloading && (
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  api
+                    .cancelModelDownload(settings.asr.model)
+                    .catch((failure) => setError(`Could not cancel download: ${String(failure)}`));
+                }}
+              >
+                Cancel model download
+              </button>
             )}
             {installing && runtimeProgress ? (
               <div role="status" className="space-y-2">
@@ -653,8 +801,9 @@ export const Onboarding: React.FC<OnboardingProps> = ({
                 </p>
                 <button
                   className="btn btn-secondary"
+                  disabled={!canCancelSpeechSetup(runtimeProgress)}
                   onClick={() => {
-                    api.cancelPythonRuntimeSetup().catch((failure) => {
+                    api.cancelPythonRuntimeSetup(runtimeProgress?.attempt_id).catch((failure) => {
                       setError(`Could not cancel setup: ${String(failure)}`);
                     });
                   }}
@@ -775,47 +924,43 @@ export const Onboarding: React.FC<OnboardingProps> = ({
               <summary className="cursor-pointer">Help choosing a speech model</summary>
               <p className="mt-2 leading-relaxed">{SPEECH_MODEL_GUIDANCE}</p>
             </details>
-            {ready && (
-              <RecognitionCheck
+          </section>
+        )}
+
+        {step === 5 && (
+          <section className="panel p-5 space-y-4">
+            <h2 className="text-base font-semibold text-ink">Try your first dictation</h2>
+            {!ready ? (
+              <p role="alert" className="text-sm text-danger">
+                Speech is no longer ready. Go back to check and load the model.
+              </p>
+            ) : (
+              <DictationTrial
                 key={configuration}
-                ready={ready && !saving}
-                onSuccess={() => setTestedConfiguration(configuration)}
+                onBusyChange={setTrialBusy}
+                onReset={() => {
+                  setTestedConfiguration(null);
+                  setDeliveryMode(undefined);
+                }}
+                onSuccess={async (mode) => {
+                  if (
+                    mode === "clipboard" &&
+                    !(await onUpdateSettings({ output_action: { type: "copy" } }))
+                  ) {
+                    throw new Error("Clipboard mode could not be saved. Try again.");
+                  }
+                  setTestedConfiguration(configuration);
+                  setDeliveryMode(mode);
+                }}
               />
             )}
-            {testedConfiguration !== configuration && (
-              <p className="text-xs text-muted">
-                Finish unlocks after the speech model is ready and a recognition test succeeds.
-              </p>
-            )}
-            {ready && (
-              <div className="rounded-xl border border-line bg-base-2 p-4 space-y-2">
-                <p className="text-sm font-medium text-ink-2">Try it here</p>
-                <p className="text-xs text-muted">
-                  Focus the box, hold or press your shortcut, and say a sentence — the text is
-                  inserted where your cursor is.
-                </p>
-                <textarea
-                  className="field w-full resize-none"
-                  rows={3}
-                  aria-label="Try dictation here"
-                  placeholder="Say something…"
-                  value={tryText}
-                  onChange={(event) => {
-                    setTryText(event.target.value);
-                    if (sessionSeenRef.current) setTryItWorked(true);
-                  }}
-                />
-                {tryItWorked && (
-                  <p className="text-sm text-success font-medium flex items-center gap-1.5">
-                    <Check className="w-4 h-4" aria-hidden />
-                    Dictation landed in the box — you are all set.
-                  </p>
-                )}
-              </div>
-            )}
+            <p className="text-xs text-muted">
+              Finish unlocks after a real dictation is recognized and insertion is confirmed, or you
+              explicitly choose clipboard mode.
+            </p>
             <p className="text-xs text-muted">
               Optional: a local writing model can rewrite your dictation — enable it later in
-              Settings → Model.
+              Settings → Cleanup.
             </p>
           </section>
         )}
@@ -824,20 +969,25 @@ export const Onboarding: React.FC<OnboardingProps> = ({
           <div className="flex items-center gap-2">
             <button
               className="btn btn-ghost"
-              disabled={step === 0 || installing || dependenciesBusy}
+              disabled={
+                step === 0 ||
+                installing ||
+                dependenciesBusy ||
+                trialBusy ||
+                micTesting ||
+                downloading
+              }
               onClick={() => setStep((s) => Math.max(0, s - 1))}
             >
               Back
             </button>
-            {step === STEPS.length - 1 && (
-              <button
-                className="btn btn-ghost"
-                disabled={installing || dependenciesBusy}
-                onClick={onComplete}
-              >
-                Set up later
-              </button>
-            )}
+            <button
+              className="btn btn-ghost"
+              disabled={installing || dependenciesBusy || trialBusy || micTesting}
+              onClick={() => finish("deferred")}
+            >
+              Set up later
+            </button>
           </div>
           <button className="btn btn-primary" disabled={!canContinue} onClick={goNext}>
             {step === STEPS.length - 1 ? (

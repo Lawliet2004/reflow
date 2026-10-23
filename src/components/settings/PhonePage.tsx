@@ -27,6 +27,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [working, setWorking] = useState<string | null>(null);
   const statusEpoch = useRef(0);
+  const [pairingHost, setPairingHost] = useState<string | undefined>();
 
   useEffect(() => {
     if (!visible) return;
@@ -37,7 +38,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
       pending = true;
       const epoch = statusEpoch.current;
       api
-        .getApiStatus()
+        .getApiStatus(pairingHost)
         .then((status) => {
           if (!cancelled && epoch === statusEpoch.current) {
             setApiStatus(status);
@@ -58,7 +59,7 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [settings.api_enabled, settings.api_bind, settings.api_port, visible]);
+  }, [settings.api_enabled, settings.api_bind, settings.api_port, visible, pairingHost]);
 
   const rotate = async () => {
     statusEpoch.current += 1;
@@ -180,6 +181,31 @@ export const PhonePage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
         />
       </Row>
 
+      {apiStatus && settings.api_bind !== "localhost" && (
+        <Row
+          label="Pairing address"
+          hint="Choose the Wi-Fi or Ethernet address reachable from your phone."
+        >
+          <select
+            className="field"
+            aria-label="Pairing address"
+            value={pairingHost ?? ""}
+            onChange={(event) => {
+              statusEpoch.current += 1;
+              setPairingHost(event.target.value || undefined);
+            }}
+          >
+            <option value="">Automatic</option>
+            {apiStatus.listen_addrs
+              .filter((address) => address !== "127.0.0.1")
+              .map((address) => (
+                <option key={address} value={address}>
+                  {address}
+                </option>
+              ))}
+          </select>
+        </Row>
+      )}
       {apiStatus?.warning && (
         <p className="text-xs text-muted leading-relaxed">{apiStatus.warning}</p>
       )}

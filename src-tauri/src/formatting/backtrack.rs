@@ -2,7 +2,8 @@ use regex::Regex;
 
 /// Words that mark a spoken self-correction, i.e. "what I said before this is
 /// wrong, what follows replaces it".
-const REPAIR_MARKERS: &str = r"(?:actually|no\s+wait|i\s+mean|sorry|scratch\s+that)";
+const REPAIR_MARKERS: &str =
+    r"(?:actually|no[ \t]+wait|no|i[ \t]+mean|rather|sorry|scratch[ \t]+that)";
 
 /// Closed classes of "value" words that a correction can swap.
 ///
@@ -26,11 +27,168 @@ pub fn apply_backtrack(text: &str) -> String {
     let mut out = text.to_string();
     out = apply_value_corrections(&out);
     out = apply_scratch_that(&out);
+    out = super::literals::map_unquoted(&out, |text, _, _| {
+        Regex::new(r"(?i)[ \t,]*\bno[ \t,]+seriously[ \t,]+(do not|don't)\b")
+            .unwrap()
+            .replace_all(text, |capture: &regex::Captures<'_>| {
+                let before = text[..capture.get(0).unwrap().start()].trim_end();
+                let separator = if before.is_empty() {
+                    ""
+                } else if before.ends_with(['.', '!', '?']) {
+                    " "
+                } else {
+                    ". "
+                };
+                format!("{separator}Seriously, {}", &capture[1])
+            })
+            .into_owned()
+    });
+    // An explicit replacement may discard only a closed-class choice or a
+    // restarted proposition. Never discard a quoted/code span along with it.
+    for _ in 0..8 {
+        let Some(next) = explicit_correction_sources(&out).into_iter().find(|next| {
+            super::literals::literal_contents(&out) == super::literals::literal_contents(next)
+        }) else {
+            break;
+        };
+        if next == out {
+            break;
+        }
+        out = next;
+    }
     // An unresolved "no wait" may be ordinary speech ("No, wait for me").
     // Preserve it for contextual refinement rather than deleting a negation.
     super::literals::map_unquoted(&out, |text, _, _| squeeze_ws(text))
         .trim()
         .to_string()
+}
+
+/// Only explicit closed-class replacements and restarted propositions can
+/// abandon content. A bare "actually" in ordinary prose is not a repair.
+pub(crate) fn explicit_correction_sources(original: &str) -> Vec<String> {
+    let tokenize = |text: &str| {
+        text.split_whitespace()
+            .map(|word| {
+                word.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '.')
+                    .trim_end_matches('.')
+                    .to_lowercase()
+            })
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>()
+    };
+    const TECH_CHOICES: &[&str] = &[
+        "node.js",
+        "node js",
+        "javascript",
+        "java script",
+        "python",
+        "fastapi",
+        "fast api",
+        "postgres",
+        "postgresql",
+        "mysql",
+        "mongo db",
+        "mongodb",
+        "redis",
+        "typescript",
+        "type script",
+        "react",
+        "vue",
+        "angular",
+        "svelte",
+        "next.js",
+        "next js",
+        "express",
+        "django",
+        "flask",
+        "fastify",
+        "spring boot",
+        "sqlite",
+        "supabase",
+        "tauri",
+        "rust",
+        "golang",
+        "c sharp",
+        "c#",
+    ];
+    let choice_words = TECH_CHOICES
+        .iter()
+        .map(|choice| tokenize(choice))
+        .collect::<Vec<_>>();
+    let is_choice = |text: &str| {
+        let words = tokenize(text);
+        choice_words.contains(&words)
+    };
+    let starts_with_choice = |text: &str| {
+        let words = tokenize(text);
+        choice_words.iter().any(|choice| words.starts_with(choice))
+    };
+    static MARKER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let marker = MARKER.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(?:no(?:[ \t,]+no)*[ \t,]+(?:wait(?:[ \t,]+actually)?|actually|sorry)|sorry|i[ \t,]+mean|rather|actually)\b(?:[ \t,]+use\b)?")
+            .expect("fixed correction marker")
+    });
+    static WORD: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let word = WORD.get_or_init(|| Regex::new(r"\S+").expect("fixed word boundary"));
+    let mut sources = Vec::new();
+    for found in marker.find_iter(original) {
+        if crate::formatting::literals::overlaps_literal(original, found.range()) {
+            continue;
+        }
+        let before = original[..found.start()].trim_end_matches([' ', '\t', ',', ':']);
+        if before.ends_with(['.', '!', '?', ';', '\n', '\r']) {
+            continue;
+        }
+        let after = original[found.end()..].trim_start_matches([' ', '\t', ',', ':']);
+        if after.is_empty() || after.starts_with(['\n', '\r']) {
+            continue;
+        }
+        // A repair cannot abandon text across an explicit line break. Keep byte
+        // offsets so applying it leaves every earlier paragraph and literal
+        // untouched, rather than reconstructing the prefix with joined words.
+        let line_start = before.rfind(['\n', '\r']).map_or(0, |at| at + 1);
+        let words: Vec<_> = word.find_iter(&before[line_start..]).collect();
+        let replacement_line = after.split(['\n', '\r']).next().unwrap_or_default();
+        let replacement: Vec<&str> = replacement_line.split_whitespace().collect();
+        for start in 0..words.len().saturating_sub(1) {
+            let anchor = words[start]
+                .as_str()
+                .trim_matches(|ch: char| !ch.is_alphanumeric());
+            if !matches!(
+                anchor.to_ascii_lowercase().as_str(),
+                "i" | "we" | "you" | "he" | "she" | "they"
+            ) {
+                continue;
+            }
+            let common = words[start..]
+                .iter()
+                .zip(&replacement)
+                .take_while(|(left, right)| {
+                    left.as_str()
+                        .trim_matches(|ch: char| !ch.is_alphanumeric())
+                        .eq_ignore_ascii_case(right.trim_matches(|ch: char| !ch.is_alphanumeric()))
+                })
+                .count();
+            if common >= 2
+                && common < replacement.len()
+                && !words[start..]
+                    .iter()
+                    .any(|word| word.as_str().ends_with(['.', '!', '?', ';']))
+            {
+                let prefix = &before[..line_start + words[start].start()];
+                sources.push(format!("{prefix}{after}"));
+                break;
+            }
+        }
+        for count in 1..=4.min(words.len()) {
+            let cut = line_start + words[words.len() - count].start();
+            if !is_choice(&before[cut..]) || !starts_with_choice(replacement_line) {
+                continue;
+            }
+            sources.push(format!("{}{after}", &before[..cut]));
+        }
+    }
+    sources
 }
 
 /// `<value> actually|i mean|no wait <value>` → keep the replacement value.
@@ -170,7 +328,7 @@ fn unsupported_numeric_repair(text: &str, start: usize, end: usize) -> bool {
 
 /// `scratch that` removes the preceding clause/sentence (from the last .!? or start).
 fn apply_scratch_that(text: &str) -> String {
-    let marker = Regex::new(r"(?i)\bscratch\s+that\b[,\.]?").expect("scratch that regex");
+    let marker = Regex::new(r"(?i)\bscratch[ \t]+that\b[,\.]?").expect("scratch that regex");
     let mut out = text.to_string();
     let mut guard = 0;
     let mut search_from = 0;
@@ -210,6 +368,68 @@ fn squeeze_ws(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn later_repairs_preserve_preceding_paragraphs_and_literals() {
+        for (source, expected) in [
+            (
+                "Ship the browser first.\n\nUse Node.js no wait use Python FastAPI.\n\nKeep `npm run check` unchanged.",
+                "Ship the browser first.\n\nUse Python FastAPI.\n\nKeep `npm run check` unchanged.",
+            ),
+            (
+                "Élodie owns accessibility.\n\nWe want React no actually Svelte.\n\nI want tea no no sorry I want coffee",
+                "Élodie owns accessibility.\n\nWe want Svelte.\n\nI want coffee",
+            ),
+            (
+                "I want tea\n\nI want coffee no wait I want water",
+                "I want tea\n\nI want water",
+            ),
+            (
+                "Keep `React  no wait  Svelte` exactly.\n\nUse Node.js no wait use Python.",
+                "Keep `React  no wait  Svelte` exactly.\n\nUse Python.",
+            ),
+        ] {
+            assert_eq!(apply_backtrack(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn explicit_breaks_do_not_join_a_repair_marker_or_its_replacement() {
+        for source in [
+            "Use React\nno wait use Svelte",
+            "Use React no wait\nuse Svelte",
+            "Use Node\nJS no wait use Python",
+            "I want tea\nno wait I want coffee",
+            "I want tea no\nwait I want coffee",
+            "Use React no wait,\n\nuse Svelte",
+            "meet Monday i\nmean Tuesday",
+            "send the draft scratch\nthat send the report",
+            "do not delete no\nseriously don't delete",
+        ] {
+            assert_eq!(apply_backtrack(source), source, "{source}");
+        }
+    }
+
+    #[test]
+    fn clear_phrase_repairs_keep_the_final_choice_and_unrelated_clauses() {
+        for (source, expected) in [
+            ("I want tea no no sorry I want coffee", "I want coffee"),
+            ("I want to no no no sorry I want coffee", "I want coffee"),
+            ("Use React no actually Svelte", "Use Svelte"),
+            ("Use React no wait use Svelte", "Use Svelte"),
+            ("I would like to book the morning train no wait I would like to book the evening train", "I would like to book the evening train"),
+            ("The deadline is Monday sorry Tuesday", "The deadline is Tuesday"),
+        ] { assert_eq!(apply_backtrack(source), expected); }
+        for source in [
+            "Keep `React no wait Svelte` exactly",
+            "I actually like React",
+            "I want tea. Keep the 3 reports, sorry I want coffee",
+            "He shouted no no no",
+            "This is very very important",
+        ] {
+            assert_eq!(apply_backtrack(source), source);
+        }
+    }
 
     #[test]
     fn ordinary_wait_requests_and_quoted_repairs_preserve_their_meaning() {
@@ -436,6 +656,28 @@ mod tests {
             ("meet at 5 actually 6 no wait 7", "meet at 7"),
         ] {
             assert_eq!(apply_backtrack(source), expected, "{source}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod adaptive_repair_tests {
+    use super::apply_backtrack;
+
+    #[test]
+    fn bare_no_repairs_only_same_class_values_outside_literals() {
+        assert_eq!(
+            apply_backtrack("ship Friday, no, Thursday"),
+            "ship Thursday"
+        );
+        for source in [
+            "Friday no deployments Thursday",
+            "do not delete the database",
+            "very very important",
+            "say \"Friday, no, Thursday\"",
+            "run `Friday no Thursday`",
+        ] {
+            assert_eq!(apply_backtrack(source), source);
         }
     }
 }

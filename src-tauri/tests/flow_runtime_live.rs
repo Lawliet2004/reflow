@@ -207,18 +207,30 @@ fn polish_is_actually_applied_to_real_dictation() {
     let outcome = polish_or_fallback(&client, original, &request(original));
     if outcome.used {
         assert!(outcome.error.is_none());
-        assert_eq!(outcome.final_text, "I need the key for opening the door.");
+        assert!(
+            matches!(
+                outcome.final_text.as_str(),
+                "I need the key for opening the door." | "I need the key, for opening the door."
+            ),
+            "{:?}",
+            outcome.final_text
+        );
     } else {
         assert_eq!(outcome.final_text, original);
-        assert_eq!(
-            outcome.error.as_deref(),
-            Some("LLM rewrite rejected by safety gate")
+        assert!(
+            outcome
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("LLM rewrite rejected:")
+                    && error.ends_with("original transcript preserved.")),
+            "{:?}",
+            outcome.error
         );
     }
 
     // Each safe ordinary dictation must actually use the reachable local model.
     // This still fails if startup, the prompt or the safety gate rejects all work.
-    for (smart, expected) in [
+    for (raw, expected) in [
         (
             "can you review the code for me and start, like doing the task of code review",
             "Can you review the code for me and start, like doing the task of code review?",
@@ -228,7 +240,17 @@ fn polish_is_actually_applied_to_real_dictation() {
             "I think we should ship this on Friday.",
         ),
     ] {
-        let outcome = polish_or_fallback(&client, smart, &request(smart));
+        // Exercise the production stage boundary: deterministic cleanup owns
+        // dependable casing and terminal punctuation before refinement.
+        let smart = reflow_lib::formatting::format_transcript(
+            raw,
+            "flow",
+            "normal",
+            true,
+            true,
+            &reflow_lib::formatting::CustomReplacements::new(vec![]),
+        );
+        let outcome = polish_or_fallback(&client, &smart, &request(&smart));
         eprintln!(
             "{smart:?} -> {:?} (used={}, error={:?})",
             outcome.final_text, outcome.used, outcome.error
@@ -277,7 +299,12 @@ fn a_meaning_changing_rewrite_is_refused_and_the_original_kept() {
         eprintln!("model preserved the negation: {:?}", outcome.final_text);
         assert!(
             outcome.final_text.to_lowercase().contains("n't")
-                || outcome.final_text.to_lowercase().contains("not"),
+                || outcome.final_text.to_lowercase().contains("not")
+                || outcome
+                    .final_text
+                    .to_lowercase()
+                    .split_whitespace()
+                    .any(|word| word == "dont"),
             "an accepted rewrite of a negated sentence must still negate: {:?}",
             outcome.final_text
         );

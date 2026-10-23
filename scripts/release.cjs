@@ -27,7 +27,7 @@ function fileDigest(filename) {
   return hash.digest("hex");
 }
 
-function buildManifest(directory, version, platform) {
+function buildManifest(directory, version, platform, runtimeCatalog) {
   const required = platformInstallers(version)[platform];
   if (!required) throw new Error("Unknown build platform");
   const found = new Map();
@@ -45,6 +45,7 @@ function buildManifest(directory, version, platform) {
   return {
     version,
     platform,
+    ...(runtimeCatalog ? { runtime_pack_catalog_sha256: fileDigest(runtimeCatalog) } : {}),
     assets: required.map((name) => {
       const filename = found.get(name);
       if (!filename) throw new Error(`Missing built installer: ${name}`);
@@ -65,6 +66,13 @@ function verifyBuildManifests(directory, version) {
       manifest.assets.length !== required.length
     )
       throw new Error(`Invalid build manifest: ${platform}`);
+    const catalog = path.join(directory, "runtime-packs.json");
+    if (
+      platform !== "android" &&
+      fs.existsSync(catalog) &&
+      manifest.runtime_pack_catalog_sha256 !== fileDigest(catalog)
+    )
+      throw new Error(`Build used a different runtime pack catalog: ${platform}`);
     for (const name of required) {
       const entries = manifest.assets.filter((asset) => asset.name === name);
       const built = entries[0];
@@ -128,10 +136,19 @@ function verifyAssets(directory, version) {
   );
   const metadata = [
     "SHA256SUMS.txt",
+    "runtime-packs.json",
     ...Object.keys(platformInstallers(version)).map((platform) => `build-${platform}.json`),
   ];
   for (const name of files) {
-    if (!installers.includes(name) && !metadata.includes(name))
+    const acceptance =
+      /^acceptance-(?:windows|linux|macos-arm64|macos-x64)(?:\.json|-[a-zA-Z0-9._-]+\.(?:log|txt|json|png))$/.test(
+        name,
+      );
+    const runtimePack =
+      /^speech-runtime-(?:x86_64|aarch64)-(?:unknown-linux-gnu|pc-windows-msvc|apple-darwin)-(?:qwen|phonon|zipformer)-(?:cpu|cu126|cu130|none|default)\.(?:tar\.gz|json)$/.test(
+        name,
+      );
+    if (!installers.includes(name) && !metadata.includes(name) && !acceptance && !runtimePack)
       throw new Error(`Unexpected release asset: ${name}`);
   }
   for (const name of installers) {
@@ -179,25 +196,42 @@ function draftPayload(tag, root = path.resolve(__dirname, "..")) {
 }
 
 if (require.main === module) {
-  const [command, arg, version, platform, output] = process.argv.slice(2);
+  const [command, arg, version, platform, output, runtimeCatalog] = process.argv.slice(2);
   if (command === "verify-version") console.log(verifyVersion(arg));
   else if (command === "draft-payload") console.log(JSON.stringify(draftPayload(arg)));
   else if (command === "build-manifest") {
     if (!output) throw new Error("Provide a build manifest output path");
-    fs.writeFileSync(output, JSON.stringify(buildManifest(arg, version, platform), null, 2));
+    fs.writeFileSync(
+      output,
+      JSON.stringify(buildManifest(arg, version, platform, runtimeCatalog), null, 2),
+    );
   } else if (command === "verify-assets") {
     const files = verifyAssets(arg, version);
-    const sums = files
+    const hashed = [
+      ...files,
+      ...fs.readdirSync(arg).filter((name) => /^speech-runtime-.*\.tar\.gz$/.test(name)),
+      ...(fs.existsSync(path.join(arg, "runtime-packs.json")) ? ["runtime-packs.json"] : []),
+    ].sort();
+    const sums = hashed
       .map((name) => {
         const digest = fileDigest(path.join(arg, name));
         return `${digest}  ${name}\n`;
       })
       .join("");
     fs.writeFileSync(path.join(arg, "SHA256SUMS.txt"), sums);
-    console.log(`Verified ${files.length} installers; wrote SHA256SUMS.txt`);
+    console.log(
+      `Verified ${files.length} installers; wrote SHA256SUMS.txt for ${hashed.length} artifacts`,
+    );
   } else
     throw new Error(
       "Use verify-version TAG, draft-payload TAG, verify-assets DIRECTORY VERSION or build-manifest DIRECTORY VERSION PLATFORM OUTPUT",
     );
 }
-module.exports = { verifyVersion, verifyAssets, draftPayload, buildManifest };
+module.exports = {
+  verifyVersion,
+  verifyAssets,
+  draftPayload,
+  buildManifest,
+  fileDigest,
+  platformInstallers,
+};

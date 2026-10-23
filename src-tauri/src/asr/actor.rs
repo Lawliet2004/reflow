@@ -11,7 +11,57 @@ use super::sidecar::Qwen3AsrSidecar;
 
 type InferenceCancel = Arc<RwLock<Option<(u64, super::engine::InferenceCancellation)>>>;
 
+struct RuntimePolicy {
+    available: bool,
+    signal: Option<super::engine::NetworkPolicySignal>,
+}
+
+struct CachedEngineStatus {
+    generation: AtomicU64,
+    snapshot: RwLock<(u64, EngineStatus)>,
+}
+
+impl CachedEngineStatus {
+    fn new(status: EngineStatus) -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            snapshot: RwLock::new((0, status)),
+        }
+    }
+
+    fn get(&self) -> EngineStatus {
+        let snapshot = self.snapshot.read();
+        if snapshot.0 != self.generation.load(Ordering::SeqCst) {
+            return EngineStatus::unavailable(
+                "Speech runtime status changed; waiting for a fresh check.",
+            );
+        }
+        snapshot.1.clone()
+    }
+
+    fn replace(&self, status: EngineStatus) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.snapshot.write() = (generation, status);
+    }
+
+    fn refresh(&self, engine: &mut dyn ASREngine) -> EngineStatus {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let observed = engine.engine_status();
+        {
+            let mut snapshot = self.snapshot.write();
+            if generation == self.generation.load(Ordering::SeqCst) {
+                *snapshot = (generation, observed);
+            }
+        }
+        self.get()
+    }
+}
+
 pub const DEFAULT_ASR_CHANNEL_CAPACITY: usize = 64;
+
+#[cfg(test)]
+#[path = "actor_policy_tests.rs"]
+mod policy_tests;
 
 /// Dedicated actor thread that owns the ASR engine instance.
 pub struct AsrActor;
@@ -62,6 +112,10 @@ pub enum AsrCommand {
         precision: String,
         reply: Reply<Result<(), String>>,
     },
+    CancelModelDownload {
+        model_id: String,
+        reply: Reply<Result<(), String>>,
+    },
     UnloadModel {
         reply: Reply<Result<(), String>>,
     },
@@ -108,7 +162,7 @@ pub enum AsrCommand {
     },
     SwapEngine {
         engine: Box<dyn ASREngine>,
-        reply: Reply<()>,
+        reply: Reply<Result<(), String>>,
     },
 }
 
@@ -120,12 +174,13 @@ pub enum AsrCommand {
 #[derive(Clone)]
 pub struct AsrHandle {
     sender: mpsc::Sender<AsrCommand>,
-    status_cache: Arc<RwLock<EngineStatus>>,
+    status_cache: Arc<CachedEngineStatus>,
     detected_language: Arc<RwLock<String>>,
     backend_name: Arc<RwLock<String>>,
     last_warning: Arc<RwLock<Option<String>>>,
     session_counter: Arc<AtomicU64>,
     inference_cancel: InferenceCancel,
+    runtime_policy: Arc<RwLock<RuntimePolicy>>,
     progress: super::engine::ProgressTracker,
 }
 
@@ -133,12 +188,17 @@ impl AsrHandle {
     /// Spawn an actor managing the given `engine` with the specified bounded channel `capacity`.
     pub fn spawn(mut engine: Box<dyn ASREngine>, capacity: usize) -> Self {
         let (sender, mut receiver) = mpsc::channel::<AsrCommand>(capacity);
-        let status_cache = Arc::new(RwLock::new(engine.engine_status()));
+        let status_cache = Arc::new(CachedEngineStatus::new(engine.engine_status()));
         let detected_language = Arc::new(RwLock::new(engine.get_detected_language()));
         let backend_name = Arc::new(RwLock::new(engine.get_backend_name()));
         let last_warning = Arc::new(RwLock::new(engine.take_last_warning()));
         let session_counter = Arc::new(AtomicU64::new(1));
         let inference_cancel: InferenceCancel = Arc::new(RwLock::new(None));
+        let runtime_policy = Arc::new(RwLock::new(RuntimePolicy {
+            available: true,
+            signal: engine.network_policy_signal(),
+        }));
+        let policy_c = Arc::clone(&runtime_policy);
         let cancel_c = Arc::clone(&inference_cancel);
         let progress = Arc::new(RwLock::new(super::engine::InferenceProgress::default()));
         engine.set_progress_tracker(progress.clone());
@@ -196,6 +256,9 @@ impl AsrHandle {
                                 &warning_c,
                             );
                             reply.send(res);
+                        }
+                        AsrCommand::CancelModelDownload { model_id, reply } => {
+                            reply.send(engine.cancel_model_download(&model_id))
                         }
                         AsrCommand::UnloadModel { reply } => {
                             let res = engine.unload_model();
@@ -336,13 +399,11 @@ impl AsrHandle {
                             reply.send(());
                         }
                         AsrCommand::RefreshStatus { reply } => {
-                            let status = engine.engine_status();
-                            *status_c.write() = status.clone();
+                            let status = status_c.refresh(&mut *engine);
                             reply.send(status);
                         }
                         AsrCommand::LoadedModelRequest { reply } => {
-                            let status = engine.engine_status();
-                            *status_c.write() = status.clone();
+                            let status = status_c.refresh(&mut *engine);
                             reply.send(if status.loaded {
                                 model_request.clone().map(Some).ok_or_else(|| {
                                     "The loaded ASR model has no restorable load request".into()
@@ -355,6 +416,27 @@ impl AsrHandle {
                             engine: new_engine,
                             reply,
                         } => {
+                            // Retire the registered process before replacing its
+                            // signal, so a concurrent failed policy save cannot
+                            // lose ownership of a still-running old runtime.
+                            let mut policy = policy_c.write();
+                            if let Some(signal) = &policy.signal {
+                                if let Err(error) = signal(false) {
+                                    status_c.replace(EngineStatus::unavailable(error.clone()));
+                                    reply.send(Err(error));
+                                    continue;
+                                }
+                            }
+                            let signal = new_engine.network_policy_signal();
+                            if let Some(signal) = &signal {
+                                if let Err(error) = signal(policy.available) {
+                                    reply.send(Err(error));
+                                    continue;
+                                }
+                            }
+                            policy.signal = signal;
+                            status_c.replace(EngineStatus::default());
+                            drop(policy);
                             *cancel_c.write() = None;
                             engine = new_engine;
                             model_request = None;
@@ -368,7 +450,7 @@ impl AsrHandle {
                                 &backend_c,
                                 &warning_c,
                             );
-                            reply.send(());
+                            reply.send(Ok(()));
                         }
                     }
                 }
@@ -383,18 +465,19 @@ impl AsrHandle {
             last_warning,
             session_counter,
             inference_cancel,
+            runtime_policy,
             progress,
         }
     }
 
     fn sync_cache(
         engine: &mut dyn ASREngine,
-        status_cache: &RwLock<EngineStatus>,
+        status_cache: &CachedEngineStatus,
         detected_language: &RwLock<String>,
         backend_name: &RwLock<String>,
         last_warning: &RwLock<Option<String>>,
     ) {
-        *status_cache.write() = engine.engine_status();
+        status_cache.refresh(engine);
         *detected_language.write() = engine.get_detected_language();
         *backend_name.write() = engine.get_backend_name();
         if let Some(w) = engine.take_last_warning() {
@@ -433,11 +516,11 @@ impl AsrHandle {
     }
 
     pub fn engine_status(&self) -> EngineStatus {
-        self.status_cache.read().clone()
+        self.status_cache.get()
     }
 
     pub fn is_model_loaded(&self) -> bool {
-        self.status_cache.read().loaded
+        self.status_cache.get().loaded
     }
 
     pub fn get_detected_language(&self) -> String {
@@ -476,6 +559,50 @@ impl AsrHandle {
             .map_err(|e| format!("ASR actor disconnected: {e}"))?;
         rx.await
             .map_err(|e| format!("ASR actor dropped reply: {e}"))?
+    }
+
+    pub fn discover_capabilities_blocking(&self) -> Result<(), String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.sender
+            .try_send(AsrCommand::ProbeCuda {
+                reply: Reply::Sync(tx),
+            })
+            .map_err(|e| e.to_string())?;
+        rx.recv_timeout(std::time::Duration::from_secs(15))
+            .map_err(|e| e.to_string())??;
+        let started = std::time::Instant::now();
+        loop {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.sender
+                .try_send(AsrCommand::RefreshStatus {
+                    reply: Reply::Sync(tx),
+                })
+                .map_err(|e| e.to_string())?;
+            let status = rx
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .map_err(|e| e.to_string())?;
+            if !status.cuda_probe_pending {
+                return Ok(());
+            }
+            if started.elapsed() > std::time::Duration::from_secs(90) {
+                return Err(
+                    "Speech capability check timed out. Retry runtime setup or select CPU.".into(),
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    pub fn cancel_model_download_blocking(&self, model_id: &str) -> Result<(), String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.sender
+            .try_send(AsrCommand::CancelModelDownload {
+                model_id: model_id.into(),
+                reply: Reply::Sync(tx),
+            })
+            .map_err(|e| e.to_string())?;
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|e| e.to_string())?
     }
 
     pub fn initialize_blocking(&self) -> Result<(), String> {
@@ -564,6 +691,55 @@ impl AsrHandle {
             .map_err(|error| format!("ASR shutdown queue: {error}"))?;
         rx.recv_timeout(timeout)
             .map_err(|error| format!("ASR shutdown deadline: {error}"))?
+    }
+
+    /// Keep the persisted policy and direct runtime revocation in the same order,
+    /// without queueing behind an in-flight engine command.
+    /// Returns true when a formerly blocked sidecar needs its installed model reloaded.
+    pub fn configure_network_policy(
+        &self,
+        offline: bool,
+        data_dir: &std::path::Path,
+    ) -> Result<bool, String> {
+        self.update_network_policy(|| crate::network_policy::configure(offline, data_dir))
+    }
+
+    fn update_network_policy(
+        &self,
+        configure: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let mut policy = self.runtime_policy.write();
+        let needs_restart = !policy.available && policy.signal.is_some();
+        let saved = configure();
+        policy.available = saved.is_ok();
+        if !policy.available && policy.signal.is_some() {
+            self.status_cache.replace(EngineStatus::unavailable(
+                super::engine::NETWORK_POLICY_UNAVAILABLE,
+            ));
+        }
+        let stopped = policy
+            .signal
+            .as_ref()
+            .map_or(Ok(()), |signal| signal(policy.available));
+        let result = match (saved, stopped) {
+            (Err(error), Err(stop_error)) => Err(format!(
+                "{error}; speech runtime shutdown failed: {stop_error}"
+            )),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), stopped) => stopped,
+        };
+        if policy.signal.is_some() {
+            if let Err(error) = &result {
+                self.status_cache.replace(EngineStatus::unavailable(format!(
+                    "{} {error}",
+                    super::engine::NETWORK_POLICY_UNAVAILABLE
+                )));
+            }
+        }
+        if result.is_ok() && needs_restart {
+            self.status_cache.replace(EngineStatus::default());
+        }
+        result.map(|()| needs_restart)
     }
 
     /// Query the actor so asynchronous install readiness and the corresponding
@@ -806,7 +982,7 @@ impl AsrHandle {
             .await
             .map_err(|e| format!("ASR actor disconnected: {e}"))?;
         rx.await
-            .map_err(|e| format!("ASR actor dropped reply: {e}"))
+            .map_err(|e| format!("ASR actor dropped reply: {e}"))?
     }
 
     pub fn swap_engine_blocking(&self, engine: Box<dyn ASREngine>) -> Result<(), String> {
@@ -818,7 +994,7 @@ impl AsrHandle {
             })
             .map_err(|e| format!("ASR actor channel error: {e}"))?;
         rx.recv()
-            .map_err(|e| format!("ASR actor dropped reply: {e}"))
+            .map_err(|e| format!("ASR actor dropped reply: {e}"))?
     }
 
     pub async fn refresh_status(&self) -> Result<EngineStatus, String> {
@@ -849,9 +1025,14 @@ mod tests {
 
     struct AsyncReadyEngine {
         ready: Arc<AtomicBool>,
+        status_gate: Option<Box<dyn Fn() + Send + Sync>>,
+        policy_signal: Option<super::super::engine::NetworkPolicySignal>,
     }
 
     impl ASREngine for AsyncReadyEngine {
+        fn network_policy_signal(&self) -> Option<super::super::engine::NetworkPolicySignal> {
+            self.policy_signal.clone()
+        }
         fn initialize(&mut self) -> Result<(), String> {
             Ok(())
         }
@@ -868,6 +1049,9 @@ mod tests {
             Ok(())
         }
         fn is_model_loaded(&self) -> bool {
+            if let Some(gate) = &self.status_gate {
+                gate();
+            }
             self.ready.load(Ordering::SeqCst)
         }
         fn start_stream(&mut self, _language: &str, _vocabulary: &[String]) -> Result<(), String> {
@@ -899,6 +1083,8 @@ mod tests {
         let handle = AsrHandle::spawn(
             Box::new(AsyncReadyEngine {
                 ready: Arc::clone(&ready),
+                status_gate: None,
+                policy_signal: None,
             }),
             8,
         );
@@ -913,6 +1099,50 @@ mod tests {
         let refreshed = handle.refresh_status().await.unwrap();
         assert!(refreshed.loaded);
         assert!(handle.engine_status().loaded);
+    }
+
+    #[tokio::test]
+    async fn old_status_probe_cannot_restore_readiness_after_policy_failure_and_repair() {
+        let armed = Arc::new(AtomicBool::new(false));
+        let gate_armed = Arc::clone(&armed);
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let released = parking_lot::Mutex::new(released);
+        let handle = AsrHandle::spawn(
+            Box::new(AsyncReadyEngine {
+                ready: Arc::new(AtomicBool::new(true)),
+                status_gate: Some(Box::new(move || {
+                    if gate_armed.swap(false, Ordering::SeqCst) {
+                        started.send(()).unwrap();
+                        released
+                            .lock()
+                            .recv_timeout(Duration::from_secs(3))
+                            .unwrap();
+                    }
+                })),
+                policy_signal: Some(Arc::new(|_| Ok(()))),
+            }),
+            8,
+        );
+        assert!(handle.is_model_loaded());
+        armed.store(true, Ordering::SeqCst);
+        let polling = handle.clone();
+        let old = tokio::spawn(async move { polling.refresh_status().await });
+        tokio::task::spawn_blocking(move || waiting.recv_timeout(Duration::from_secs(3)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(handle
+            .update_network_policy(|| Err("policy write failed".into()))
+            .is_err());
+        assert!(handle.update_network_policy(|| Ok(())).unwrap());
+        release.send(()).unwrap();
+        assert!(!old.await.unwrap().unwrap().loaded);
+        assert!(!handle.is_model_loaded());
+        assert!(
+            handle.refresh_status().await.unwrap().loaded,
+            "only a new probe can promote readiness after repair"
+        );
     }
 
     struct SlowStopEngine {
