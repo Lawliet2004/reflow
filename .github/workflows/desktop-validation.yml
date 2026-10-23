@@ -46,15 +46,39 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import tarfile
+          from contextlib import ExitStack
+          import json, tarfile
+          class Joined:
+              def __init__(self, files):
+                  self.files = files
+              def read(self, size):
+                  data = bytearray()
+                  while self.files and len(data) < size:
+                      chunk = self.files[0].read(size - len(data))
+                      if chunk:
+                          data.extend(chunk)
+                      else:
+                          self.files.pop(0)
+                  return bytes(data)
           output = Path("runtime-packs")
-          for filename in output.glob("*.tar.gz"):
-              with tarfile.open(filename) as archive:
-                  for name in ("manifest.json", "build-check.json", "licenses.json"):
-                      data = archive.extractfile(name)
-                      if data is None:
-                          raise ValueError(f"Missing {name}")
-                      (output / name).write_bytes(data.read())
+          for descriptor in output.glob("speech-runtime-*.json"):
+              pin = json.loads(descriptor.read_text())
+              wanted = {"manifest.json", "build-check.json", "licenses.json"}
+              with ExitStack() as stack:
+                  files = [stack.enter_context((output / part["asset"]).open("rb"))
+                           for part in pin.get("parts") or [pin]]
+                  with tarfile.open(fileobj=Joined(files), mode="r|gz") as archive:
+                      for member in archive:
+                          if member.name in wanted:
+                              data = archive.extractfile(member)
+                              if data is None:
+                                  raise ValueError(f"Missing {member.name}")
+                              (output / member.name).write_bytes(data.read())
+                              wanted.remove(member.name)
+                          if not wanted:
+                              break
+              if wanted:
+                  raise ValueError(f"Missing metadata: {sorted(wanted)}")
           PY
       - uses: actions/upload-artifact@v4
         with:

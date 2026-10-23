@@ -90,6 +90,23 @@ test("publication requires every platform installer, with correct version and no
     assert.throws(() => verifyAssets(dir, "0.3.0"), /truncated/);
     fs.writeFileSync(path.join(dir, name), installerFixture(name));
   }
+  const partName = "speech-runtime-x86_64-unknown-linux-gnu-qwen-cu126.tar.gz.part001";
+  fs.writeFileSync(
+    path.join(dir, partName),
+    "synthetic part; archive pins are verified by the catalog",
+  );
+  const result = require("node:child_process").spawnSync(
+    process.execPath,
+    [path.join(__dirname, "release.cjs"), "verify-assets", dir, "0.3.0"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const { fileDigest } = require("./release.cjs");
+  assert.ok(
+    fs
+      .readFileSync(path.join(dir, "SHA256SUMS.txt"), "utf8")
+      .includes(`${fileDigest(path.join(dir, partName))}  ${partName}\n`),
+  );
   const changed = installerFixture(names[0]);
   changed[4000] = 1;
   fs.writeFileSync(path.join(dir, names[0]), changed);

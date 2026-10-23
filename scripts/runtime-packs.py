@@ -47,6 +47,49 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+# Leave headroom below GitHub's 2 GiB per-asset limit. Parts are byte ranges
+# of the original archive, each independently pinned in the compiled catalog.
+PACK_PART_BYTES = 1024**3
+
+
+def split_archive(archive, part_bytes=PACK_PART_BYTES):
+    if archive.stat().st_size <= part_bytes:
+        return []
+    parts = []
+    with archive.open("rb") as source:
+        while chunk := source.read(min(part_bytes, 1024**2)):
+            name = f"{archive.name}.part{len(parts) + 1:03d}"
+            destination = archive.with_name(name)
+            size = 0
+            with destination.open("wb") as output:
+                while chunk:
+                    output.write(chunk)
+                    size += len(chunk)
+                    if size == part_bytes:
+                        break
+                    chunk = source.read(min(part_bytes - size, 1024**2))
+            parts.append({"asset": name, "bytes": size, "sha256": digest(destination)})
+    archive.unlink()
+    return parts
+
+
+def verify_pack_archive(directory, pin):
+    whole = hashlib.sha256()
+    for part in pin.get("parts") or [pin]:
+        path = directory / part["asset"]
+        checksum = hashlib.sha256()
+        size = 0
+        with path.open("rb") as source:
+            while chunk := source.read(1024**2):
+                whole.update(chunk)
+                checksum.update(chunk)
+                size += len(chunk)
+        if checksum.hexdigest() != part["sha256"] or size != part["bytes"]:
+            raise ValueError(f"Pack archive differs from its build: {part['asset']}")
+    if whole.hexdigest() != pin["sha256"]:
+        raise ValueError(f"Pack archive differs from its build: {pin['asset']}")
+
+
 def host_target():
     arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(),
                                                          platform.machine().lower())
@@ -191,6 +234,10 @@ def build(output, target, profile, variant, cache, commit):
         run(python, [*local, "-r", payload / "requirements.txt"], offline=True)
         run(python, ["-m", "pip", "check"], offline=True)
         run(python, ["-c", check_code(profile)], offline=True)
+        # The installed probe is proof only, never a shipped environment. Free
+        # its expanded CUDA libraries before compressing the wheelhouse.
+        shutil.rmtree(work / "probe")
+        shutil.rmtree(base)
         inventory = license_inventory(wheels)
         (payload / "licenses.json").write_text(json.dumps({"schema": 1, "packages": inventory}, indent=2) + "\n")
         (payload / "build-check.json").write_text(json.dumps({
@@ -225,6 +272,9 @@ def build(output, target, profile, variant, cache, commit):
         descriptor = {k: manifest[k] for k in ("target", "profile", "variant", "requirements_sha256", "pip_lock_sha256", "pbs_sha256")}
         descriptor.update(schema=1, asset=asset, sha256=digest(output / asset), bytes=(output / asset).stat().st_size,
                           unpacked_bytes=sum(f["bytes"] for f in files) + len(encoded), source_commit=commit)
+        parts = split_archive(output / asset)
+        if parts:
+            descriptor["parts"] = parts
         (output / asset.replace(".tar.gz", ".json")).write_text(json.dumps(descriptor, indent=2) + "\n")
         print(json.dumps(descriptor), flush=True)
 
@@ -251,10 +301,21 @@ def catalog(directory, release, repository, commit, output, partial=False, metad
                 or pin["pip_lock_sha256"] != digest(LOCKS / "pip.txt")
                 or pin["pbs_sha256"] != python["sha256"]):
             raise ValueError(f"Pack differs from its reviewed inputs: {asset}")
-        if not metadata_only and (pin["sha256"] != digest(directory / asset)
-                                  or pin["bytes"] != (directory / asset).stat().st_size):
-            raise ValueError(f"Pack archive differs from its build: {asset}")
+        parts = pin.get("parts", [])
+        if not isinstance(parts, list) or (parts and not 2 <= len(parts) <= 16):
+            raise ValueError(f"Invalid runtime pack parts: {asset}")
+        for index, part in enumerate(parts, 1):
+            if (not isinstance(part, dict) or part.get("asset") != f"{asset}.part{index:03d}"
+                    or type(part.get("bytes")) is not int or not 0 < part["bytes"] <= PACK_PART_BYTES
+                    or not re.fullmatch(r"[a-f0-9]{64}", part.get("sha256", ""))):
+                raise ValueError(f"Invalid runtime pack part: {asset}")
+        if parts and sum(part["bytes"] for part in parts) != pin["bytes"]:
+            raise ValueError(f"Runtime pack part sizes disagree: {asset}")
+        if not metadata_only:
+            verify_pack_archive(directory, pin)
         pin["url"] = f"https://github.com/{repository}/releases/download/{release}/{asset}"
+        for part in parts:
+            part["url"] = f"https://github.com/{repository}/releases/download/{release}/{part['asset']}"
         packs.append(pin)
         keys.add(key)
     if not packs or (not partial and keys != expected):

@@ -15,6 +15,34 @@ SPEC.loader.exec_module(PACKS)
 
 
 class RuntimePackTests(unittest.TestCase):
+    def test_split_archives_retain_exact_bytes_and_reject_missing_corrupt_or_reordered_parts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "fixture.tar.gz"
+            payload = bytes(range(251)) * 13
+            archive.write_bytes(payload)
+            pin = {"asset": archive.name, "bytes": len(payload), "sha256": PACKS.digest(archive)}
+            self.assertEqual(PACKS.split_archive(archive, len(payload)), [])
+            self.assertTrue(archive.exists())
+            pin["parts"] = PACKS.split_archive(archive, 1024)
+            self.assertFalse(archive.exists())
+            self.assertEqual(len(pin["parts"]), 4)
+            self.assertEqual(sum(p["bytes"] for p in pin["parts"]), len(payload))
+            self.assertTrue(all(p["bytes"] <= 1024 for p in pin["parts"]))
+            PACKS.verify_pack_archive(root, pin)
+            pin["parts"].reverse()
+            with self.assertRaisesRegex(ValueError, "archive differs"):
+                PACKS.verify_pack_archive(root, pin)
+            pin["parts"].reverse()
+            path = root / pin["parts"][1]["asset"]
+            original = path.read_bytes()
+            path.write_bytes(b"x" * len(original))
+            with self.assertRaisesRegex(ValueError, "archive differs"):
+                PACKS.verify_pack_archive(root, pin)
+            path.unlink()
+            with self.assertRaises(FileNotFoundError):
+                PACKS.verify_pack_archive(root, pin)
+
     def test_release_matrix_covers_each_reviewed_profile_once_on_its_native_runner(self):
         rows = PACKS.matrix()["include"]
         expected = {p.stem for p in PACKS.LOCKS.glob("*.txt")
@@ -171,6 +199,24 @@ class RuntimePackTests(unittest.TestCase):
             descriptor.write_text(json.dumps(pin))
             with self.assertRaisesRegex(ValueError, "exact source commit"):
                 PACKS.catalog(root, "v0.5.0", "example/reflow", "main", output, True)
+
+            (root / asset).write_bytes(b"synthetic catalog fixture; not a usable runtime")
+            pin["parts"] = PACKS.split_archive(root / asset, 20)
+            descriptor.write_text(json.dumps(pin))
+            collect()
+            published = json.loads(output.read_text())["packs"][0]
+            self.assertTrue(published["parts"][0]["url"].endswith(".part001"))
+            for field, value in [("asset", "../escape"), ("bytes", True),
+                                 ("sha256", "wrong")]:
+                changed = json.loads(json.dumps(pin))
+                changed["parts"][0][field] = value
+                descriptor.write_text(json.dumps(changed))
+                with self.assertRaises(ValueError):
+                    collect(metadata_only=True)
+            descriptor.write_text(json.dumps(pin))
+            (root / pin["parts"][0]["asset"]).write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "archive differs"):
+                collect()
 
 
 if __name__ == "__main__":

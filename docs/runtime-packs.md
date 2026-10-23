@@ -4,6 +4,8 @@ Release preparation now builds a separate pack for each advertised target, engin
 
 The catalog is compiled into the app. It pins each archive's SHA-256, size, target, profile, variant, dependency-lock hashes, Python archive hash and source commit. There is no floating remote catalog. Existing healthy environments and explicit custom interpreters can still be reused after their health checks.
 
+Archives larger than 1 GiB ship as ordered `.tar.gz.part001`, `.part002`, and subsequent assets to stay below GitHub's per-file limit. The catalog pins each part's exact name, URL, size and SHA-256 as well as the complete archive digest. Reflow downloads and resumes each part independently, verifies the complete stream, and extracts it without creating a second assembled cache copy. Missing, corrupted or reordered parts fail verification. Small packs retain a single `.tar.gz` asset.
+
 Each pack contains:
 
 - The pinned, unmodified python-build-standalone archive, including its license files.
@@ -38,7 +40,7 @@ The app rejects mismatched profiles/locks, missing/duplicate payloads, links, tr
 
 Setup subprocesses use bounded diagnostic spools and deadlines rather than output-pipe EOF as proof of exit. Cancel/offline checks continue even after a process closes its output. Quiet stages, inherited handles and output floods cannot create blocked reader threads. Unix cleanup signals the owned process group directly; Windows uses the existing process-tree termination path and still needs native cancellation/descendant evidence.
 
-The archive remains in the verified cache for repair. Extracted wheel payloads are removed after installation. The installed environment retains `reflow-licenses.json` and a receipt with the pack digest. Model download is admitted only after runtime health verification.
+The archive or its verified parts remain in the cache for repair. Extracted wheel payloads are removed after installation. The installed environment retains `reflow-licenses.json` and a receipt with the complete pack digest. Model download is admitted only after runtime health verification.
 
 ## Local proof and remaining coverage
 

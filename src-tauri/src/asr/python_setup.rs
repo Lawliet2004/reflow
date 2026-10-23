@@ -1001,38 +1001,53 @@ fn run_setup_worker_from_pack(
     crate::network_policy::check_disk_space(&cache_dir, estimate)?;
     let archive = if let Some(pack) = &pack {
         let archive = cache_dir.join(&pack.asset);
-        let partial = cache_dir.join(format!("{}.partial", pack.asset));
-        crate::network_policy::fetch_verified_blocking(
-            crate::network_policy::ArtifactDownload {
-                url: &pack.url,
-                sha256: &pack.sha256,
-                exact_bytes: Some(pack.bytes),
-                partial: &partial,
-                destination: &archive,
-            },
-            &SETUP_CANCEL,
-            |progress| {
-                emit(
-                    if progress.phase == "downloading" {
-                        "downloading"
-                    } else {
-                        "verifying"
-                    },
-                    progress.total.map(|total| {
-                        (progress.bytes as u128 * 100 / total.max(1) as u128).min(100) as u32
-                    }),
-                    Some("Preparing the speech runtime pack".into()),
-                    None,
-                )
-            },
-        )
-        .map_err(|error| {
-            if SETUP_CANCEL.load(Ordering::Acquire) {
-                CANCELLED.into()
-            } else {
-                error
-            }
-        })?;
+        let downloads: Vec<_> = if pack.parts.is_empty() {
+            vec![(&pack.asset, &pack.url, &pack.sha256, pack.bytes)]
+        } else {
+            pack.parts
+                .iter()
+                .map(|part| (&part.asset, &part.url, &part.sha256, part.bytes))
+                .collect()
+        };
+        let mut completed = 0u64;
+        for (asset, url, sha256, bytes) in downloads {
+            let destination = cache_dir.join(asset);
+            let partial = cache_dir.join(format!("{asset}.partial"));
+            crate::network_policy::fetch_verified_blocking(
+                crate::network_policy::ArtifactDownload {
+                    url,
+                    sha256,
+                    exact_bytes: Some(bytes),
+                    partial: &partial,
+                    destination: &destination,
+                },
+                &SETUP_CANCEL,
+                |progress| {
+                    emit(
+                        if progress.phase == "downloading" {
+                            "downloading"
+                        } else {
+                            "verifying"
+                        },
+                        Some(
+                            ((completed + progress.bytes.min(bytes)) as u128 * 100
+                                / pack.bytes.max(1) as u128)
+                                .min(100) as u32,
+                        ),
+                        Some("Preparing the speech runtime pack".into()),
+                        None,
+                    )
+                },
+            )
+            .map_err(|error| {
+                if SETUP_CANCEL.load(Ordering::Acquire) {
+                    CANCELLED.into()
+                } else {
+                    error
+                }
+            })?;
+            completed += bytes;
+        }
         archive
     } else {
         let partial = cache_dir.join(format!("{}.partial", pin.asset));
@@ -2030,13 +2045,24 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-            let source = catalog_path.parent().unwrap().join(&pin.asset);
+            let assets: Vec<_> = if pin.parts.is_empty() {
+                vec![pin.asset.as_str()]
+            } else {
+                pin.parts.iter().map(|part| part.asset.as_str()).collect()
+            };
+            let source = catalog_path.parent().unwrap().join(assets[0]);
             let app_dir = scratch_app_dir();
             crate::network_policy::configure(true, &app_dir).unwrap();
             let cache = PlatformSys::get_cache_dir();
             std::fs::create_dir_all(&cache).unwrap();
-            let cached = cache.join(&pin.asset);
-            std::fs::copy(&source, &cached).unwrap();
+            for asset in &assets {
+                std::fs::copy(
+                    catalog_path.parent().unwrap().join(asset),
+                    cache.join(asset),
+                )
+                .unwrap();
+            }
+            let cached = cache.join(assets[0]);
             let started = Instant::now();
             run_setup_worker_from_pack(&|_, _, _, _| {}, model, "cpu", Some(pin.clone())).unwrap();
             let install_ms = started.elapsed().as_millis();

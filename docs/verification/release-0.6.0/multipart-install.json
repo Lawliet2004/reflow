@@ -1,0 +1,23 @@
+{
+  "broken_lazy_api_rejected": false,
+  "bytes": 107344553,
+  "cancelled_repair": "pass",
+  "corrupt_cache": "pass",
+  "missing_cache": "pass",
+  "model_downloads": 0,
+  "native_desktop_or_asr_acceptance": false,
+  "network_journal_entries": 0,
+  "offline_install_ms": 20738,
+  "offline_repair": "pass",
+  "pack_sha256": "a41e50ae4e674a58a0ffcf6af372def05144711795f46f35d8cc63a0702b5cbf",
+  "profile": "zipformer-none",
+  "retained_app_dir": null,
+  "retained_python": null,
+  "target": "x86_64-unknown-linux-gnu",
+  "parts": 7,
+  "part_size_limit": 16777216,
+  "pack_source_commit": "148ae33a9deba466dda58874419c9301b56b69db",
+  "code_base_commit": "8ec3a9b73c0d02f92e2aa21b09d4c33a13e120e8",
+  "implementation_diff_sha256": "1a4d030016b6ebdcea934ed410eba0efa13f843d0a96a66bdc312a77f2827ded",
+  "note": "Real cached Linux Zipformer dependency pack split for an isolated offline installer test. No physical desktop or model-recognition acceptance is claimed."
+}

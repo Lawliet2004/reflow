@@ -9,6 +9,14 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Deserialize)]
+pub(super) struct RuntimePackPart {
+    pub asset: String,
+    pub url: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub(super) struct RuntimePackPin {
     pub target: String,
     pub profile: String,
@@ -18,6 +26,8 @@ pub(super) struct RuntimePackPin {
     pub sha256: String,
     pub bytes: u64,
     pub unpacked_bytes: u64,
+    #[serde(default)]
+    pub parts: Vec<RuntimePackPart>,
     requirements_sha256: String,
     pip_lock_sha256: String,
     pbs_sha256: String,
@@ -88,6 +98,28 @@ fn parse_catalog(text: &str) -> Result<Catalog, String> {
         );
         let url = reqwest::Url::parse(&pin.url).map_err(|e| e.to_string())?;
         crate::network_policy::validate_download_url(&url)?;
+        if !pin.parts.is_empty() {
+            if !(2..=16).contains(&pin.parts.len()) {
+                return Err("Invalid speech runtime pack part count".into());
+            }
+            let mut total = 0u64;
+            for (index, part) in pin.parts.iter().enumerate() {
+                if part.asset != format!("{asset}.part{:03}", index + 1)
+                    || part.url != format!("{}.part{:03}", pin.url, index + 1)
+                    || !valid_digest(&part.sha256)
+                    || part.bytes == 0
+                    || part.bytes > 1024 * 1024 * 1024
+                {
+                    return Err("Runtime pack part differs from its reviewed pins".into());
+                }
+                total = total
+                    .checked_add(part.bytes)
+                    .ok_or("Runtime pack part size overflow")?;
+            }
+            if total != pin.bytes {
+                return Err("Runtime pack part sizes disagree".into());
+            }
+        }
         if pin.asset != asset
             || pin.source_commit != commit
             || url.host_str() != Some("github.com")
@@ -145,6 +177,24 @@ struct Inputs<'a> {
     bootstrap_asset: &'a str,
     requirements: &'a [u8],
     pip: &'a [u8],
+}
+
+fn archive_reader(pin: &RuntimePackPin, archive: &Path) -> Result<Box<dyn Read>, String> {
+    if pin.parts.is_empty() {
+        return std::fs::File::open(archive)
+            .map(|file| Box::new(file) as Box<dyn Read>)
+            .map_err(|error| error.to_string());
+    }
+    let parent = archive
+        .parent()
+        .ok_or("Missing runtime pack cache directory")?;
+    let mut reader: Box<dyn Read> = Box::new(std::io::empty());
+    for part in &pin.parts {
+        let file =
+            std::fs::File::open(parent.join(&part.asset)).map_err(|error| error.to_string())?;
+        reader = Box::new(reader.chain(file));
+    }
+    Ok(reader)
 }
 
 fn safe_payload_path(value: &str) -> bool {
@@ -221,7 +271,32 @@ fn unpack_inner(
         }
     };
     check()?;
-    let source = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+    if !pin.parts.is_empty() {
+        // Verify the concatenated archive without creating another multi-GB
+        // cache file. Each part has already passed the resumable transfer's pin.
+        let mut source = archive_reader(pin, archive)?;
+        let mut hash = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            check()?;
+            let count = source
+                .read(&mut buffer)
+                .map_err(|error| error.to_string())?;
+            if count == 0 {
+                break;
+            }
+            bytes += count as u64;
+            if bytes > pin.bytes {
+                return Err("Runtime pack parts exceed their pinned size".into());
+            }
+            hash.update(&buffer[..count]);
+        }
+        if bytes != pin.bytes || hex::encode(hash.finalize()) != pin.sha256 {
+            return Err("Runtime pack parts differ from their archive pin".into());
+        }
+    }
+    let source = archive_reader(pin, archive)?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(source));
     let mut entries = tar.entries().map_err(|e| e.to_string())?;
     let mut entry = entries
@@ -384,6 +459,7 @@ mod tests {
             bytes: 0,
             unpacked_bytes: manifest_bytes.len() as u64
                 + payloads.iter().map(|(_, b)| b.len() as u64).sum::<u64>(),
+            parts: Vec::new(),
             requirements_sha256: digest(payloads[0].1),
             pip_lock_sha256: digest(payloads[1].1),
             pbs_sha256: digest(payloads[2].1),
@@ -512,6 +588,47 @@ mod tests {
     }
 
     #[test]
+    fn split_archives_extract_without_assembly_and_reject_corruption_or_missing_parts() {
+        for fault in ["", "corrupt", "missing", "reordered", "wrong-total"] {
+            let mut f = fixture(|_| {}, "");
+            let archive = f.root.join("pack.tar.gz");
+            let bytes = std::fs::read(&archive).unwrap();
+            for (index, chunk) in bytes.chunks(bytes.len().div_ceil(2)).enumerate() {
+                let asset = format!("pack.tar.gz.part{:03}", index + 1);
+                std::fs::write(f.root.join(&asset), chunk).unwrap();
+                f.pin.parts.push(RuntimePackPart {
+                    url: format!("{}.part{:03}", f.pin.url, index + 1),
+                    asset,
+                    bytes: chunk.len() as u64,
+                    sha256: digest(chunk),
+                });
+            }
+            std::fs::remove_file(archive).unwrap();
+            match fault {
+                "corrupt" => {
+                    std::fs::write(f.root.join(&f.pin.parts[0].asset), b"corrupt").unwrap()
+                }
+                "missing" => std::fs::remove_file(f.root.join(&f.pin.parts[0].asset)).unwrap(),
+                "reordered" => f.pin.parts.reverse(),
+                "wrong-total" => f.pin.bytes += 1,
+                _ => {}
+            }
+            if fault.is_empty() {
+                assert!(extract(&f, true).is_err());
+                assert!(!f.root.join("payload").exists());
+                extract(&f, false).unwrap();
+                assert_eq!(
+                    std::fs::read(f.root.join("payload/wheelhouse/package.whl")).unwrap(),
+                    b"wheel"
+                );
+            } else {
+                assert!(extract(&f, false).is_err(), "{fault}");
+                assert!(!f.root.join("payload").exists());
+            }
+        }
+    }
+
+    #[test]
     fn catalog_requires_the_current_version_source_and_compiled_dependency_hashes() {
         let target = "x86_64-unknown-linux-gnu";
         let python = super::super::python_setup::pin_for(target).unwrap();
@@ -538,6 +655,23 @@ mod tests {
             catalog["packs"][0][field] = json!("wrong");
             assert!(parse_catalog(&catalog.to_string()).is_err(), "{field}");
             catalog["packs"][0][field] = original;
+        }
+        let url = catalog["packs"][0]["url"].as_str().unwrap().to_owned();
+        catalog["packs"][0]["parts"] = json!([
+            {"asset":format!("{asset}.part001"),"url":format!("{url}.part001"),"bytes":60,"sha256":"c".repeat(64)},
+            {"asset":format!("{asset}.part002"),"url":format!("{url}.part002"),"bytes":40,"sha256":"d".repeat(64)}
+        ]);
+        parse_catalog(&catalog.to_string()).unwrap();
+        for (field, value) in [
+            ("asset", json!("../escape")),
+            ("url", json!("https://github.com/elsewhere")),
+            ("bytes", json!(61)),
+            ("sha256", json!("wrong")),
+        ] {
+            let original = catalog["packs"][0]["parts"][0][field].clone();
+            catalog["packs"][0]["parts"][0][field] = value;
+            assert!(parse_catalog(&catalog.to_string()).is_err(), "{field}");
+            catalog["packs"][0]["parts"][0][field] = original;
         }
         catalog["release"] = json!("v0.0.0");
         assert!(parse_catalog(&catalog.to_string()).is_err());

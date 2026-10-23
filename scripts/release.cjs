@@ -145,7 +145,7 @@ function verifyAssets(directory, version) {
         name,
       );
     const runtimePack =
-      /^speech-runtime-(?:x86_64|aarch64)-(?:unknown-linux-gnu|pc-windows-msvc|apple-darwin)-(?:qwen|phonon|zipformer)-(?:cpu|cu126|cu130|none|default)\.(?:tar\.gz|json)$/.test(
+      /^speech-runtime-(?:x86_64|aarch64)-(?:unknown-linux-gnu|pc-windows-msvc|apple-darwin)-(?:qwen|phonon|zipformer)-(?:cpu|cu126|cu130|none|default)\.(?:tar\.gz(?:\.part[0-9]{3})?|json)$/.test(
         name,
       );
     if (!installers.includes(name) && !metadata.includes(name) && !acceptance && !runtimePack)
@@ -209,7 +209,9 @@ if (require.main === module) {
     const files = verifyAssets(arg, version);
     const hashed = [
       ...files,
-      ...fs.readdirSync(arg).filter((name) => /^speech-runtime-.*\.tar\.gz$/.test(name)),
+      ...fs
+        .readdirSync(arg)
+        .filter((name) => /^speech-runtime-.*\.tar\.gz(?:\.part[0-9]{3})?$/.test(name)),
       ...(fs.existsSync(path.join(arg, "runtime-packs.json")) ? ["runtime-packs.json"] : []),
     ].sort();
     const sums = hashed

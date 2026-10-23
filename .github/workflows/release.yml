@@ -22,6 +22,7 @@ jobs:
     outputs:
       release_id: ${{ steps.release.outputs.release_id }}
       version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
       pack_matrix: ${{ steps.packs.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +59,9 @@ jobs:
             exit 1
           fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          preview=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq '.prerelease')
+          case "$preview" in true|false) ;; *) echo "Unknown release channel" >&2; exit 1 ;; esac
+          echo "prerelease=$preview" >> "$GITHUB_OUTPUT"
 
   build-runtime-packs:
     needs: prepare-release
@@ -210,6 +214,7 @@ jobs:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
           tagName: ${{ github.ref_name }}
           releaseDraft: true
+          prerelease: ${{ needs.prepare-release.outputs.prerelease == 'true' }}
           tauriScript: ${{ runner.os == 'Linux' && 'node scripts/tauri-linux.cjs' || '' }}
           args: --bundles ${{ matrix.bundles }}
       - name: Verify macOS signature and notarization
@@ -299,17 +304,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Reserve disk for verification of the complete runtime matrix
+        run: |
+          # This verification-only hosted runner needs neither Android nor
+          # .NET/Haskell/CodeQL. Retain room for every actual release archive.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h .
       - name: Verify installers and enforce the selected release channel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
+          PREVIEW: ${{ needs.prepare-release.outputs.prerelease }}
         run: |
           gh release download "$GITHUB_REF_NAME" --dir release-downloads
           python3 scripts/runtime-packs.py catalog release-downloads "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" \
             "$GITHUB_SHA" "$RUNNER_TEMP/verified-runtime-packs.json"
           cmp release-downloads/runtime-packs.json "$RUNNER_TEMP/verified-runtime-packs.json"
           node scripts/release.cjs verify-assets release-downloads "$VERSION"
-          preview=$(gh release view "$GITHUB_REF_NAME" --json isPrerelease --jq '.isPrerelease')
+          preview="$PREVIEW"
           case "$preview" in
             true) echo "Publishing an explicitly selected preview; physical acceptance remains pending." ;;
             false) node scripts/acceptance.cjs release-downloads "$VERSION" "$GITHUB_SHA" ;;

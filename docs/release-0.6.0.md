@@ -8,6 +8,7 @@ This release improves first-run setup, offline speech dependencies, shortcut han
 
 - Guided setup checks the microphone, tests the chosen shortcut or Record alternative, recommends a model, installs dependencies and weights, and finishes with a real dictation and delivery trial. Deferred setup can be resumed.
 - Managed speech dependencies use pinned Python builds and per-platform, hash-verified runtime packs. Packs install from a local wheelhouse without network access; model weights remain separate downloads.
+- Large CUDA packs ship as independently verified parts within GitHub's file-size limit. Reflow resumes and checks each part, then verifies and extracts the archive stream without an extra assembled cache copy.
 - Setup and repair recover progress after reopening the UI, reject stale results, preserve the active installation on failure, and support cancellation and cached offline repair.
 - Readiness checks verify the selected speech profile and actual imports and operations before reporting success. Intel Macs retain the English Zipformer path.
 - Speech runtimes better handle memory constraints, model changes, sidecar cancellation, audio decoding, and device selection.
@@ -30,7 +31,9 @@ This release improves first-run setup, offline speech dependencies, shortcut han
 
 Automated checks cover frontend behavior, model-free speech logic, Rust regressions, packaging, and release verifiers. Detailed implementation and installed-model evidence is retained in [implementation-progress.md](implementation-progress.md) and [verification/](verification/).
 
-Local release checks on 23 October 2026 passed: 375 frontend tests, 1,004 Rust tests (28 ignored), 45 Python runtime tests, 23 Python tooling tests, and 20 packaging/release tests (2 platform skips). Production build, TypeScript, formatting, and all-target Clippy passed. ESLint retains one existing non-fatal CleanupPage warning; npm audit reported zero vulnerabilities.
+Local release checks on 23 October 2026 passed: 375 frontend tests, 1,005 Rust tests (28 ignored), 45 Python runtime tests, 24 Python tooling tests, and 20 packaging/release tests (2 platform skips). Production build, TypeScript, formatting, and all-target Clippy passed. ESLint retains one existing non-fatal CleanupPage warning; npm audit reported zero vulnerabilities.
+
+An additional real cached Zipformer pack, split into seven parts, passed offline installation, cancellation, corrupt/missing-cache rejection and repair with zero network journal entries or model downloads; see the [multipart installer result](verification/release-0.6.0/multipart-install.json). This is dependency-installation evidence on the local Linux host.
 
 Physical clean-installer checks on Windows, macOS, and Linux X11/Wayland remain pending. macOS builds retain preview status. Automated builds and synthetic audio do not establish microphone, shortcut, external insertion, signing/quarantine, or GPU compatibility on a physical machine. This preview publishes after automated checks; stable publication still requires the [native acceptance requirements](native-release-acceptance.md).
 
