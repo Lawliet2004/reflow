@@ -299,7 +299,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify installer provenance and clean-machine acceptance before publishing
+      - name: Verify installers and enforce the selected release channel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -309,6 +309,15 @@ jobs:
             "$GITHUB_SHA" "$RUNNER_TEMP/verified-runtime-packs.json"
           cmp release-downloads/runtime-packs.json "$RUNNER_TEMP/verified-runtime-packs.json"
           node scripts/release.cjs verify-assets release-downloads "$VERSION"
-          node scripts/acceptance.cjs release-downloads "$VERSION" "$GITHUB_SHA"
+          preview=$(gh release view "$GITHUB_REF_NAME" --json isPrerelease --jq '.isPrerelease')
+          case "$preview" in
+            true) echo "Publishing an explicitly selected preview; physical acceptance remains pending." ;;
+            false) node scripts/acceptance.cjs release-downloads "$VERSION" "$GITHUB_SHA" ;;
+            *) echo "Unknown release channel; refusing publication" >&2; exit 1 ;;
+          esac
           gh release upload "$GITHUB_REF_NAME" release-downloads/SHA256SUMS.txt --clobber
-          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          if [ "$preview" = "true" ]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          fi

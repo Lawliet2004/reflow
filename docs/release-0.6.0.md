@@ -1,5 +1,7 @@
 # Reflow 0.6.0
 
+**Preview release.** Physical clean-machine acceptance remains pending; see the validation limits below. Reflow 0.5.0 remains the latest stable release.
+
 This release improves first-run setup, offline speech dependencies, shortcut handling, and transcript cleanup. It also includes the accumulated reliability fixes, regression tests, verification records, and promotional video sources and assets since 0.5.0.
 
 ## Setup and speech runtimes
@@ -22,7 +24,7 @@ This release improves first-run setup, offline speech dependencies, shortcut han
 - Offline-policy failures keep the download gate closed and report a persistence error with a repair path. Policy changes revoke owned speech processes and reject stale readiness results.
 - Shared verified transfers handle interrupted downloads, corrupt caches, cancellation, and installation activation more consistently.
 - Release automation builds the dependency-pack matrix before desktop installers and verifies catalog hashes, installer provenance, checksums, and native acceptance evidence before publication.
-- Windows lint excludes Linux-only test helpers; the native-ASR cancellation test no longer races a closed client socket.
+- Windows lint excludes Linux-only test helpers; socket fixtures explicitly use blocking reads with bounded startup timeouts, and the native-ASR cancellation test no longer races a closed client socket.
 
 ## Validation and limitations
 
@@ -30,6 +32,6 @@ Automated checks cover frontend behavior, model-free speech logic, Rust regressi
 
 Local release checks on 23 October 2026 passed: 375 frontend tests, 1,004 Rust tests (28 ignored), 45 Python runtime tests, 23 Python tooling tests, and 20 packaging/release tests (2 platform skips). Production build, TypeScript, formatting, and all-target Clippy passed. ESLint retains one existing non-fatal CleanupPage warning; npm audit reported zero vulnerabilities.
 
-Physical clean-installer checks on Windows, macOS, and Linux X11/Wayland remain pending. macOS builds retain preview status. Automated builds and synthetic audio do not establish microphone, shortcut, external insertion, signing/quarantine, or GPU compatibility on a physical machine. The release stays a draft until the [native acceptance requirements](native-release-acceptance.md) are met.
+Physical clean-installer checks on Windows, macOS, and Linux X11/Wayland remain pending. macOS builds retain preview status. Automated builds and synthetic audio do not establish microphone, shortcut, external insertion, signing/quarantine, or GPU compatibility on a physical machine. This preview publishes after automated checks; stable publication still requires the [native acceptance requirements](native-release-acceptance.md).
 
 The installed small writing model still has documented polish and structure limitations. Rust dependency auditing also reports existing advisory warnings, including GLib 0.18.5 unsoundness; see [the advisory findings](verification/dependency-advisories-2026-10-23.md).
