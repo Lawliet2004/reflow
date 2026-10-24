@@ -4,6 +4,7 @@ import {
   UsageStats,
   FileProgress,
   AppState,
+  RecordingPauseState,
   Mode,
   SessionIntent,
   AppSettings,
@@ -219,6 +220,8 @@ const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   memory_policy: DEFAULT_MEMORY_POLICY,
   history_retention: "30_days",
   audio_retention: "disabled",
+  floating_dictation_enabled: true,
+  recording_pause_enabled: true,
   overlay_position: "bottom_center",
   overlay_theme: "dark",
   app_theme: "system",
@@ -304,7 +307,40 @@ export const api = {
   // Recording Control
   startRecording: (intent?: SessionIntent, modeId?: string) =>
     safeInvoke<void>("start_recording", { intent, modeId }),
+  startFloatingRecording: () => safeInvoke<void>("start_floating_recording"),
+  getRecordingPauseState: () =>
+    safeInvoke<RecordingPauseState>("get_recording_pause_state", undefined, {
+      can_pause: false,
+      paused: false,
+    }),
+  setRecordingPaused: (paused: boolean) => safeInvoke<void>("set_recording_paused", { paused }),
   startMeeting: () => safeInvoke<void>("start_meeting"),
+  getMeetingSources: () =>
+    safeInvoke<import("../types/meetings").MeetingSources>("get_meeting_sources", undefined, {
+      supported: false,
+      explanation: "Meeting capture requires the desktop app.",
+      devices: [],
+      playback: [],
+    }),
+  probeMeetingSources: (config: import("../types/meetings").MeetingConfig) =>
+    safeInvoke<[number, number]>("probe_meeting_sources", { config }, [0, 0]),
+  listMeetings: () =>
+    safeInvoke<import("../types/meetings").Meeting[]>("list_meetings", undefined, []),
+  startDurableMeeting: (config: import("../types/meetings").MeetingConfig) =>
+    safeInvoke<string>("start_durable_meeting", { config }),
+  stopMeeting: (id?: string) => safeInvoke<void>("stop_meeting", { id }),
+  processMeeting: (id: string, summaryModel: string | null) =>
+    safeInvoke<void>("process_meeting", { id, summaryModel }),
+  cancelMeetingProcessing: () => safeInvoke<void>("cancel_meeting_processing"),
+  deleteMeeting: (id: string) => safeInvoke<void>("delete_meeting", { id }),
+  getMeetingOutput: (id: string) =>
+    safeInvoke<import("../types/meetings").MeetingOutput>(
+      "get_meeting_output",
+      { id },
+      { segments: [], summary: null, details: null },
+    ),
+  exportMeeting: (id: string, format: string) =>
+    safeInvoke<string>("export_meeting", { id, format }, ""),
   summarizeHistory: (id: string) => safeInvoke<string>("summarize_history", { id }),
   executeAssistantTool: (response: string) =>
     safeInvoke<string>("execute_assistant_tool", { response }),

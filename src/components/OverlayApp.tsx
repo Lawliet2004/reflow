@@ -1,3 +1,4 @@
+import { AlertCircle, Mic } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import {
   AppSettings,
@@ -14,6 +15,7 @@ import { BackendStage } from "./hud/stages";
 import { AssistantAnswer } from "./AssistantAnswer";
 import { Overlay } from "./Overlay";
 import { applyTheme } from "../utils/theme";
+import { useRecordingPause } from "../hooks/useRecordingPause";
 import { useViewVisibility } from "../hooks/useViewVisibility";
 
 const EMPTY: StreamingTranscriptPayload = {
@@ -34,6 +36,11 @@ export const OverlayApp: React.FC = () => {
   const [transcript, setTranscript] = useState<StreamingTranscriptPayload>(EMPTY);
   const [injection, setInjection] = useState<InjectionFeedback | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [idle, setIdle] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const { paused, can_pause: canPause } = useRecordingPause();
+  const actionPending = useRef(false);
+  const [controlError, setControlError] = useState<string | null>(null);
   const soundVolume = useRef(0.7);
   useEffect(() => {
     soundVolume.current = settings?.sounds_volume ?? 0.7;
@@ -64,6 +71,8 @@ export const OverlayApp: React.FC = () => {
           stateEvents++;
           setAppState(state);
           if (state === "RECORDING") {
+            setIdle(false);
+            setControlError(null);
             setExiting(false);
             setResponse(null);
             setInjection(null);
@@ -72,6 +81,17 @@ export const OverlayApp: React.FC = () => {
           }
         }),
         scope.listen<boolean>("hud:hide", setExiting),
+        scope.listen("hud:idle", () => {
+          setResponse(null);
+          setIdle(true);
+          setExiting(false);
+          setInjection(null);
+          setTranscript(EMPTY);
+          setBackendStage(null);
+        }),
+        scope.listen<string | { message: string }>("recording:error", (error) => {
+          setControlError(typeof error === "string" ? error : error.message);
+        }),
         scope.listen<boolean>("window:visibility", (visible) => {
           if (visible) setExiting(false);
         }),
@@ -119,6 +139,31 @@ export const OverlayApp: React.FC = () => {
     };
   }, []);
 
+  const recording = appState === "RECORDING";
+  const processing = appState === "PROCESSING" || appState === "INJECTING";
+  const floatingEnabled = settings?.floating_dictation_enabled ?? false;
+
+  const runAction = async (togglePause = false) => {
+    if (actionPending.current || processing) return;
+    actionPending.current = true;
+    setBusy(true);
+    setControlError(null);
+    try {
+      if (togglePause && recording) {
+        await api.setRecordingPaused(!paused);
+      } else if (recording) {
+        await api.stopRecording();
+      } else {
+        await api.startFloatingRecording();
+      }
+    } catch (error) {
+      setControlError(error instanceof Error ? error.message : String(error));
+    } finally {
+      actionPending.current = false;
+      setBusy(false);
+    }
+  };
+
   if (response)
     return (
       <AssistantAnswer
@@ -131,6 +176,40 @@ export const OverlayApp: React.FC = () => {
       />
     );
 
+  if (floatingEnabled && idle && !recording && !processing) {
+    const light =
+      settings?.overlay_theme === "light" ||
+      (settings?.overlay_theme === "auto" && !document.documentElement.classList.contains("dark"));
+    return (
+      <div className="floating-dictation-launcher">
+        <button
+          type="button"
+          className={`hud hud-standalone hud-launcher ${light ? "hud-light" : "hud-dark"} ${settings?.hud_scale === "compact" ? "hud-scale-compact" : settings?.hud_scale === "large" ? "hud-scale-large" : ""}`}
+          style={{ "--hud-alpha": settings?.hud_opacity ?? 0.96 } as React.CSSProperties}
+          aria-label={controlError ? `Retry dictation: ${controlError}` : "Start dictation"}
+          title={controlError ? `${controlError} · Click to retry` : "Start dictation"}
+          disabled={busy || (appState !== "READY" && appState !== "IDLE")}
+          onClick={() => {
+            void runAction();
+          }}
+        >
+          {busy ? (
+            <span className="hud-spinner" />
+          ) : controlError ? (
+            <AlertCircle size={18} aria-hidden="true" />
+          ) : (
+            <Mic size={18} aria-hidden="true" />
+          )}
+        </button>
+        {controlError && (
+          <span className="sr-only" role="alert">
+            {controlError}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <Overlay
       appState={appState}
@@ -139,13 +218,30 @@ export const OverlayApp: React.FC = () => {
       exiting={
         exiting && appState !== "RECORDING" && appState !== "PROCESSING" && appState !== "INJECTING"
       }
-      extraMessage={injection?.message ?? null}
+      extraMessage={controlError ?? injection?.message ?? null}
       backendStage={backendStage}
       hudTheme={settings?.overlay_theme ?? "dark"}
       waveformStyle={settings?.waveform_style ?? "bars"}
       hudScale={settings?.hud_scale ?? "standard"}
       hudShape={settings?.hud_shape ?? "pill"}
-      hudStyle={settings?.hud_style ?? "status"}
+      hudStyle={floatingEnabled ? "waveform" : (settings?.hud_style ?? "status")}
+      onStop={
+        floatingEnabled
+          ? () => {
+              void runAction();
+            }
+          : undefined
+      }
+      paused={paused}
+      controlError={controlError}
+      onTogglePause={
+        floatingEnabled && canPause && (settings?.recording_pause_enabled || paused)
+          ? () => {
+              void runAction(true);
+            }
+          : undefined
+      }
+      stopping={busy}
       hudOpacity={settings?.hud_opacity ?? 0.96}
     />
   );

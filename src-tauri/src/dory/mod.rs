@@ -50,6 +50,7 @@ pub enum DoryEvent {
     State(AppStateEnum),
     Partial(StreamingTranscriptPayload),
     AudioLevel(f32),
+    RecordingPaused(bool),
     Final(StreamingTranscriptPayload),
     SessionFinished {
         session_id: u64,

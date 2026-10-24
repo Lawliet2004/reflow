@@ -32,6 +32,10 @@ export const PAGES: { id: string; label: string; description: string; keywords: 
     label: "General",
     description: "Hotkeys, dictation output, modes, snippets and startup.",
     keywords: [
+      "pause",
+      "resume",
+      "recording",
+      "floating",
       "hotkey",
       "shortcut",
       "window",

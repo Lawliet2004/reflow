@@ -47,7 +47,7 @@ impl HistoryKeyProvider for OsHistoryKeyProvider {
     }
 }
 
-pub(super) struct HistoryCipher(Aes256Gcm);
+pub(crate) struct HistoryCipher(Aes256Gcm);
 
 impl HistoryCipher {
     pub fn new(key: [u8; 32]) -> Self {

@@ -640,6 +640,24 @@ pub fn update_settings(
         .and_then(Value::as_str)
         .is_some_and(|device| !device.eq_ignore_ascii_case("cpu"));
 
+    if ctx.meetings.busy()
+        && [
+            "asr",
+            "refinement",
+            "flow_model",
+            "preset",
+            "intelligence_tier",
+            "offline_mode",
+            "history_encryption",
+            "history_retention",
+            "audio_retention",
+            "memory_policy",
+        ]
+        .iter()
+        .any(|key| patch.get(*key).is_some())
+    {
+        return Err("Stop meeting capture or processing before changing speech, summary, runtime or storage settings.".into());
+    }
     let audio_retention_requested = patch.get("audio_retention").is_some();
     let previous = ctx.settings_store.get();
     if patch
@@ -666,6 +684,27 @@ pub fn update_settings(
             }
             return Err(error);
         }
+    }
+    if updated.history_encryption != previous.history_encryption && ctx.meetings.path.exists() {
+        if let Err(error) =
+            crate::meetings::store::Store::open(&ctx.meetings.path, previous.history_encryption)
+                .and_then(|mut s| s.set_encryption(updated.history_encryption))
+        {
+            let _ = ctx.settings_store.merge_update(
+                serde_json::json!({"history_encryption":previous.history_encryption}),
+            );
+            let _ = ctx
+                .history_store
+                .set_encryption(previous.history_encryption);
+            return Err(error);
+        }
+    }
+    if ctx.meetings.path.exists()
+        && (updated.audio_retention != previous.audio_retention
+            || updated.history_retention != previous.history_retention)
+    {
+        crate::meetings::store::Store::open(&ctx.meetings.path, updated.history_encryption)?
+            .retention(&updated.audio_retention, &updated.history_retention)?;
     }
     ctx.history_store
         .require_encryption(updated.history_encryption);
@@ -811,8 +850,13 @@ pub fn update_settings(
 
     if updated.overlay_position != previous.overlay_position
         || updated.hud_scale != previous.hud_scale
+        || updated.recording_pause_enabled != previous.recording_pause_enabled
     {
         overlay::position_overlay(&app, &updated.overlay_position, &updated.hud_scale);
+    }
+
+    if updated.floating_dictation_enabled != previous.floating_dictation_enabled {
+        overlay::sync_floating_control(&app);
     }
 
     if updated.api_enabled != previous.api_enabled
@@ -1040,11 +1084,29 @@ pub async fn start_recording(
 }
 
 #[tauri::command]
-pub async fn start_meeting(ctx: State<'_, AppContext>) -> Result<(), String> {
-    session::start_meeting(ctx.inner())
+pub async fn start_floating_recording(ctx: State<'_, AppContext>) -> Result<(), String> {
+    session::start_floating(ctx.inner())
         .await
         .map(|_| ())
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_recording_pause_state(ctx: State<'_, AppContext>) -> session::RecordingPauseState {
+    session::recording_pause_state(ctx.inner())
+}
+
+#[tauri::command]
+pub async fn set_recording_paused(ctx: State<'_, AppContext>, paused: bool) -> Result<(), String> {
+    session::set_recording_paused(ctx.inner(), paused)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn start_meeting(ctx: State<'_, AppContext>) -> Result<(), String> {
+    let _ = ctx;
+    Err("Use the meeting recorder to select sources and a duration limit".into())
 }
 
 #[tauri::command]

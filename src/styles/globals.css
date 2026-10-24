@@ -619,6 +619,106 @@ body.overlay-window #root {
     max-height: calc(100vh - 8px);
   }
 
+  /* The launcher and recording controls accept pointer input without taking
+     native keyboard focus away from the field receiving the dictation. */
+  :is(.hud[data-interactive], .hud.hud-launcher) {
+    --hud-w: 100px;
+    --hud-h: 32px;
+  }
+  :is(.hud[data-interactive], .hud.hud-launcher).hud-scale-compact {
+    --hud-w: 88px;
+    --hud-h: 28px;
+  }
+  :is(.hud[data-interactive], .hud.hud-launcher).hud-scale-large {
+    --hud-w: 120px;
+    --hud-h: 36px;
+  }
+  .hud[data-interactive] .capsule-wave {
+    --capsule-scale: 0.8;
+  }
+  .hud[data-interactive].hud-scale-compact .capsule-wave {
+    --capsule-scale: 0.7;
+  }
+  .hud[data-interactive].hud-scale-large .capsule-wave {
+    --capsule-scale: 0.9;
+  }
+  .hud.hud-launcher {
+    width: var(--hud-h);
+    padding: 0;
+    align-items: center;
+    pointer-events: auto;
+    cursor: pointer;
+    transition: background 160ms ease-out;
+  }
+  .hud-launcher:hover {
+    background: color-mix(in srgb, currentColor 12%, var(--color-surface));
+  }
+  .hud-launcher.hud-dark:hover {
+    background: #3a332c;
+  }
+  .hud-launcher:disabled {
+    cursor: wait;
+    opacity: 0.65;
+  }
+  .hud[data-interactive] {
+    position: relative;
+    pointer-events: auto;
+  }
+  .hud[data-interactive][data-style="waveform"]:not([data-message]) {
+    width: var(--hud-w);
+  }
+  .hud[data-interactive][data-phase="listen"] .hud-capsule-row {
+    margin-right: var(--hud-h);
+  }
+  .hud[data-pausable][data-phase="listen"] {
+    --hud-w: 128px;
+  }
+  .hud[data-pausable][data-phase="listen"].hud-scale-compact {
+    --hud-w: 112px;
+  }
+  .hud[data-pausable][data-phase="listen"].hud-scale-large {
+    --hud-w: 152px;
+  }
+  .hud[data-pausable][data-phase="listen"] .hud-capsule-row {
+    margin-left: var(--hud-h);
+  }
+  .hud-paused-label {
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 24px;
+  }
+  .hud-control {
+    position: absolute;
+    top: 4px;
+    display: grid;
+    place-items: center;
+    width: calc(var(--hud-h) - 8px);
+    height: calc(var(--hud-h) - 8px);
+    border: 0;
+    border-radius: 50%;
+    color: inherit;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    cursor: pointer;
+    transition: background 160ms ease-out;
+  }
+  .hud-stop {
+    right: 4px;
+  }
+  .hud-pause {
+    left: 4px;
+  }
+  .hud-control:hover {
+    background: color-mix(in srgb, currentColor 24%, transparent);
+  }
+  .hud-control:disabled {
+    opacity: 0.5;
+    cursor: wait;
+  }
+  :is(.hud-launcher, .hud-control):focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -4px;
+  }
+
   .hud-floating {
     position: fixed;
     bottom: max(4px, env(safe-area-inset-bottom));
@@ -2613,4 +2713,85 @@ html.reduce-motion .capsule-wave-bar {
 .view-hidden *::before,
 .view-hidden *::after {
   animation-play-state: paused !important;
+}
+
+.meeting-recorder {
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-surface);
+}
+.meeting-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--color-surface);
+}
+.meeting-body {
+  padding: 16px 24px;
+  display: grid;
+  gap: 16px;
+}
+.meeting-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: 12px;
+}
+.meeting-fields label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.875rem;
+}
+.meeting-meters {
+  display: grid;
+  gap: 8px;
+}
+.meeting-meters label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.875rem;
+}
+.meeting-meters meter {
+  flex: 1;
+  min-width: 100px;
+  accent-color: var(--color-accent);
+}
+.meeting-list {
+  list-style: none;
+  padding: 0;
+}
+.meeting-list > li {
+  border-top: 1px solid var(--color-line-soft);
+  padding: 16px 0;
+  display: grid;
+  gap: 8px;
+}
+.meeting-output {
+  display: grid;
+  gap: 16px;
+  max-width: 75ch;
+  overflow-wrap: anywhere;
+}
+.meeting-output pre {
+  font-family: inherit;
+}
+.meeting-recorder {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.meeting-body {
+  max-height: 65vh;
+  overflow-y: auto;
+}
+.meeting-output p {
+  scroll-margin-top: 80px;
+}
+.meeting-body > .btn {
+  justify-self: start;
 }

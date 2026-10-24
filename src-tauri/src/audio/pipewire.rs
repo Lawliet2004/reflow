@@ -539,17 +539,69 @@ pub struct PipeWireCapture {
 impl PipeWireCapture {
     pub fn spawn(
         node: &str,
+        on_samples: impl FnMut(&[f32]) + Send + 'static,
+        on_error: impl FnOnce(String) + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::spawn_inner(node, on_samples, on_error, false)
+    }
+    pub fn spawn_pinned(
+        node: &str,
+        on_samples: impl FnMut(&[f32]) + Send + 'static,
+        on_error: impl FnOnce(String) + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::spawn_inner(node, on_samples, on_error, true)
+    }
+    fn spawn_inner(
+        node: &str,
         mut on_samples: impl FnMut(&[f32]) + Send + 'static,
         on_error: impl FnOnce(String) + Send + 'static,
+        pinned: bool,
     ) -> Result<Self, String> {
         // Unknown or unplugged sources are refused here rather than
         // streamed as silence.
         if node_capturable(node) != Some(true) {
             return Err(UNAVAILABLE.into());
         }
+        let mut args = record_args(node);
+        if pinned {
+            // Resolve the displayed Pulse source to the actual PipeWire object.
+            // Object serial pins this stream; no policy fallback to unrelated devices.
+            let graph = crate::platform::process::output_env(
+                "pw-dump",
+                &[],
+                PACTL_TIMEOUT,
+                8 * 1024 * 1024,
+                &[],
+            )
+            .map_err(|e| format!("Cannot inspect PipeWire graph: {e}"))?;
+            let graph: serde_json::Value =
+                serde_json::from_str(&graph).map_err(|e| e.to_string())?;
+            let name = node.strip_suffix(".monitor").unwrap_or(node);
+            let class = if node.ends_with(".monitor") {
+                "Audio/Sink"
+            } else {
+                "Audio/Source"
+            };
+            let serial = graph
+                .as_array()
+                .and_then(|nodes| {
+                    nodes.iter().find(|n| {
+                        n["info"]["props"]["node.name"] == name
+                            && n["info"]["props"]["media.class"] == class
+                    })
+                })
+                .and_then(|n| n["info"]["props"]["object.serial"].as_u64())
+                .ok_or(
+                    "The selected source has no matching native PipeWire node; refresh sources",
+                )?;
+            args[3] = serial.to_string();
+        }
+        if pinned && !args[1].contains("node.dont-fallback") {
+            args[1] = "{ node.dont-fallback=true application.name=Reflow }".into();
+        }
         let mut command = Command::new("pw-record");
         command
-            .args(record_args(node))
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

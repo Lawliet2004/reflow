@@ -1,0 +1,295 @@
+{
+  "date_utc": "2026-10-24T07:10:54Z",
+  "test_dir": "/tmp/reflow-meeting-soak-cxx7lmwx",
+  "platform": "Linux",
+  "duration_requested_s": 60,
+  "killed_after_s": 7.3,
+  "capture_wall_s": 7.599905004994071,
+  "format": "16000 Hz mono PCM16 per track",
+  "tracks": 2,
+  "integrity": "ok",
+  "checksums_valid": true,
+  "previous_commits_preserved": true,
+  "last_audio_end_s": [
+    6.6655625,
+    6.7029375
+  ],
+  "rpo_upper_bound_s": 1.8643240270015085,
+  "meeting": {
+    "id": "e41903fd-b09a-405a-87e2-f37a961091d4",
+    "created_at": "2026-10-24T07:10:46.305859958+00:00",
+    "config": {
+      "microphone": "pipewire:reflow_meeting_test",
+      "playback": "pipewire:alsa_output.pci-0000_06_00.6.HiFi__Speaker__sink.monitor",
+      "limit_hours": 5,
+      "summary_model": null
+    },
+    "encrypted": false,
+    "capture": "interrupted",
+    "processing": "pending",
+    "transcription_status": "pending",
+    "summary_status": "pending",
+    "elapsed_ms": 6795,
+    "saved_frames": [
+      106112,
+      100352
+    ],
+    "last_commit_ms": 6795,
+    "queue_depth": 0,
+    "peak_queue_depth": 23,
+    "levels": [
+      0.0,
+      0.0
+    ],
+    "gaps": [],
+    "warning": "Reflow stopped during capture. Only committed audio was recovered; no audio was recorded while the app was closed.",
+    "error": null,
+    "stop_reason": null,
+    "processed_frames": 0,
+    "summary_progress": 0,
+    "audio_removed": false,
+    "asr_model": null,
+    "language": "en"
+  },
+  "telemetry": [
+    {
+      "at_s": 0.25138788799813483,
+      "rss_bytes": 72945664,
+      "process_cpu_s": 0.07,
+      "disk_bytes": 78096,
+      "chunks": 0
+    },
+    {
+      "at_s": 0.5027142399994773,
+      "rss_bytes": 73203712,
+      "process_cpu_s": 0.07,
+      "disk_bytes": 78096,
+      "chunks": 0
+    },
+    {
+      "at_s": 0.753722731002199,
+      "rss_bytes": 73965568,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 78096,
+      "chunks": 0
+    },
+    {
+      "at_s": 1.0046096420046524,
+      "rss_bytes": 74596352,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 1.2554179139988264,
+      "rss_bytes": 74596352,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 1.5061270700025489,
+      "rss_bytes": 74596352,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 1.7569560219999403,
+      "rss_bytes": 74596352,
+      "process_cpu_s": 0.1,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 2.007573865004815,
+      "rss_bytes": 74674176,
+      "process_cpu_s": 0.1,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 2.2582983590036747,
+      "rss_bytes": 74674176,
+      "process_cpu_s": 0.1,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 2.5090172730051563,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.1,
+      "disk_bytes": 164616,
+      "chunks": 1
+    },
+    {
+      "at_s": 2.7597376900012023,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 251136,
+      "chunks": 2
+    },
+    {
+      "at_s": 3.0104508020012872,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 312936,
+      "chunks": 4
+    },
+    {
+      "at_s": 3.2613421120040584,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 312936,
+      "chunks": 4
+    },
+    {
+      "at_s": 3.5123542100045597,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 312936,
+      "chunks": 4
+    },
+    {
+      "at_s": 3.7630781030020444,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 312936,
+      "chunks": 4
+    },
+    {
+      "at_s": 4.0139183860010235,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 312936,
+      "chunks": 4
+    },
+    {
+      "at_s": 4.264652349003882,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 312936,
+      "chunks": 4
+    },
+    {
+      "at_s": 4.515573103999486,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 312936,
+      "chunks": 4
+    },
+    {
+      "at_s": 4.766381116001867,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 312936,
+      "chunks": 4
+    },
+    {
+      "at_s": 5.017054875002941,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.12,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 5.2676864940003725,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.13,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 5.5184151560024475,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 5.769216275002691,
+      "rss_bytes": 74809344,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 6.019868142000632,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 6.270928420999553,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 6.52221973700216,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 6.773134601004131,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 7.024148511998646,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.15,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 7.2750338000041666,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.15,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 7.525987247005105,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.15,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 7.776951323998219,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.15,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 8.02790929999901,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 8.278828963004344,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 8.529769876004138,
+      "rss_bytes": 75079680,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    }
+  ],
+  "scope": "Native PipeWire with explicit selected route; virtual test source is not physical-microphone validation. Process-kill only; no power-loss, disconnect or marker-quality claim."
+}

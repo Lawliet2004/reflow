@@ -301,6 +301,20 @@ impl FlowClient {
         self.wait_for_completion(rx, timeout, "Local task timed out")
     }
 
+    pub fn meeting_prompt_tokens(&self, messages: &[Value]) -> Result<usize, String> {
+        let base = self.base_url.as_ref().ok_or("Local model unavailable")?;
+        self.rendered_prompt_tokens(base, messages, Duration::from_secs(5))
+            .ok_or_else(|| "The installed runtime must support /apply-template and /tokenize to summarize meetings safely".into())
+    }
+
+    pub fn complete_meeting(&self, messages: Vec<Value>) -> Result<String, String> {
+        let tokens = self.meeting_prompt_tokens(&messages)?;
+        if tokens + self.max_completion_tokens + 128 > self.context_size as usize {
+            return Err("Meeting request exceeds effective model context".into());
+        }
+        self.complete(messages)
+    }
+
     /// Blocking HTTP POST `{url}/v1/chat/completions` using the OpenAI schema.
     pub fn rewrite(&self, req: &RewriteRequest) -> Result<String, String> {
         self.rewrite_messages(req, build_messages(req))

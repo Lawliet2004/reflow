@@ -30,11 +30,40 @@ pub struct AudioDeviceInfo {
     pub channels: u16,
 }
 
+/// Serializes pause transitions with sample dispatch, so a completed pause
+/// cannot enqueue more audio. The clock excludes breaks from recording limits.
+#[derive(Default)]
+struct CapturePause {
+    since: Option<std::time::Instant>,
+    elapsed: std::time::Duration,
+}
+
+impl CapturePause {
+    fn set(&mut self, paused: bool, now: std::time::Instant) {
+        match (paused, self.since) {
+            (true, None) => self.since = Some(now),
+            (false, Some(since)) => {
+                self.elapsed += now.saturating_duration_since(since);
+                self.since = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn duration(&self, now: std::time::Instant) -> std::time::Duration {
+        self.elapsed
+            + self.since.map_or(std::time::Duration::ZERO, |since| {
+                now.saturating_duration_since(since)
+            })
+    }
+}
+
 pub struct AudioCaptureEngine {
     pub(super) current_stream: Option<Stream>,
     pub(super) system_stream: Option<Stream>,
     pub(super) meeting_thread: Option<std::thread::JoinHandle<()>>,
     pub(super) is_recording: Arc<AtomicBool>,
+    pause: Arc<Mutex<CapturePause>>,
     pub(super) audio_level: Arc<Mutex<f32>>,
     pub(super) last_device_name: Arc<Mutex<String>>,
     pub(super) dropped_chunks: Arc<AtomicU64>,
@@ -126,7 +155,7 @@ pub(crate) fn score_input_device_name(name: &str) -> i32 {
     10
 }
 
-pub(super) fn resolve_input_device(
+pub(crate) fn resolve_input_device(
     host: &Host,
     device_id: Option<&str>,
 ) -> Result<(Device, String), String> {
@@ -240,6 +269,7 @@ impl AudioCaptureEngine {
             system_stream: None,
             meeting_thread: None,
             is_recording: Arc::new(AtomicBool::new(false)),
+            pause: Arc::new(Mutex::new(CapturePause::default())),
             audio_level: Arc::new(Mutex::new(0.0)),
             last_device_name: Arc::new(Mutex::new(String::new())),
             dropped_chunks: Arc::new(AtomicU64::new(0)),
@@ -247,6 +277,25 @@ impl AudioCaptureEngine {
             #[cfg(target_os = "linux")]
             pipewire_streams: Vec::new(),
         }
+    }
+
+    pub fn reset_pause(&self) {
+        *self.pause.lock() = CapturePause::default();
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.pause.lock().set(paused, std::time::Instant::now());
+        if paused {
+            *self.audio_level.lock() = 0.0;
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.pause.lock().since.is_some()
+    }
+
+    pub fn paused_duration(&self) -> std::time::Duration {
+        self.pause.lock().duration(std::time::Instant::now())
     }
 
     pub fn get_current_audio_level(&self) -> f32 {
@@ -345,6 +394,7 @@ impl AudioCaptureEngine {
         auto_stop_notify: mpsc::Sender<()>,
     ) -> Result<(), String> {
         self.stop_capture();
+        self.reset_pause();
         *self.stream_error.lock() = None;
         self.dropped_chunks.store(0, Ordering::Relaxed);
         if !gain.is_finite() || !(0.5..=3.0).contains(&gain) {
@@ -411,6 +461,7 @@ impl AudioCaptureEngine {
         vad.set_sensitivity(vad_sensitivity);
         let vad_mutex = Arc::new(Mutex::new(vad));
 
+        let pause = Arc::clone(&self.pause);
         let is_recording_flag = Arc::clone(&self.is_recording);
         let audio_level_ref = Arc::clone(&self.audio_level);
         let dropped_chunks = Arc::clone(&self.dropped_chunks);
@@ -447,6 +498,7 @@ impl AudioCaptureEngine {
                         };
                         dispatch_chunk(
                             &gained,
+                            &pause,
                             &resampler_clone,
                             &vad_clone,
                             &audio_level_ref,
@@ -475,6 +527,7 @@ impl AudioCaptureEngine {
                             data.iter().map(|&s| (s as f32 / 32768.0) * gain).collect();
                         dispatch_chunk(
                             &f32_samples,
+                            &pause,
                             &resampler_clone,
                             &vad_clone,
                             &audio_level_ref,
@@ -505,6 +558,7 @@ impl AudioCaptureEngine {
                             .collect();
                         dispatch_chunk(
                             &f32_samples,
+                            &pause,
                             &resampler_clone,
                             &vad_clone,
                             &audio_level_ref,
@@ -535,6 +589,7 @@ impl AudioCaptureEngine {
                             .collect();
                         dispatch_chunk(
                             &f32_samples,
+                            &pause,
                             &resampler_clone,
                             &vad_clone,
                             &audio_level_ref,
@@ -584,6 +639,7 @@ impl AudioCaptureEngine {
         let vad_mutex = Arc::new(Mutex::new(vad));
         let resampler = Arc::new(Mutex::new(AudioResampler::new(16000, 1)));
 
+        let pause = Arc::clone(&self.pause);
         let is_recording_flag = Arc::clone(&self.is_recording);
         let audio_level_ref = Arc::clone(&self.audio_level);
         let dropped_chunks = Arc::clone(&self.dropped_chunks);
@@ -605,6 +661,7 @@ impl AudioCaptureEngine {
                 };
                 dispatch_chunk(
                     &gained,
+                    &pause,
                     &resampler,
                     &vad_mutex,
                     &audio_level_ref,
@@ -652,6 +709,7 @@ impl AudioCaptureEngine {
 
 fn dispatch_chunk(
     native: &[f32],
+    pause: &Mutex<CapturePause>,
     resampler: &Mutex<AudioResampler>,
     vad: &Mutex<VoiceActivityDetector>,
     audio_level: &Mutex<f32>,
@@ -659,6 +717,10 @@ fn dispatch_chunk(
     auto_stop: &mpsc::Sender<()>,
     dropped_chunks: &AtomicU64,
 ) {
+    let pause_guard = pause.lock();
+    if pause_guard.since.is_some() {
+        return;
+    }
     let mono_16k = resampler.lock().resample_f32(native);
     if mono_16k.is_empty() {
         return;
@@ -683,7 +745,74 @@ fn dispatch_chunk(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_virtual_alsa_pcm, score_input_device_name};
+    use super::*;
+
+    #[test]
+    fn pauses_discard_audio_without_feeding_vad_or_closing_the_stream() {
+        let engine = AudioCaptureEngine::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let (auto_stop, mut stops) = mpsc::channel(1);
+        let resampler = Mutex::new(AudioResampler::new(16000, 1));
+        let vad = Mutex::new(VoiceActivityDetector::new(
+            VadConfig {
+                silence_timeout_ms: 10,
+                ..Default::default()
+            },
+            16000,
+        ));
+        let dispatch = |audio: &[f32]| {
+            dispatch_chunk(
+                audio,
+                &engine.pause,
+                &resampler,
+                &vad,
+                &engine.audio_level,
+                &tx,
+                &auto_stop,
+                &engine.dropped_chunks,
+            )
+        };
+        dispatch(&vec![0.25; 1600]);
+        let before = rx.try_recv().unwrap();
+        engine.set_paused(true);
+        dispatch(&vec![0.0; 16000]);
+        assert!(
+            rx.try_recv().is_err(),
+            "a break must add no silence or speech"
+        );
+        assert!(
+            stops.try_recv().is_err(),
+            "paused silence must not auto-stop"
+        );
+        assert_eq!(engine.get_current_audio_level(), 0.0);
+        engine.set_paused(false);
+        dispatch(&vec![0.5; 1600]);
+        let after = rx.try_recv().unwrap();
+        assert_eq!(before.len() + after.len(), 3200);
+        assert!(before.iter().all(|s| *s == 0.25));
+        assert!(after.iter().all(|s| *s == 0.5));
+        assert_eq!(engine.dropped_chunks(), 0);
+    }
+
+    #[test]
+    fn pause_clock_excludes_repeated_and_long_breaks() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut pause = CapturePause::default();
+        pause.set(true, now);
+        pause.set(true, now + Duration::from_secs(60));
+        assert_eq!(
+            pause.duration(now + Duration::from_secs(300)),
+            Duration::from_secs(300)
+        );
+        pause.set(false, now + Duration::from_secs(300));
+        pause.set(false, now + Duration::from_secs(360));
+        pause.set(true, now + Duration::from_secs(400));
+        assert_eq!(
+            pause.duration(now + Duration::from_secs(700)),
+            Duration::from_secs(600)
+        );
+    }
 
     #[test]
     fn prefers_real_mic_over_handsfree_and_virtual() {

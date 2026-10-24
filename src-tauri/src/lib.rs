@@ -17,6 +17,7 @@ pub mod history;
 pub mod hotkey;
 pub mod idle_policies;
 pub mod injection;
+pub mod meetings;
 pub mod model;
 pub mod network_policy;
 pub mod overlay;
@@ -46,6 +47,9 @@ use state::AppStateEnum;
 pub fn run() {
     let context = AppContext::bootstrap();
     let initial_settings = context.settings_store.get();
+    context
+        .meetings
+        .recover(initial_settings.history_encryption);
     let asr_handle = context.asr_handle.clone();
     let hotkey_error = std::sync::Arc::clone(&context.hotkey_error);
 
@@ -377,6 +381,10 @@ pub fn run() {
                 &initial_settings.hud_scale,
             );
 
+            if initial_settings.floating_dictation_enabled {
+                overlay::show_idle(app.handle());
+            }
+
             bind_dory_ui(app.handle().clone(), context.bus.clone(), context.clone());
             idle_policies::start(app.handle().clone(), context.clone());
             #[cfg(target_os = "linux")]
@@ -442,6 +450,14 @@ pub fn run() {
             tray_menu.append(&item_note)?;
             tray_menu.append(&item_offline)?;
             tray_menu.append(&item_settings)?;
+            let item_stop_meeting = MenuItem::with_id(
+                app,
+                "stop_meeting",
+                "Stop and save meeting",
+                true,
+                None::<&str>,
+            )?;
+            tray_menu.append(&item_stop_meeting)?;
             tray_menu.append(&item_quit)?;
 
             if let Some(main) = app.get_webview_window("main") {
@@ -460,6 +476,12 @@ pub fn run() {
 
             let _tray = tray_builder
                 .on_menu_event(move |app_handle, event| match event.id.as_ref() {
+                    "stop_meeting" => {
+                        let ctx = app_handle.state::<AppContext>().inner().clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = meetings::stop(&ctx).await;
+                        });
+                    }
                     "dictate" => spawn_toggle(app_handle.clone()),
                     "toggle_polish" => {
                         let ctx = app_handle.state::<AppContext>();
@@ -594,7 +616,20 @@ pub fn run() {
             commands::test_recognition,
             commands::retry_clipboard_restore,
             commands::start_recording,
+            commands::start_floating_recording,
+            commands::get_recording_pause_state,
+            commands::set_recording_paused,
             commands::start_meeting,
+            meetings::start_durable_meeting,
+            meetings::list_meetings,
+            meetings::get_meeting_sources,
+            meetings::probe_meeting_sources,
+            meetings::stop_meeting,
+            meetings::process_meeting,
+            meetings::cancel_meeting_processing,
+            meetings::delete_meeting,
+            meetings::get_meeting_output,
+            meetings::export_meeting,
             expansion_commands::summarize_history,
             assistant_tools::execute_assistant_tool,
             commands::stop_recording,
@@ -681,6 +716,17 @@ pub fn run() {
         .build(tauri_context)
         .expect("Error while building Reflow desktop application")
         .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+                let ctx = app.state::<AppContext>();
+                if ctx.meetings.recording() {
+                    api.prevent_exit();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    let _ = app.emit("meeting:quit-requested", ());
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 #[cfg(target_os = "linux")]
                 {
@@ -737,6 +783,10 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     }
                     previous_state = state;
                     let _ = app.emit("app:state-changed", state);
+                    let _ = app.emit(
+                        "recording:pause-state",
+                        session::recording_pause_state(&ctx),
+                    );
                     // Session-scoped cancel binding (Escape on macOS/X11): it
                     // is deliberately not a permanent global grab, so it is
                     // armed only while a session is recording.
@@ -792,6 +842,19 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     let _ = app.emit("transcript:partial", payload.clone());
                     let _ = app.emit("recording:audio-level", payload.audio_level);
                 }
+                Ok(DoryEvent::RecordingPaused(paused)) => {
+                    let _ = app.emit(
+                        "recording:pause-state",
+                        session::recording_pause_state(&ctx),
+                    );
+                    if let Some(tray) = app.tray_by_id("main") {
+                        let _ = tray.set_tooltip(Some(if paused {
+                            "Reflow — Paused"
+                        } else {
+                            "Reflow — Listening"
+                        }));
+                    }
+                }
                 Ok(DoryEvent::AudioLevel(level)) => {
                     let _ = app.emit("recording:audio-level", level);
                 }
@@ -812,10 +875,17 @@ fn bind_dory_ui(app: tauri::AppHandle, bus: crate::dory::DoryBus, ctx: AppContex
                     );
                 }
                 Ok(DoryEvent::Injection(feedback)) => {
-                    overlay::resize_overlay(&app, "preview");
+                    let no_speech =
+                        matches!(feedback.message.trim(), "No speech" | "No speech detected");
                     let hide_delay = if feedback.fallback_copy { 2500 } else { 1200 };
                     let _ = app.emit("injection:result", feedback);
-                    overlay::hide_overlay_later(app.clone(), hide_delay);
+                    if no_speech {
+                        // An empty dictation quietly returns to the launcher.
+                        overlay::hide_overlay(&app);
+                    } else {
+                        overlay::resize_overlay(&app, "preview");
+                        overlay::hide_overlay_later(app.clone(), hide_delay);
+                    }
                 }
                 Ok(DoryEvent::DictionaryChanged(settings)) => {
                     let _ = app.emit("settings:changed", *settings);

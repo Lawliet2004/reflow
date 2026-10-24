@@ -17,6 +17,7 @@ import { useViewVisibility } from "./hooks/useViewVisibility";
 import { useIntelligenceHub } from "./hooks/useIntelligenceHub";
 import { useUiZoom } from "./hooks/useUiZoom";
 import { Navigation, NavTab, PageTab } from "./components/Navigation";
+import { MeetingRecorder } from "./components/MeetingRecorder";
 import { TitleBar } from "./components/TitleBar";
 import { DictateHome } from "./components/DictateHome";
 import { useFileTranscriptionController } from "./components/FileTranscription";
@@ -531,6 +532,7 @@ export const App: React.FC = () => {
         />
 
         <main className="app-canvas">
+          <MeetingRecorder enabled={!!settings?.meeting_mode} />
           {hotkeyError && (
             <div
               role="alert"

@@ -184,6 +184,28 @@ export const GeneralPage: React.FC<Props> = ({ settings, onUpdateSettings }) => 
         }}
       />
 
+      <Row
+        label="Floating dictation button"
+        hint="Show a microphone above other apps. Click to record, then click the cross to stop and insert your words. Position and size are set in Appearance."
+      >
+        <Toggle
+          on={settings.floating_dictation_enabled}
+          onChange={(value) => change("floating_dictation_enabled", value)}
+          ariaLabel="Floating dictation button"
+        />
+      </Row>
+
+      <Row
+        label="Pause recording button"
+        hint="Add a square button to the left of the floating waveform. Pause for a break, then click play to continue the same recording. Click the cross when you’re ready to insert your words."
+      >
+        <Toggle
+          on={settings.recording_pause_enabled}
+          onChange={(value) => change("recording_pause_enabled", value)}
+          ariaLabel="Pause recording button"
+        />
+      </Row>
+
       <Row label="Launch at startup" hint="Starts with Windows or your desktop session">
         <Toggle
           on={settings.launch_at_startup}

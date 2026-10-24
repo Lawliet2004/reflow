@@ -100,6 +100,7 @@ pub struct AppContext {
     pub audio_engine: Arc<RwLock<AudioCaptureEngine>>,
     pub asr_handle: AsrHandle,
     pub asr_runtime: Arc<parking_lot::Mutex<String>>,
+    pub meetings: Arc<crate::meetings::Meetings>,
     pub file_jobs: Arc<RwLock<std::collections::HashMap<String, crate::file_jobs::FileJob>>>,
     pub session_operation: Arc<tokio::sync::Mutex<()>>,
     pub session_cancel: Arc<RwLock<Option<tokio::sync::watch::Sender<bool>>>>,
@@ -223,6 +224,9 @@ impl AppContext {
             asr_runtime: Arc::new(parking_lot::Mutex::new(
                 initial_settings.asr.runtime.clone(),
             )),
+            meetings: Arc::new(crate::meetings::Meetings::new(
+                crate::meetings::store::path(),
+            )),
             file_jobs: Arc::new(RwLock::new(Default::default())),
             session_operation: Arc::new(tokio::sync::Mutex::new(())),
             session_cancel: Arc::new(RwLock::new(None)),
@@ -288,6 +292,7 @@ impl AppContext {
             audio_engine: Arc::new(RwLock::new(AudioCaptureEngine::new())),
             asr_handle: AsrHandle::new_mock(),
             asr_runtime: Arc::new(parking_lot::Mutex::new("python".into())),
+            meetings: Arc::new(crate::meetings::Meetings::new(dir.join("meetings.db"))),
             file_jobs: Arc::new(RwLock::new(Default::default())),
             session_operation: Arc::new(tokio::sync::Mutex::new(())),
             session_cancel: Arc::new(RwLock::new(None)),

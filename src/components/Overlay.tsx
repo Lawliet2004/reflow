@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertCircle, Check } from "lucide-react";
+import { AlertCircle, Check, Play, Square, X } from "lucide-react";
 import {
   AppState,
   HudScale,
@@ -26,6 +26,11 @@ interface OverlayProps {
   /** Background opacity, 0.6–1. */
   hudOpacity?: number;
   backendStage?: BackendStage | null;
+  onStop?: () => void;
+  stopping?: boolean;
+  paused?: boolean;
+  controlError?: string | null;
+  onTogglePause?: () => void;
 }
 
 const WAVE_HEIGHT: Record<HudScale, number> = { compact: 14, standard: 16, large: 20 };
@@ -58,7 +63,7 @@ const CapsuleWave: React.FC<{ level: number; listening: boolean }> = ({ level, l
   );
 };
 
-/** A compact, non-interactive status capsule. Details stay in the main app. */
+/** Compact recording status; the floating launcher adds a stop-and-insert action. */
 export const Overlay: React.FC<OverlayProps> = ({
   appState,
   transcript,
@@ -72,11 +77,16 @@ export const Overlay: React.FC<OverlayProps> = ({
   hudStyle = "status",
   hudOpacity = 0.96,
   backendStage = null,
+  onStop,
+  stopping = false,
+  paused = false,
+  controlError = null,
+  onTogglePause,
 }) => {
   const phase = derivePhase(appState, transcript, extraMessage, backendStage);
   const previewText = transcript.full_text.trim();
   const message = phaseLabel(phase, extraMessage ?? "", previewText);
-  let label = message;
+  let label = phase === "listen" && paused ? "Paused" : message;
   if (phase === "error") {
     label = "Couldn't finish · open Reflow";
   } else if (
@@ -86,7 +96,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     label = "Done";
   }
 
-  if (phase === "hidden") {
+  if (phase === "hidden" || (phase === "done" && message === "No speech detected")) {
     return null;
   }
 
@@ -116,6 +126,9 @@ export const Overlay: React.FC<OverlayProps> = ({
       ]
         .filter(Boolean)
         .join(" ")}
+      data-interactive={!!onStop || !!onTogglePause || undefined}
+      data-pausable={!!onTogglePause || undefined}
+      data-paused={(phase === "listen" && paused) || undefined}
       data-phase={phase}
       data-exiting={exiting || undefined}
       data-shape={hudShape}
@@ -126,13 +139,38 @@ export const Overlay: React.FC<OverlayProps> = ({
       role="status"
       aria-live="polite"
       aria-atomic="true"
-      title={waveformPill ? (phase === "listen" ? "Listening" : label) : undefined}
+      title={controlError ?? (waveformPill ? label : undefined)}
     >
+      {controlError && phase === "listen" && (
+        <span className="sr-only" role="alert">
+          {controlError}
+        </span>
+      )}
+      {onTogglePause && phase === "listen" && (
+        <button
+          type="button"
+          className="hud-control hud-pause"
+          aria-label={paused ? "Resume recording" : "Pause recording"}
+          title={paused ? "Resume recording" : "Pause recording"}
+          disabled={stopping}
+          onClick={onTogglePause}
+        >
+          {paused ? (
+            <Play size={13} fill="currentColor" strokeWidth={1.5} aria-hidden="true" />
+          ) : (
+            <Square size={11} fill="currentColor" strokeWidth={1.5} aria-hidden="true" />
+          )}
+        </button>
+      )}
       {waveformPill && !showMessage ? (
         <div className="hud-capsule-row">
-          <CapsuleWave level={transcript.audio_level} listening={phase === "listen"} />
+          {phase === "listen" && paused ? (
+            <span className="hud-paused-label">Paused</span>
+          ) : (
+            <CapsuleWave level={transcript.audio_level} listening={phase === "listen"} />
+          )}
           <Check className="capsule-check" strokeWidth={2.5} aria-hidden="true" />
-          <span className="sr-only">{label}</span>
+          {!(phase === "listen" && paused) && <span className="sr-only">{label}</span>}
         </div>
       ) : (
         <div className="hud-row">
@@ -141,6 +179,8 @@ export const Overlay: React.FC<OverlayProps> = ({
               <AlertCircle className="w-4 h-4" />
             ) : phase === "done" ? (
               <Check className="w-3.5 h-3.5 stroke-[3]" />
+            ) : phase === "listen" && paused ? (
+              <Square className="w-3 h-3" fill="currentColor" />
             ) : phase === "listen" ? (
               <span className="hud-pulse" />
             ) : (
@@ -150,13 +190,13 @@ export const Overlay: React.FC<OverlayProps> = ({
 
           <span
             key={label}
-            className={minimal ? "sr-only" : "hud-label"}
-            title={phase === "listen" ? "Listening" : message}
+            className={minimal && !paused ? "sr-only" : "hud-label"}
+            title={phase === "listen" ? label : message}
           >
             {label}
           </span>
 
-          {phase === "listen" && waveformStyle !== "pulse" && (
+          {phase === "listen" && !paused && waveformStyle !== "pulse" && (
             <span className="hud-wave">
               <Waveform
                 level={transcript.audio_level}
@@ -168,6 +208,18 @@ export const Overlay: React.FC<OverlayProps> = ({
             </span>
           )}
         </div>
+      )}
+      {onStop && phase === "listen" && (
+        <button
+          type="button"
+          className="hud-control hud-stop"
+          aria-label="Stop recording and insert text"
+          title="Stop recording and insert text"
+          disabled={stopping}
+          onClick={onStop}
+        >
+          <X size={16} strokeWidth={2} aria-hidden="true" />
+        </button>
       )}
     </div>
   );

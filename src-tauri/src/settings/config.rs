@@ -623,6 +623,12 @@ pub struct AppSettings {
     pub history_retention: String,
     #[serde(default = "default_audio_retention")]
     pub audio_retention: String,
+    /// Show a clickable dictation launcher above other applications.
+    #[serde(default = "default_floating_dictation_enabled")]
+    pub floating_dictation_enabled: bool,
+    /// Show pause/resume beside the floating waveform.
+    #[serde(default = "default_true")]
+    pub recording_pause_enabled: bool,
     pub overlay_position: String,
     pub overlay_theme: String,
     #[serde(default = "default_app_theme")]
@@ -740,6 +746,10 @@ fn default_window_material() -> String {
 
 fn default_hud_shape() -> String {
     "pill".into()
+}
+
+fn default_floating_dictation_enabled() -> bool {
+    true
 }
 
 fn default_hud_style() -> String {
@@ -877,6 +887,8 @@ impl Default for AppSettings {
             memory_policy: MemoryPolicySettings::default(),
             history_retention: "30_days".into(),
             audio_retention: default_audio_retention(),
+            floating_dictation_enabled: true,
+            recording_pause_enabled: true,
             overlay_position: "bottom_center".into(),
             overlay_theme: "dark".into(),
             app_theme: default_app_theme(),
@@ -1780,6 +1792,8 @@ mod tests {
         obj.remove("accent_color");
         obj.remove("hud_scale");
         obj.remove("hud_style");
+        obj.remove("floating_dictation_enabled");
+        obj.remove("recording_pause_enabled");
         obj.remove("waveform_style");
         obj.remove("reduce_motion");
         obj.remove("ui_font_scale");
@@ -1801,6 +1815,8 @@ mod tests {
         assert_eq!(loaded.accent_color, "sky");
         assert_eq!(loaded.hud_scale, "standard");
         assert_eq!(loaded.hud_style, "status");
+        assert!(loaded.floating_dictation_enabled);
+        assert!(loaded.recording_pause_enabled);
         assert_eq!(loaded.waveform_style, "bars");
         assert!(!loaded.reduce_motion);
         assert_eq!(loaded.ui_font_scale, "normal");
@@ -1832,6 +1848,35 @@ mod tests {
             .merge_update(serde_json::json!({"asr": {"runtime": "unknown"}}))
             .unwrap();
         assert_eq!(store.get().asr.runtime, "python");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn floating_dictation_can_be_disabled_and_stays_disabled_after_restart() {
+        let dir = std::env::temp_dir().join(format!("reflow_floating_{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert!(store.get().floating_dictation_enabled);
+        store
+            .merge_update(serde_json::json!({"floating_dictation_enabled": false}))
+            .unwrap();
+        assert!(!SettingsStore::new(path).get().floating_dictation_enabled);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recording_pause_preference_survives_updates_and_reload() {
+        let dir = std::env::temp_dir().join(format!("reflow_pause_{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert!(store.get().recording_pause_enabled);
+        store
+            .merge_update(serde_json::json!({"recording_pause_enabled": false}))
+            .unwrap();
+        store
+            .merge_update(serde_json::json!({"hud_scale": "large"}))
+            .unwrap();
+        assert!(!SettingsStore::new(path).get().recording_pause_enabled);
         let _ = std::fs::remove_dir_all(dir);
     }
 

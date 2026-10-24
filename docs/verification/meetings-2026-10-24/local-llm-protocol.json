@@ -1,0 +1,44 @@
+{
+  "runtime": "llama.cpp b11146 CPU",
+  "model": "Qwen3.5-0.8B-Q4_K_M",
+  "context": 4096,
+  "templated_prompt_tokens": 94,
+  "reserved_output": 512,
+  "fits": true,
+  "response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "```json\n{\"facts\":[{\"kind\":\"action\",\"text\":\"Priya will send the release checklist on Friday.\",\"owner\":\"Priya\",\"deadline\":\"Friday\",\"sources\":[\"segment-0\"]}]\n```"
+        }
+      }
+    ],
+    "created": 1792825054,
+    "model": "/home/papan/.local/share/reflow/models/flow/Qwen3.5-0.8B-Q4_K_M.gguf",
+    "system_fingerprint": "b11146-7fe450e19",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 41,
+      "prompt_tokens": 94,
+      "total_tokens": 135,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "id": "chatcmpl-xIWw8EuXo4k0TOBwFjjNbXWLUYOh8RGT",
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 94,
+      "prompt_ms": 1165.786,
+      "prompt_per_token_ms": 12.401978723404255,
+      "prompt_per_second": 80.63229443482766,
+      "predicted_n": 41,
+      "predicted_ms": 1147.248,
+      "predicted_per_token_ms": 28.6812,
+      "predicted_per_second": 34.86604465642999
+    }
+  }
+}

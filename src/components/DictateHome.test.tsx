@@ -248,3 +248,50 @@ describe("transcript actions", () => {
     expect(screen.getByRole("textbox", { name: "Transcript" })).toHaveValue("Hello world");
   });
 });
+
+it("provides a keyboard-accessible pause and resume action in the main studio", async () => {
+  const userEvent = (await import("@testing-library/user-event")).default;
+  const user = userEvent.setup();
+  const settings = await api.getSettings();
+  vi.spyOn(api, "getRecordingPauseState").mockResolvedValue({ can_pause: true, paused: false });
+  const toggle = vi.spyOn(api, "setRecordingPaused").mockResolvedValue();
+  const listeners = new Map<string, (payload: any) => void>();
+  vi.spyOn(bridge, "safeListen").mockImplementation(async (event, handler) => {
+    listeners.set(event, handler);
+    return () => {};
+  });
+  render(
+    <DictateHome
+      appState="RECORDING"
+      settings={settings}
+      modelStatus={null}
+      transcript={{
+        full_text: "",
+        committed_prefix: "",
+        mutable_suffix: "",
+        language: "en",
+        audio_level: 0.2,
+        stage: "",
+      }}
+      latencyMetrics={null}
+      latencyPercentiles={null}
+      onStartRecording={vi.fn()}
+      onStopRecording={vi.fn()}
+      onUpdateSettings={vi.fn()}
+      onOpenHistory={vi.fn()}
+    />,
+  );
+  const pause = await screen.findByRole("button", { name: "Pause recording" });
+  pause.focus();
+  await user.keyboard("{Enter}");
+  expect(toggle).toHaveBeenCalledExactlyOnceWith(true);
+  await act(async () =>
+    listeners.get("recording:pause-state")?.({ can_pause: true, paused: true }),
+  );
+  expect(screen.getByText("Recording paused")).toBeVisible();
+  const resume = screen.getByRole("button", { name: "Resume recording" });
+  expect(resume).toHaveFocus();
+  await user.keyboard(" ");
+  await waitFor(() => expect(toggle).toHaveBeenLastCalledWith(false));
+  expect(screen.getByRole("button", { name: "Stop recording" })).toBeEnabled();
+});

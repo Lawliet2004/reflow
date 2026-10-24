@@ -249,6 +249,8 @@ export interface AppSettings {
   memory_policy: MemoryPolicySettings;
   history_retention: HistoryRetention;
   audio_retention: AudioRetention;
+  floating_dictation_enabled: boolean;
+  recording_pause_enabled: boolean;
   overlay_position: OverlayPosition;
   overlay_theme: HudTheme;
   app_theme: AppTheme;
@@ -1083,6 +1085,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     : "off";
   return {
     ...settings,
+    floating_dictation_enabled: settings.floating_dictation_enabled ?? true,
+    recording_pause_enabled: settings.recording_pause_enabled ?? true,
     sounds_enabled: settings.sounds_enabled ?? true,
     sounds_volume: settings.sounds_volume ?? 0.7,
     history_encryption: settings.history_encryption ?? false,
@@ -1275,4 +1279,10 @@ export interface SpeechSetupPlan {
   available_disk_bytes: number | null;
   supported_models: string[];
   blocker: string | null;
+}
+
+/** Authoritative controls for the current local microphone session. */
+export interface RecordingPauseState {
+  can_pause: boolean;
+  paused: boolean;
 }

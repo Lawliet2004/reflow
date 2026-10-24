@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Mic,
+  Pause,
+  Play,
   Square,
   Copy,
   Check,
@@ -36,6 +38,7 @@ import { selectedLlm } from "../llmSelection";
 import { WritingTaskPicker } from "./WritingTaskPicker";
 import { useDesktopIntegration } from "../hooks/useDesktopIntegration";
 import { useViewVisibility } from "../hooks/useViewVisibility";
+import { useRecordingPause } from "../hooks/useRecordingPause";
 import { useActiveMicrophone } from "../hooks/useActiveMicrophone";
 
 interface DictateHomeProps {
@@ -96,6 +99,9 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   fileTranscription,
 }) => {
   const visible = useViewVisibility();
+  const { paused, can_pause: canPause } = useRecordingPause();
+  const [pausePending, setPausePending] = useState(false);
+  const pauseAction = useRef(false);
   const { status: desktop } = useDesktopIntegration();
   const shortcut =
     desktop?.session === "wayland"
@@ -104,6 +110,8 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   const cancelShortcut =
     desktop?.session === "wayland" ? desktop.assigned_shortcuts.cancel : settings.hotkeys?.cancel;
   const recordingStarted = useRef<number | null>(null);
+  const pausedStarted = useRef<number | null>(null);
+  const pausedMillis = useRef(0);
   const [draft, setDraft] = useState<{ source: string; text: string } | null>(null);
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -165,16 +173,30 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   useEffect(() => {
     if (!isRecording) {
       recordingStarted.current = null;
+      pausedStarted.current = null;
+      pausedMillis.current = 0;
       return;
     }
-    recordingStarted.current ??= Date.now();
+    const now = Date.now();
+    recordingStarted.current ??= now;
+    if (paused) {
+      pausedStarted.current ??= now;
+      return;
+    }
+    if (pausedStarted.current !== null) {
+      pausedMillis.current += now - pausedStarted.current;
+      pausedStarted.current = null;
+    }
     if (!visible) return;
     const started = recordingStarted.current;
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    const timer = setInterval(
+      () => setSeconds(Math.floor((Date.now() - started - pausedMillis.current) / 1000)),
+      1000,
+    );
     return () => {
       clearInterval(timer);
     };
-  }, [isRecording, visible]);
+  }, [isRecording, visible, paused]);
   useEffect(() => {
     if (!feedback) return;
     const timer = setTimeout(() => setFeedback(null), 5000);
@@ -224,7 +246,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
   };
 
   const statusText = () => {
-    if (isRecording) return "Listening to you";
+    if (isRecording) return paused ? "Recording paused" : "Listening to you";
     if (isProcessing) {
       if (appState === "INJECTING") return "Inserting your words";
       if (phase === "polish") return "A final polish";
@@ -248,7 +270,34 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
     if (isRecording) {
       return (
         <div className="manuscript-live">
-          <Waveform level={transcript.audio_level} active barCount={24} height={22} />
+          <Waveform
+            level={paused ? 0 : transcript.audio_level}
+            active={!paused}
+            barCount={24}
+            height={22}
+          />
+          {canPause && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={pausePending}
+              onClick={() => {
+                if (pauseAction.current) return;
+                pauseAction.current = true;
+                setPausePending(true);
+                void api
+                  .setRecordingPaused(!paused)
+                  .catch((error: unknown) => setFeedback({ error: true, text: String(error) }))
+                  .finally(() => {
+                    pauseAction.current = false;
+                    setPausePending(false);
+                  });
+              }}
+            >
+              {paused ? <Play size={14} aria-hidden /> : <Pause size={14} aria-hidden />}
+              {paused ? "Resume recording" : "Pause recording"}
+            </button>
+          )}
           <span className="text-sm text-muted tabular-nums">
             {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
           </span>
@@ -339,9 +388,13 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
       <section className="manuscript" aria-label="Dictation studio">
         <div className="manuscript-head">
           <button
-            className={`record-button ${isRecording ? "is-recording" : ""}`}
+            className={`record-button ${isRecording && !paused ? "is-recording" : ""}`}
             // RMS speech sits around 0.05-0.3; the same 3.4x gain as the waveform.
-            style={{ "--level": Math.min(1, transcript.audio_level * 3.4) } as React.CSSProperties}
+            style={
+              {
+                "--level": paused ? 0 : Math.min(1, transcript.audio_level * 3.4),
+              } as React.CSSProperties
+            }
             disabled={isProcessing || (!isRecording && !canStart)}
             aria-label={isRecording ? "Stop recording" : "Start recording"}
             onClick={() => {
@@ -497,30 +550,6 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
           )}
         </div>
       </section>
-      {settings.meeting_mode && (
-        <section
-          className="panel p-5 mt-8 flex items-center justify-between gap-4"
-          aria-label="Meeting recording"
-        >
-          <div>
-            <h2 className="font-display text-lg font-medium">Capture a meeting</h2>
-            <p className="text-sm text-muted">
-              Record your mic and computer playback. Saved to History without pasting.
-            </p>
-          </div>
-          <button
-            className="btn btn-secondary shrink-0"
-            disabled={!canStart}
-            onClick={() => {
-              void api
-                .startMeeting()
-                .catch((e: unknown) => setFeedback({ error: true, text: String(e) }));
-            }}
-          >
-            Record meeting
-          </button>
-        </section>
-      )}
       <div className="home-secondary">
         <section className="recent-section" aria-label="Recently said">
           <header>

@@ -157,9 +157,24 @@ describe("Overlay", () => {
     expect(screen.getByRole("status")).toHaveAttribute("title", "Inserted (unpolished)");
   });
 
+  it.each(["status", "waveform"] as const)(
+    "silently hides a no-speech result in %s style",
+    (hudStyle) => {
+      const { container } = render(
+        <Overlay
+          appState="READY"
+          transcript={payload()}
+          extraMessage="No speech"
+          hudStyle={hudStyle}
+          standalone
+        />,
+      );
+      expect(container.firstChild).toBeNull();
+    },
+  );
+
   it.each([
     ["IDLE", "Copied — press Ctrl+V", "Copied — press Ctrl+V"],
-    ["READY", "No speech", "No speech detected"],
     ["ERROR", "Failed", "Couldn't finish · open Reflow"],
     ["READY", "Inserted (LLM error: timeout)", "Inserted (LLM error: timeout)"],
     [

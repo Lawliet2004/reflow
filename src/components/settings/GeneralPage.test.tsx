@@ -197,3 +197,42 @@ it("waits for the desktop settings launch and allows retry after a launch failur
   );
   expect(screen.getByRole("button", { name: "Configure desktop shortcuts" })).toBeEnabled();
 });
+
+it("lets the floating dictation button be switched off and on", async () => {
+  const settings = await api.getSettings();
+  const update = vi.fn();
+  const { rerender } = render(
+    <GeneralPage
+      settings={{ ...settings, floating_dictation_enabled: true }}
+      onUpdateSettings={update}
+    />,
+  );
+  fireEvent.click(screen.getByRole("switch", { name: "Floating dictation button" }));
+  expect(update).toHaveBeenLastCalledWith({ floating_dictation_enabled: false });
+  rerender(
+    <GeneralPage
+      settings={{ ...settings, floating_dictation_enabled: false }}
+      onUpdateSettings={update}
+    />,
+  );
+  fireEvent.click(screen.getByRole("switch", { name: "Floating dictation button" }));
+  expect(update).toHaveBeenLastCalledWith({ floating_dictation_enabled: true });
+});
+
+it("shows pause recording by default and saves the toggle", async () => {
+  const settings = await api.getSettings();
+  const update = vi.fn();
+  const { rerender } = render(<GeneralPage settings={settings} onUpdateSettings={update} />);
+  const toggle = screen.getByRole("switch", { name: "Pause recording button" });
+  expect(toggle).toHaveAttribute("aria-checked", "true");
+  fireEvent.click(toggle);
+  expect(update).toHaveBeenLastCalledWith({ recording_pause_enabled: false });
+  rerender(
+    <GeneralPage
+      settings={{ ...settings, recording_pause_enabled: false }}
+      onUpdateSettings={update}
+    />,
+  );
+  fireEvent.click(screen.getByRole("switch", { name: "Pause recording button" }));
+  expect(update).toHaveBeenLastCalledWith({ recording_pause_enabled: true });
+});

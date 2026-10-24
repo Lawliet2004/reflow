@@ -1,0 +1,638 @@
+{
+  "date_utc": "2026-10-24T07:11:07Z",
+  "test_dir": "/tmp/reflow-meeting-soak-l1kv804u",
+  "platform": "Linux",
+  "duration_requested_s": 20,
+  "killed_after_s": null,
+  "capture_wall_s": 20.083374225003354,
+  "format": "16000 Hz mono PCM16 per track",
+  "tracks": 2,
+  "integrity": "ok",
+  "checksums_valid": true,
+  "previous_commits_preserved": true,
+  "last_audio_end_s": [
+    20.7048125,
+    20.6949375
+  ],
+  "rpo_upper_bound_s": null,
+  "meeting": {
+    "id": "6ce60b65-18dc-4347-a1b1-1c080bd74729",
+    "created_at": "2026-10-24T07:10:46.366459080+00:00",
+    "config": {
+      "microphone": "pipewire:reflow_meeting_test",
+      "playback": "pipewire:alsa_output.pci-0000_06_00.6.HiFi__Speaker__sink.monitor",
+      "limit_hours": 5,
+      "summary_model": null
+    },
+    "encrypted": false,
+    "capture": "saved",
+    "processing": "transcribing",
+    "transcription_status": "running",
+    "summary_status": "pending",
+    "elapsed_ms": 20935,
+    "saved_frames": [
+      330752,
+      323584
+    ],
+    "last_commit_ms": 20935,
+    "queue_depth": 0,
+    "peak_queue_depth": 23,
+    "levels": [
+      0.0,
+      0.0
+    ],
+    "gaps": [],
+    "warning": null,
+    "error": null,
+    "stop_reason": null,
+    "processed_frames": 330752,
+    "summary_progress": 0,
+    "audio_removed": false,
+    "asr_model": "[\"1.7b\",\"python\",\"auto\",\"auto\",[\"Qwen\",\"Tauri\",\"Supabase\",\"GitHub\",\"VS Code\",\"TypeScript\",\"PostgreSQL\",\"LangGraph\"]]",
+    "language": "en"
+  },
+  "telemetry": [
+    {
+      "at_s": 0.2512658170016948,
+      "rss_bytes": 73216000,
+      "process_cpu_s": 0.06,
+      "disk_bytes": 78096,
+      "chunks": 0
+    },
+    {
+      "at_s": 0.5024001560013858,
+      "rss_bytes": 73584640,
+      "process_cpu_s": 0.06,
+      "disk_bytes": 78096,
+      "chunks": 0
+    },
+    {
+      "at_s": 0.7531975279998733,
+      "rss_bytes": 74506240,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 78096,
+      "chunks": 0
+    },
+    {
+      "at_s": 1.004118875003769,
+      "rss_bytes": 75026432,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 1.2548334899984184,
+      "rss_bytes": 75026432,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 1.5057512999992468,
+      "rss_bytes": 75026432,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 1.7566982049975195,
+      "rss_bytes": 75026432,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 2.007671749997826,
+      "rss_bytes": 75173888,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 2.2586095270016813,
+      "rss_bytes": 75173888,
+      "process_cpu_s": 0.09,
+      "disk_bytes": 86336,
+      "chunks": 0
+    },
+    {
+      "at_s": 2.509288726003433,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.1,
+      "disk_bytes": 164616,
+      "chunks": 1
+    },
+    {
+      "at_s": 2.7602196900043054,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.1,
+      "disk_bytes": 251136,
+      "chunks": 2
+    },
+    {
+      "at_s": 3.0111379610025324,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 317056,
+      "chunks": 4
+    },
+    {
+      "at_s": 3.2620798560019466,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 317056,
+      "chunks": 4
+    },
+    {
+      "at_s": 3.5129814550018637,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 317056,
+      "chunks": 4
+    },
+    {
+      "at_s": 3.7638936740040663,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.11,
+      "disk_bytes": 317056,
+      "chunks": 4
+    },
+    {
+      "at_s": 4.014777509997657,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.12,
+      "disk_bytes": 317056,
+      "chunks": 4
+    },
+    {
+      "at_s": 4.265634114002751,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.12,
+      "disk_bytes": 317056,
+      "chunks": 4
+    },
+    {
+      "at_s": 4.516543156998523,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.12,
+      "disk_bytes": 317056,
+      "chunks": 4
+    },
+    {
+      "at_s": 4.767431100000977,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.12,
+      "disk_bytes": 317056,
+      "chunks": 4
+    },
+    {
+      "at_s": 5.0183415159990545,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.13,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 5.269490623002639,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.13,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 5.520478384001763,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.13,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 5.7715175230041496,
+      "rss_bytes": 75354112,
+      "process_cpu_s": 0.13,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 6.022468155002571,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 6.273352802003501,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 6.524233060998085,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 6.7752211230035755,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.14,
+      "disk_bytes": 510696,
+      "chunks": 8
+    },
+    {
+      "at_s": 7.026411478000227,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 7.277689337999618,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 7.5285637760025566,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 7.779335188999539,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 8.030290809998405,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 8.281184043000394,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 8.532235935999779,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.16,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 8.783319499001664,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.17,
+      "disk_bytes": 704336,
+      "chunks": 12
+    },
+    {
+      "at_s": 9.034296409998205,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.18,
+      "disk_bytes": 897976,
+      "chunks": 16
+    },
+    {
+      "at_s": 9.285099152002658,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.18,
+      "disk_bytes": 897976,
+      "chunks": 16
+    },
+    {
+      "at_s": 9.536024146000273,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.18,
+      "disk_bytes": 897976,
+      "chunks": 16
+    },
+    {
+      "at_s": 9.786908932997903,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.18,
+      "disk_bytes": 897976,
+      "chunks": 16
+    },
+    {
+      "at_s": 10.037934095002129,
+      "rss_bytes": 75567104,
+      "process_cpu_s": 0.18,
+      "disk_bytes": 897976,
+      "chunks": 16
+    },
+    {
+      "at_s": 10.2889209749992,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.18,
+      "disk_bytes": 897976,
+      "chunks": 16
+    },
+    {
+      "at_s": 10.539913537999382,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.19,
+      "disk_bytes": 897976,
+      "chunks": 16
+    },
+    {
+      "at_s": 10.790930395000032,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.19,
+      "disk_bytes": 897976,
+      "chunks": 16
+    },
+    {
+      "at_s": 11.041898740004399,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.2,
+      "disk_bytes": 1804320,
+      "chunks": 20
+    },
+    {
+      "at_s": 11.292977753997548,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.2,
+      "disk_bytes": 1804320,
+      "chunks": 20
+    },
+    {
+      "at_s": 11.543907956998737,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.2,
+      "disk_bytes": 1804320,
+      "chunks": 20
+    },
+    {
+      "at_s": 11.7946649229998,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.2,
+      "disk_bytes": 1804320,
+      "chunks": 20
+    },
+    {
+      "at_s": 12.045788130999426,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.2,
+      "disk_bytes": 1804320,
+      "chunks": 20
+    },
+    {
+      "at_s": 12.296883055001672,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.2,
+      "disk_bytes": 1804320,
+      "chunks": 20
+    },
+    {
+      "at_s": 12.548026992000814,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.2,
+      "disk_bytes": 1804320,
+      "chunks": 20
+    },
+    {
+      "at_s": 12.799038769000617,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.2,
+      "disk_bytes": 1804320,
+      "chunks": 20
+    },
+    {
+      "at_s": 13.049950658001762,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.21,
+      "disk_bytes": 1804320,
+      "chunks": 24
+    },
+    {
+      "at_s": 13.30085347899876,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.21,
+      "disk_bytes": 1804320,
+      "chunks": 24
+    },
+    {
+      "at_s": 13.551614411997434,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.22,
+      "disk_bytes": 1804320,
+      "chunks": 24
+    },
+    {
+      "at_s": 13.802321895003843,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.23,
+      "disk_bytes": 1804320,
+      "chunks": 24
+    },
+    {
+      "at_s": 14.053284048000933,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.23,
+      "disk_bytes": 1804320,
+      "chunks": 24
+    },
+    {
+      "at_s": 14.304328978003468,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.23,
+      "disk_bytes": 1804320,
+      "chunks": 24
+    },
+    {
+      "at_s": 14.555348909998429,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.23,
+      "disk_bytes": 1804320,
+      "chunks": 24
+    },
+    {
+      "at_s": 14.806288642001164,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.23,
+      "disk_bytes": 1804320,
+      "chunks": 24
+    },
+    {
+      "at_s": 15.057160244003171,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.24,
+      "disk_bytes": 1804320,
+      "chunks": 28
+    },
+    {
+      "at_s": 15.308012219000375,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.24,
+      "disk_bytes": 1804320,
+      "chunks": 28
+    },
+    {
+      "at_s": 15.558963132003555,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.24,
+      "disk_bytes": 1804320,
+      "chunks": 28
+    },
+    {
+      "at_s": 15.810230401002627,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.24,
+      "disk_bytes": 1804320,
+      "chunks": 28
+    },
+    {
+      "at_s": 16.061516576999566,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.25,
+      "disk_bytes": 1804320,
+      "chunks": 28
+    },
+    {
+      "at_s": 16.31257560400263,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.25,
+      "disk_bytes": 1804320,
+      "chunks": 28
+    },
+    {
+      "at_s": 16.563599533998058,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.25,
+      "disk_bytes": 1804320,
+      "chunks": 28
+    },
+    {
+      "at_s": 16.81456103600067,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.25,
+      "disk_bytes": 1804320,
+      "chunks": 28
+    },
+    {
+      "at_s": 17.065656211001624,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.26,
+      "disk_bytes": 1804320,
+      "chunks": 32
+    },
+    {
+      "at_s": 17.316699898998195,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.26,
+      "disk_bytes": 1804320,
+      "chunks": 32
+    },
+    {
+      "at_s": 17.56774077100272,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.26,
+      "disk_bytes": 1804320,
+      "chunks": 32
+    },
+    {
+      "at_s": 17.818624856998213,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.27,
+      "disk_bytes": 1804320,
+      "chunks": 32
+    },
+    {
+      "at_s": 18.069596057001036,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.27,
+      "disk_bytes": 1804320,
+      "chunks": 32
+    },
+    {
+      "at_s": 18.32083021500148,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.27,
+      "disk_bytes": 1804320,
+      "chunks": 32
+    },
+    {
+      "at_s": 18.571752862997528,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.27,
+      "disk_bytes": 1804320,
+      "chunks": 32
+    },
+    {
+      "at_s": 18.82265775900305,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.27,
+      "disk_bytes": 1804320,
+      "chunks": 32
+    },
+    {
+      "at_s": 19.073663274000864,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.28,
+      "disk_bytes": 1804320,
+      "chunks": 36
+    },
+    {
+      "at_s": 19.324666574997536,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.28,
+      "disk_bytes": 1804320,
+      "chunks": 36
+    },
+    {
+      "at_s": 19.575567594001768,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.28,
+      "disk_bytes": 1804320,
+      "chunks": 36
+    },
+    {
+      "at_s": 19.826606923001236,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.29,
+      "disk_bytes": 1804320,
+      "chunks": 36
+    },
+    {
+      "at_s": 20.077447456998925,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.29,
+      "disk_bytes": 1804320,
+      "chunks": 36
+    },
+    {
+      "at_s": 20.32859744500456,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.29,
+      "disk_bytes": 1804320,
+      "chunks": 36
+    },
+    {
+      "at_s": 20.57956892599759,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.29,
+      "disk_bytes": 1804320,
+      "chunks": 36
+    },
+    {
+      "at_s": 20.83071239200217,
+      "rss_bytes": 75698176,
+      "process_cpu_s": 0.29,
+      "disk_bytes": 1804320,
+      "chunks": 36
+    }
+  ],
+  "scope": "Native PipeWire with explicit selected route; virtual test source is not physical-microphone validation. Process-kill only; no power-loss, disconnect or marker-quality claim."
+}

@@ -105,17 +105,22 @@ fn pipewire_system_node(monitor_id: Option<&str>) -> Option<String> {
     }
 }
 
-fn system_device(
+pub(crate) fn system_device(
     host: &cpal::Host,
     monitor: Option<&str>,
 ) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
     #[cfg(target_os = "windows")]
     {
-        let _ = monitor;
         // CPAL 0.15.3 WASAPI device.rs sets LOOPBACK for eRender input streams.
-        let device = host
-            .default_output_device()
-            .ok_or("No system playback device is available")?;
+        let device = if let Some(id) = monitor {
+            host.output_devices()
+                .map_err(|e| e.to_string())?
+                .find(|d| d.name().is_ok_and(|n| n == id))
+                .ok_or("Selected playback device is unavailable")?
+        } else {
+            host.default_output_device()
+                .ok_or("No system playback device is available")?
+        };
         let config = device.default_output_config().map_err(|e| e.to_string())?;
         Ok((device, config))
     }

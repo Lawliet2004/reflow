@@ -64,6 +64,26 @@ fn overlay_dims(kind: &str, size: &str) -> (f64, f64) {
     if kind == "response" {
         return (320.0, 180.0);
     }
+    if matches!(kind, "idle" | "floating" | "floating-pausable") {
+        let (width, height) = match size {
+            "compact" => (96.0, 36.0),
+            "large" => (128.0, 44.0),
+            _ => (108.0, 40.0),
+        };
+        return if kind == "idle" {
+            (height, height)
+        } else {
+            (
+                width
+                    + if kind == "floating-pausable" {
+                        height - 12.0
+                    } else {
+                        0.0
+                    },
+                height,
+            )
+        };
+    }
     match size {
         "compact" => (180.0, 42.0),
         "large" => (248.0, 56.0),
@@ -80,7 +100,19 @@ fn position_overlay_sized(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("overlay") else {
         return;
     };
-    let (win_w, win_h) = overlay_dims(&kind, &size);
+    let ctx = app.state::<AppContext>();
+    let settings = ctx.settings_store.get();
+    let floating = settings.floating_dictation_enabled;
+    let kind = if floating && !matches!(kind.as_str(), "idle" | "response") {
+        if settings.recording_pause_enabled || crate::session::recording_paused(&ctx) {
+            "floating-pausable"
+        } else {
+            "floating"
+        }
+    } else {
+        kind.as_str()
+    };
+    let (win_w, win_h) = overlay_dims(kind, &size);
 
     #[cfg(target_os = "linux")]
     if crate::overlay_layer::is_active() {
@@ -149,13 +181,18 @@ pub fn show_overlay(app: &tauri::AppHandle, position: &str, size: &str) {
         let _ = window.set_always_on_top(true);
         // GTK has no native window until the overlay is first shown, and tao
         // aborts the process when click-through is applied before that.
+        let interactive = app
+            .state::<AppContext>()
+            .settings_store
+            .get()
+            .floating_dictation_enabled;
         #[cfg(not(target_os = "linux"))]
-        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.set_ignore_cursor_events(!interactive);
         #[cfg(target_os = "linux")]
         crate::overlay_layer::set_interactive(app, false);
         show_without_activating(&window);
         #[cfg(target_os = "linux")]
-        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.set_ignore_cursor_events(!interactive);
         let _ = window.emit("window:visibility", true);
     }
 }
@@ -222,12 +259,56 @@ pub fn show_response(app: &tauri::AppHandle) {
     }
 }
 
+/// Apply visibility and pointer input without disturbing an assistant answer.
+pub fn sync_floating_control(app: &tauri::AppHandle) {
+    if overlay_geom().lock().kind == "response" {
+        return;
+    }
+    let ctx = app.state::<AppContext>();
+    let state = *ctx.state_enum.read();
+    if matches!(
+        state,
+        AppStateEnum::Ready | AppStateEnum::Idle | AppStateEnum::Error
+    ) {
+        hide_overlay(app);
+    } else if let Some(window) = app.get_webview_window("overlay") {
+        let enabled = ctx.settings_store.get().floating_dictation_enabled;
+        let _ = window.set_ignore_cursor_events(!enabled);
+        position_overlay_sized(app);
+    }
+}
+
+/// Restore the launcher after a session, without activating the target app.
+pub fn show_idle(app: &tauri::AppHandle) {
+    let ctx = app.state::<AppContext>();
+    let settings = ctx.settings_store.get();
+    if !settings.floating_dictation_enabled {
+        return;
+    }
+    show_overlay(app, &settings.overlay_position, &settings.hud_scale);
+    resize_overlay(app, "idle");
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.emit("hud:idle", ());
+    }
+}
+
 pub fn hide_overlay(app: &tauri::AppHandle) {
     let foreground = crate::platform::foreground_hwnd();
     let target = dictation_target(foreground);
     if target != foreground {
         crate::platform::focus_hwnd(target);
     }
+
+    if app
+        .state::<AppContext>()
+        .settings_store
+        .get()
+        .floating_dictation_enabled
+    {
+        show_idle(app);
+        return;
+    }
+    OVERLAY_GEN.fetch_add(1, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("overlay") {
         hide_native(&window);
         let _ = window.hide();
@@ -251,7 +332,7 @@ fn hide_native(window: &tauri::WebviewWindow) {
 }
 
 pub fn hide_overlay_later(app: tauri::AppHandle, delay_ms: u64) {
-    if overlay_geom().lock().kind == "response" {
+    if matches!(overlay_geom().lock().kind.as_str(), "response" | "idle") {
         return;
     }
     resize_overlay(&app, "preview");
@@ -301,6 +382,30 @@ mod tests {
         assert_eq!(super::response_target(33, 22, 11), 33);
         assert_eq!(super::response_target(0, 0, 11), 0);
         assert_eq!(super::response_target(22, 22, 0), 22);
+    }
+
+    #[test]
+    fn idle_launcher_has_a_square_hit_area_at_every_scale() {
+        for size in ["compact", "standard", "large"] {
+            let idle = overlay_dims("idle", size);
+            let recording = overlay_dims("floating", size);
+            assert_eq!(idle.0, idle.1);
+            assert_eq!(idle.1, recording.1);
+            assert!(idle.0 < recording.0);
+            assert!(recording.0 < overlay_dims("listening", size).0);
+            assert!(recording.1 < overlay_dims("listening", size).1);
+        }
+    }
+
+    #[test]
+    fn pause_button_has_room_without_changing_the_pill_height() {
+        for size in ["compact", "standard", "large"] {
+            let normal = overlay_dims("floating", size);
+            let pausable = overlay_dims("floating-pausable", size);
+            assert_eq!(pausable.1, normal.1);
+            assert_eq!(pausable.0, normal.0 + normal.1 - 12.0);
+            assert!(pausable.0 < overlay_dims("listening", size).0);
+        }
     }
 
     #[test]

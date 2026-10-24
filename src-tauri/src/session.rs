@@ -495,8 +495,64 @@ pub async fn start_microphone_with_intent_at(
         mode_id,
         false,
         CaptureKind::Microphone,
+        false,
     )
     .await
+}
+
+/// The floating button is explicitly finished with its cross. Silence and the
+/// stuck-hotkey timeout must not end a session while the user is thinking.
+pub async fn start_floating(ctx: &AppContext) -> Result<u64, SessionError> {
+    start_microphone_with_source_at(
+        ctx,
+        None,
+        crate::dory::SessionIntent::Dictate,
+        None,
+        false,
+        CaptureKind::Microphone,
+        true,
+    )
+    .await
+}
+
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct RecordingPauseState {
+    pub can_pause: bool,
+    pub paused: bool,
+}
+
+pub fn recording_pause_state(ctx: &AppContext) -> RecordingPauseState {
+    let can_pause = *ctx.state_enum.read() == AppStateEnum::Recording
+        && *ctx.capture_kind.read() == CaptureKind::Microphone;
+    RecordingPauseState {
+        can_pause,
+        paused: can_pause && ctx.audio_engine.read().is_paused(),
+    }
+}
+
+pub fn recording_paused(ctx: &AppContext) -> bool {
+    *ctx.state_enum.read() == AppStateEnum::Recording && ctx.audio_engine.read().is_paused()
+}
+
+pub async fn set_recording_paused(ctx: &AppContext, paused: bool) -> Result<(), SessionError> {
+    let _operation = ctx.session_operation.lock().await;
+    if *ctx.state_enum.read() != AppStateEnum::Recording
+        || *ctx.capture_kind.read() != CaptureKind::Microphone
+    {
+        return Err(SessionError::other(
+            "There is no microphone recording to pause or resume",
+        ));
+    }
+    ctx.audio_engine.read().set_paused(paused);
+    if paused {
+        *ctx.last_audio_level.write() = 0.0;
+        crate::platform::media::restore();
+        ctx.bus.emit(DoryEvent::AudioLevel(0.0));
+    } else if ctx.settings_store.get().duck_media {
+        let _ = crate::platform::media::duck();
+    }
+    ctx.bus.emit(DoryEvent::RecordingPaused(paused));
+    Ok(())
 }
 
 pub async fn start_automation(ctx: &AppContext) -> Result<u64, SessionError> {
@@ -507,8 +563,22 @@ pub async fn start_automation(ctx: &AppContext) -> Result<u64, SessionError> {
         None,
         true,
         CaptureKind::Microphone,
+        false,
     )
     .await
+}
+
+async fn meeting_aware_admission(
+    ctx: &AppContext,
+) -> Result<tokio::sync::MutexGuard<'_, ()>, SessionError> {
+    if ctx.meetings.busy() {
+        return Err(SessionError::busy());
+    }
+    let operation = ctx.session_operation.lock();
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {guard=&mut operation=>return Ok(guard),_=tokio::time::sleep(std::time::Duration::from_millis(25))=>{if ctx.meetings.busy(){return Err(SessionError::busy());}}}
+    }
 }
 
 pub async fn start_meeting(ctx: &AppContext) -> Result<u64, SessionError> {
@@ -524,8 +594,30 @@ pub async fn start_meeting(ctx: &AppContext) -> Result<u64, SessionError> {
         None,
         false,
         CaptureKind::SystemMix,
+        false,
     )
     .await
+}
+
+fn recording_limits(
+    settings: &crate::settings::AppSettings,
+    kind: CaptureKind,
+    manual_stop: bool,
+) -> (u64, u64) {
+    if manual_stop {
+        (0, 0)
+    } else if kind == CaptureKind::SystemMix {
+        (0, 3600)
+    } else {
+        (
+            if settings.push_to_talk {
+                0
+            } else {
+                settings.auto_stop_silence_ms
+            },
+            settings.max_duration_sec,
+        )
+    }
 }
 
 async fn start_microphone_with_source_at(
@@ -535,8 +627,9 @@ async fn start_microphone_with_source_at(
     mode_id: Option<&str>,
     automation: bool,
     capture_kind: CaptureKind,
+    manual_stop: bool,
 ) -> Result<u64, SessionError> {
-    let _operation = ctx.session_operation.lock().await;
+    let _operation = meeting_aware_admission(ctx).await?;
     let state = *ctx.state_enum.read();
 
     if !matches!(state, AppStateEnum::Ready | AppStateEnum::Idle) {
@@ -614,6 +707,10 @@ async fn start_microphone_with_source_at(
     *ctx.current_session_id.write() = Some(session_id);
 
     begin_session(ctx, capture_kind, pressed_at)?;
+    if manual_stop && settings.audio_retention != "disabled" {
+        // Keep a complete retained recording for the longer manual sessions.
+        *ctx.recording_pcm.lock() = crate::audio::AudioRingBuffer::new(3600 * 16_000);
+    }
     if settings.duck_media && capture_kind != CaptureKind::SystemMix {
         if let Err(error) = crate::platform::media::duck() {
             log::warn!("Media duck unavailable: {error}");
@@ -672,6 +769,8 @@ async fn start_microphone_with_source_at(
     // produced before there is a consumer for it.
     spawn_sample_loop(ctx, session_id, rx_samples);
 
+    let (silence_timeout_ms, duration_limit_sec) =
+        recording_limits(&settings, capture_kind, manual_stop);
     let capture_res = if capture_kind == CaptureKind::SystemMix {
         ctx.audio_engine.write().start_meeting_capture(
             settings.microphone_device_id.clone(),
@@ -687,11 +786,7 @@ async fn start_microphone_with_source_at(
             settings.vad_sensitivity,
             // In push-to-talk the key release is the stop signal; silence
             // auto-stop would cut users off mid-pause. Keep it for toggle mode.
-            if settings.push_to_talk {
-                0
-            } else {
-                settings.auto_stop_silence_ms
-            },
+            silence_timeout_ms,
             tx_samples,
             tx_auto_stop,
         )
@@ -710,10 +805,17 @@ async fn start_microphone_with_source_at(
 
     let ctx_stop = ctx.clone();
     tokio::spawn(async move {
-        if rx_auto_stop.recv().await.is_some()
-            && *ctx_stop.state_enum.read() == AppStateEnum::Recording
-        {
-            if let Some(error) = ctx_stop.audio_engine.read().stream_error() {
+        while rx_auto_stop.recv().await.is_some() {
+            if *ctx_stop.current_session_id.read() != Some(session_id)
+                || *ctx_stop.state_enum.read() != AppStateEnum::Recording
+            {
+                break;
+            }
+            let error = ctx_stop.audio_engine.read().stream_error();
+            if error.is_none() && recording_paused(&ctx_stop) {
+                continue;
+            }
+            if let Some(error) = error {
                 ctx_stop.bus.emit(DoryEvent::Error(error));
             }
             ctx_stop.bus.emit(DoryEvent::AutoStop);
@@ -723,18 +825,11 @@ async fn start_microphone_with_source_at(
                 session_id,
             )
             .await;
+            break;
         }
     });
 
-    spawn_max_duration_watch(
-        ctx,
-        if capture_kind == CaptureKind::SystemMix {
-            3600
-        } else {
-            settings.max_duration_sec
-        },
-        session_id,
-    );
+    spawn_max_duration_watch(ctx, duration_limit_sec, session_id);
     Ok(session_id)
 }
 
@@ -765,7 +860,7 @@ async fn start_external_from(
     language: Option<String>,
     phone_token: Option<&str>,
 ) -> Result<u64, SessionError> {
-    let _operation = ctx.session_operation.lock().await;
+    let _operation = meeting_aware_admission(ctx).await?;
     if phone_token.is_some_and(|token| {
         !ctx.settings_store.get().api_enabled
             || !ctx.pairing.permissions(token).is_some_and(|p| p.stream)
@@ -1933,6 +2028,7 @@ fn begin_session(
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     *ctx.session_cancel.write() = Some(tokio::sync::watch::channel(false).0);
     *ctx.session_phone_token.write() = None;
+    ctx.audio_engine.read().reset_pause();
     let mut timer = ctx.latency_timer.write();
     timer.reset();
     // Only the press instant is known here. `recording_started_at` is
@@ -2182,9 +2278,28 @@ fn spawn_max_duration_watch(ctx: &AppContext, max_duration_sec: u64, session_id:
     }
     let ctx = ctx.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(max_duration_sec)).await;
-        if *ctx.state_enum.read() != AppStateEnum::Recording {
-            return;
+        let limit = std::time::Duration::from_secs(max_duration_sec);
+        loop {
+            if *ctx.current_session_id.read() != Some(session_id)
+                || *ctx.state_enum.read() != AppStateEnum::Recording
+            {
+                return;
+            }
+            let elapsed = ctx
+                .latency_timer
+                .read()
+                .recording_started_at
+                .map(|start| start.elapsed())
+                .unwrap_or_default()
+                .saturating_sub(ctx.audio_engine.read().paused_duration());
+            if elapsed >= limit && !recording_paused(&ctx) {
+                break;
+            }
+            tokio::time::sleep((limit.saturating_sub(elapsed)).clamp(
+                std::time::Duration::from_millis(25),
+                std::time::Duration::from_millis(250),
+            ))
+            .await;
         }
         if crate::hotkey::hook::hands_free_engaged() {
             log::info!(
@@ -2205,6 +2320,78 @@ mod tests {
     use crate::asr::ASREngine;
     use crate::context::AppContext;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn floating_sessions_wait_for_explicit_finish_while_shortcut_limits_stay_configured() {
+        let settings = crate::settings::AppSettings {
+            push_to_talk: false,
+            auto_stop_silence_ms: 1500,
+            max_duration_sec: 600,
+            ..Default::default()
+        };
+        assert_eq!(
+            recording_limits(&settings, CaptureKind::Microphone, true),
+            (0, 0)
+        );
+        assert_eq!(
+            recording_limits(&settings, CaptureKind::Microphone, false),
+            (1500, 600)
+        );
+        assert_eq!(
+            recording_limits(&settings, CaptureKind::SystemMix, false),
+            (0, 3600)
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_preserves_one_session_and_finish_while_paused_drains_all_audio() {
+        let dir =
+            std::env::temp_dir().join(format!("reflow_pause_session_{}", uuid::Uuid::new_v4()));
+        let ctx = AppContext::bootstrap_test(dir.clone());
+        let id = start_external_owned(&ctx, None).await.unwrap();
+        assert!(
+            set_recording_paused(&ctx, true).await.is_err(),
+            "phone/API audio cannot be paused by the local HUD"
+        );
+        *ctx.capture_kind.write() = CaptureKind::Microphone;
+        push_f32(&ctx, &vec![0.1; 6400]).unwrap();
+        set_recording_paused(&ctx, true).await.unwrap();
+        assert!(recording_paused(&ctx));
+        assert_eq!(*ctx.current_session_id.read(), Some(id));
+        assert_eq!(*ctx.state_enum.read(), AppStateEnum::Recording);
+        set_recording_paused(&ctx, false).await.unwrap();
+        push_f32(&ctx, &vec![0.2; 9600]).unwrap();
+        set_recording_paused(&ctx, true).await.unwrap();
+        let result = stop_owned(&ctx, false, id).await.unwrap();
+        assert!(!result.final_text.is_empty());
+        assert_eq!(ctx.last_latency_metrics.read().audio_duration_ms, 1000);
+        assert_eq!(ctx.history_store.get_entries(10, 0).unwrap().len(), 1);
+        assert!(!recording_paused(&ctx));
+        assert!(set_recording_paused(&ctx, false).await.is_err());
+        let next = start_external_owned(&ctx, None).await.unwrap();
+        assert_ne!(next, id);
+        assert!(!ctx.audio_engine.read().is_paused());
+        cancel_owned_wait(&ctx, Some(next)).await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn recording_watchdog_does_not_count_a_paused_break() {
+        let dir =
+            std::env::temp_dir().join(format!("reflow_pause_watchdog_{}", uuid::Uuid::new_v4()));
+        let ctx = AppContext::bootstrap_test(dir.clone());
+        let id = start_external_owned(&ctx, None).await.unwrap();
+        *ctx.capture_kind.write() = CaptureKind::Microphone;
+        spawn_max_duration_watch(&ctx, 1, id);
+        set_recording_paused(&ctx, true).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert_eq!(*ctx.current_session_id.read(), Some(id));
+        set_recording_paused(&ctx, false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(*ctx.state_enum.read(), AppStateEnum::Recording);
+        cancel_owned_wait(&ctx, Some(id)).await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[tokio::test]
     async fn canceled_insertion_delay_never_reaches_the_delivery_boundary() {
