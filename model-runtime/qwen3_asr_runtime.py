@@ -89,7 +89,9 @@ def available_ram_mb():
 
 
 def admit_cpu_load(model_dir, model_id=None):
-    if model_id == "zipformer-20m":
+    if model_id == "omnilingual-300m-int8":
+        required = 3000
+    elif model_id == "zipformer-20m":
         required = 1400
     elif model_id == "phonon-2":
         required = 630_000_000 * 1.1 / (1024 * 1024) + 900 * 1.2 + 1024
@@ -1379,6 +1381,10 @@ def load_model_blocking(
     precision: str = "auto",
     model_id=None,
 ):
+    if model_id in ("parakeet-ultra", "indic-transcribe-8bit"):
+        return _record_load_failure(ValueError("This model requires a dedicated runtime that is not bundled with Reflow."))
+    if model_id == "omnilingual-300m-int8":
+        return load_omnilingual_blocking(model_dir, requested_device, precision)
     if model_id == "phonon-2" or os.path.isfile(os.path.join(model_dir, "phonon-2.bps.tar.zst")):
         return load_phonon_blocking(model_dir, requested_device, precision)
     if model_id == "zipformer-20m" or os.path.isfile(os.path.join(model_dir, "tokens.txt")):
@@ -1625,6 +1631,39 @@ def load_zipformer_blocking(model_dir, requested_device, precision):
         return _record_load_failure(error)
 
 
+def load_omnilingual_blocking(model_dir, requested_device, precision):
+    global _MODEL
+    started = time.time()
+    STATE.loaded = False
+    try:
+        from omnilingual_runtime import OmnilingualModel
+        wanted = (requested_device or "auto").strip().lower()
+        if wanted not in ("auto", "cpu"):
+            raise ValueError("Omnilingual v2 300M is CPU-optimized; it does not use the GPU.")
+        wanted_precision = (precision or "auto").lower()
+        if wanted_precision not in ("auto", "int8"):
+            raise ValueError("Omnilingual v2 300M ships int8 weights only. Choose Auto precision.")
+        _unload_model_blocking()
+        admit_cpu_load(model_dir, "omnilingual-300m-int8")
+        _MODEL = OmnilingualModel(model_dir, "cpu", _CANCEL_EVENT)
+        STATE.device = "cpu"
+        STATE.precision = _MODEL.precision
+        STATE.backend = f"Omnilingual v2 300M · CPU {_MODEL.precision} · {_MODEL.runtime}"
+        STATE.model_dir = model_dir
+        STATE.model_id = "omnilingual-300m-int8"
+        STATE.vram_mb = 0.0
+        STATE.loaded = True
+        STATE.load_error = None
+        STATE.load_failure_kind = None
+        STATE.spill = {"spilled": False, "reasons": [], "checked": False}
+        STATE.warmup_rtf = None
+        STATE.load_seconds = time.time() - started
+        log_err(f"Omnilingual v2 300M ready on cpu in {STATE.load_seconds:.1f}s")
+        return {"status": "ok", "loaded": True, "device": "cpu", "backend": STATE.backend}
+    except (Exception, SystemExit) as error:
+        return _record_load_failure(error)
+
+
 def looks_like_vocab_echo(text: str, prompt) -> bool:
     """True when the transcript is just the vocabulary prompt echoed back
     (Qwen3-ASR does this on silent/unclear audio)."""
@@ -1716,6 +1755,9 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
     if not stats["voiced"] or samples.size == 0:
         log_err("No voiced audio after preprocess; skipping inference")
         return "", ""
+
+    if getattr(model, "model_id", None) == "omnilingual-300m-int8":
+        return model.transcribe(samples), ""
 
     if getattr(model, "model_id", None) == "phonon-2":
         if language_name not in (None, "", "English"):
@@ -1879,7 +1921,7 @@ def _warm_groups(model_id=None, model_dir=None, device=None):
     Phonon-2's CPU engine only needs the fermion runtime. Scoping the warm-up
     is what lets the small CPU models start quickly.
     """
-    if model_id == "zipformer-20m" or (
+    if model_id in ("zipformer-20m", "omnilingual-300m-int8") or (
         model_dir and os.path.isfile(os.path.join(model_dir, "tokens.txt"))
     ):
         return {"sherpa"}
@@ -2061,7 +2103,7 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
     if any(t.name == "model-installer" and t.is_alive() for t in threading.enumerate()):
         return {"status": "already-downloading"}
     _DOWNLOAD_CANCEL.clear()
-    if model_id in ("phonon-2", "zipformer-20m"):
+    if model_id in ("phonon-2", "zipformer-20m", "omnilingual-300m-int8"):
         module = "phonon_runtime" if model_id == "phonon-2" else "zipformer_runtime"
         try:
             import importlib
@@ -2078,6 +2120,8 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
     try:
         anchor = model_dir if os.path.isdir(model_dir) else (os.path.dirname(model_dir) or ".")
         needed = int(expected_bytes_for(model_dir, model_id, expected_bytes) * 1.1)
+        if model_id == "omnilingual-300m-int8":
+            needed = max(needed, 1_000_000_000)  # archive + expanded ONNX + atomic copy
         free = shutil.disk_usage(anchor).free
         if free < needed:
             return {"status": "error",
@@ -2205,6 +2249,9 @@ def handle(msg: dict) -> dict:
         precision = msg.get("precision", "auto")
         # Zipformer ships ONNX weights, not a HF config.json snapshot.
         marker = "tokens.txt" if msg.get("model_id") == "zipformer-20m" else "config.json"
+        if msg.get("model_id") == "omnilingual-300m-int8":
+            from omnilingual_runtime import ARCHIVE
+            marker = ARCHIVE
         if not os.path.isdir(model_dir) or not os.path.isfile(
             os.path.join(model_dir, marker)
         ):

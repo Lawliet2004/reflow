@@ -1,0 +1,46 @@
+ M PRODUCT.md
+ M model-runtime/qwen3_asr_runtime.py
+ M src-tauri/src/asr/python_setup.rs
+ M src-tauri/src/asr/setup_plan.rs
+ M src-tauri/src/asr/sidecar.rs
+ M src-tauri/src/commands/mod.rs
+ M src-tauri/src/expansion_commands.rs
+ M src-tauri/src/meetings/mod.rs
+ M src-tauri/src/model/manager.rs
+ M src-tauri/src/profile/manifest.rs
+ M src-tauri/src/profile/resolver.rs
+ M src-tauri/src/rewrite/client.rs
+ M src-tauri/src/rewrite/model_install.rs
+ M src-tauri/src/rewrite/runtime_install.rs
+ M src-tauri/src/rewrite/server.rs
+ M src-tauri/src/runtime.rs
+ M src-tauri/src/settings/config.rs
+ M src-tauri/tauri.conf.json
+ M src/App.tsx
+ M src/components/LlmSelector.tsx
+ M src/components/MeetingRecorder.tsx
+ M src/components/Navigation.tsx
+ M src/components/SettingsView.test.tsx
+ M src/components/SettingsView.tsx
+ M src/components/settings/CleanupPage.tsx
+ M src/components/settings/ModelPage.test.tsx
+ M src/components/settings/ModelPage.tsx
+ M src/components/settings/PresetSelector.tsx
+ M src/components/settings/ui.tsx
+ M src/hooks/useIntelligenceHub.ts
+ M src/llmSelection.ts
+ M src/services/tauriApi.ts
+ M src/types/index.test.ts
+ M src/types/index.ts
+?? .impeccable/
+?? docs/audit-2026-10-24/
+?? docs/model-runtime-additions.md
+?? model-runtime/omnilingual_runtime.py
+?? model-runtime/test_omnilingual.py
+?? src/components/SetupProgress.test.tsx
+?? src/components/SetupProgress.tsx
+?? src/components/settings/WritingCatalog.test.tsx
+?? src/components/settings/WritingCatalog.tsx
+?? src/components/settings/modelCatalog.tsx
+?? src/services/speechModelSetup.test.ts
+?? src/services/speechModelSetup.ts

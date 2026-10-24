@@ -2,7 +2,7 @@
 
 Local-first desktop dictation with a focused workspace for your words.
 
-**Version 0.6.0 preview** improves first-run setup, verified offline speech dependencies, shortcuts, and transcript cleanup. Read the [release notes](docs/release-0.6.0.md) for changes and platform validation limits.
+**Version 0.7.0 preview** improves model setup, meeting privacy and retention, memory admission, and context integrity. Read the [release notes](docs/release-0.7.0.md) for changes and platform validation limits.
 
 ## ✨ Features & Architecture
 

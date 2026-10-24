@@ -15,8 +15,11 @@ export type DictationMode = "normal" | "coding" | "developer_prompt" | "email" |
 export type CleanupLevel = "raw" | "light" | "medium" | "high";
 export type TranscriptFormat =
   "off" | "auto" | "natural" | "technical" | "brainstorm" | "meeting" | "steps";
-export type FlowModel = "qwen3.5-0.8b" | "qwen3.5-2b" | "none";
+export type FlowModel =
+  "qwen3.5-0.8b" | "qwen3.5-2b" | "qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b" | "none";
 export type IntelligenceTier = "raw_verbatim" | "smart_flow" | "deep_context";
+
+export type WritingModelDownloadId = IntelligenceTier | "qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b";
 
 export interface TierMetadata {
   id: IntelligenceTier;
@@ -281,6 +284,8 @@ export interface AppSettings {
   custom_format_instructions?: string;
   intelligence_tier: IntelligenceTier;
   flow_model: FlowModel;
+  last_polish_model?: Exclude<FlowModel, "none">;
+  summary_model: "follow_writing" | Exclude<FlowModel, "none">;
   style: TranscriptStyle;
   auto_style_from_app: boolean;
   active_profile: string;
@@ -873,11 +878,12 @@ export interface FlowStatus {
 }
 
 export interface IntelligenceDownloadEvent {
-  tier: IntelligenceTier;
+  tier: WritingModelDownloadId;
   progress_pct: number;
   speed_mbps: number;
   phase:
     | "checking_runtime"
+    | "installing_runtime"
     | "starting"
     | "downloading"
     | "verifying"
@@ -898,7 +904,7 @@ export interface IntelligenceDownloadEvent {
 
 /** Per-tier install state. Returned by `get_intelligence_tiers`. */
 export interface IntelligenceTierState {
-  tier: IntelligenceTier;
+  tier: WritingModelDownloadId;
   model_id: FlowModel;
   /** True when this tier's model weights are downloaded, independently of the runtime. */
   weights_installed?: boolean;
@@ -1071,7 +1077,11 @@ export const DEFAULT_MEMORY_POLICY: MemoryPolicySettings = {
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const intelligence_tier =
     settings.intelligence_tier ?? tierForCleanupLevel(inferCleanupLevel(settings));
-  const flow_model = flowModelForTier(intelligence_tier);
+  const flow_model =
+    intelligence_tier !== "raw_verbatim" &&
+    ["qwen3.5-4b", "minicpm5-2b", "gemma4-e4b"].includes(settings.flow_model)
+      ? settings.flow_model
+      : flowModelForTier(intelligence_tier);
   const transcriptFormat = [
     "off",
     "auto",
@@ -1125,12 +1135,15 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       .join(""),
     intelligence_tier,
     flow_model,
+    summary_model: settings.summary_model ?? "follow_writing",
+    last_polish_model:
+      settings.last_polish_model ?? (flow_model === "none" ? "qwen3.5-0.8b" : flow_model),
     preset: settings.preset ?? "auto",
     asr: { ...DEFAULT_ASR_SETTINGS, ...(settings.asr ?? {}) },
     refinement: {
       ...DEFAULT_REFINEMENT_SETTINGS,
       ...(settings.refinement ?? {}),
-      // The tier owns this choice; the section follows. Without this the two
+      // The resolved selected model owns this choice; the section follows so the two
       // can disagree and the UI shows one model while another is loaded.
       model: flow_model,
     },

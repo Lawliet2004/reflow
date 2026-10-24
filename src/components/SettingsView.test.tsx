@@ -20,7 +20,7 @@ const intelligence: IntelligenceHub = {
   refreshCapabilities: () => {},
 };
 
-it("opens Performance directly when Home links to a model download", async () => {
+it("opens Models directly when Home links to a model download", async () => {
   render(
     <SettingsView
       initialPage="model"
@@ -33,7 +33,7 @@ it("opens Performance directly when Home links to a model download", async () =>
       onRemoveRuntime={vi.fn()}
     />,
   );
-  expect(screen.getByRole("heading", { name: "Performance" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Models" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Use no LLM" })).toBeVisible();
 });
 
@@ -110,3 +110,58 @@ it.each(["false", "reject"])(
     expect(screen.queryByText(/Saving/)).not.toBeInTheDocument();
   },
 );
+
+it("separates model management from hardware tuning and filters the catalog by task", async () => {
+  render(
+    <SettingsView
+      initialPage="model"
+      settings={await api.getSettings()}
+      onUpdateSettings={vi.fn().mockResolvedValue(true)}
+      modelStatus={null}
+      onReloadModel={vi.fn()}
+      intelligence={intelligence}
+      onInstallRuntime={vi.fn()}
+      onRemoveRuntime={vi.fn()}
+    />,
+  );
+  expect(screen.queryByRole("heading", { name: "Tuning" })).not.toBeInTheDocument();
+  expect(screen.getByRole("list", { name: "Speech models" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Text polish" }));
+  expect(screen.queryByRole("list", { name: "Speech models" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Download Gemma 4 E4B · Q4_K_M" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getAllByText("MiniCPM5 2B").length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole("button", { name: "Meeting notes" }));
+  expect(screen.getByRole("combobox", { name: "Meeting notes model" })).toBeVisible();
+  expect(screen.getAllByText("Gemma 4 E4B · Q4_K_M").length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole("button", { name: "Performance" }));
+  expect(screen.getByRole("heading", { name: "Hardware" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Memory" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Performance preset" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Runtime controls" })).toBeVisible();
+  expect(screen.queryByRole("list", { name: "Speech models" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "Model import path" })).not.toBeInTheDocument();
+});
+
+it("explains unavailable runtimes and disables all model downloads in airplane mode", async () => {
+  const install = vi.spyOn(api, "installModel");
+  render(
+    <SettingsView
+      initialPage="model"
+      settings={{ ...(await api.getSettings()), offline_mode: true }}
+      onUpdateSettings={vi.fn().mockResolvedValue(true)}
+      modelStatus={null}
+      onReloadModel={vi.fn()}
+      intelligence={intelligence}
+      onInstallRuntime={vi.fn()}
+      onRemoveRuntime={vi.fn()}
+    />,
+  );
+  expect(screen.getByText(/Requires the Photon GPU runtime/)).toBeVisible();
+  expect(screen.queryByRole("button", { name: /Download.*Parakeet/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Download.*Indic/ })).not.toBeInTheDocument();
+  for (const button of screen.getAllByRole("button", { name: /Download/ }))
+    expect(button).toBeDisabled();
+  expect(install).not.toHaveBeenCalled();
+});

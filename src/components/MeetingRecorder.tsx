@@ -247,6 +247,7 @@ export function MeetingRecorder({ enabled }: { enabled: boolean }) {
                     }
                   >
                     <option value="">Transcript only</option>
+                    <option value="follow_writing">Use summary model from Settings</option>
                     {models.map((m) => (
                       <option key={m.model_id} value={m.model_id}>
                         {m.model_id} · installed

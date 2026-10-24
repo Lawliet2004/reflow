@@ -29,21 +29,25 @@ pub struct SessionContext {
 }
 
 impl SessionContext {
-    pub fn inputs(&self, context_size: u32) -> Vec<(&str, String)> {
-        // Reserve half the window for the instruction, transcript and completion.
-        let per_section = context_size as usize * 2 / 3;
-        [
+    pub fn inputs(&self, _context_size: u32) -> Vec<(&str, String)> {
+        // Keep source content intact. The rendered prompt and completion share
+        // one budget in FlowClient; character slicing cannot predict tokens.
+        let mut inputs = Vec::new();
+        for (label, value) in [
             ("Selected text", &self.selected_text),
             ("Clipboard", &self.clipboard),
             ("Window", &self.window_title),
-        ]
-        .into_iter()
-        .filter_map(|(label, text)| {
-            text.as_ref()
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| (label, s.chars().take(per_section).collect()))
-        })
-        .collect()
+        ] {
+            if let Some(value) = value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                if !inputs
+                    .iter()
+                    .any(|(_, prior): &(&str, String)| prior == value)
+                {
+                    inputs.push((label, value.to_owned()));
+                }
+            }
+        }
+        inputs
     }
 }
 
@@ -3186,5 +3190,24 @@ mod tests {
             .expect("restart after failed stop");
         cancel(&ctx).unwrap();
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod context_integrity_tests {
+    use super::SessionContext;
+    #[test]
+    fn context_is_complete_unicode_safe_and_deduplicated() {
+        let source = "日本語の選択テキスト".repeat(3000);
+        let context = SessionContext {
+            selected_text: Some(source.clone()),
+            clipboard: Some(source.clone()),
+            window_title: Some("Editor".into()),
+            ..Default::default()
+        };
+        let inputs = context.inputs(4096);
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0], ("Selected text", source));
+        assert_eq!(inputs[1], ("Window", "Editor".into()));
     }
 }

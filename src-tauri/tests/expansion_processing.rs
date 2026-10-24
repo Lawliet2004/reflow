@@ -27,7 +27,7 @@ fn snippets_follow_replacements_and_remain_verbatim_at_final_output() {
 }
 
 #[test]
-fn command_translation_resolves_catalogue_names_and_context_is_bounded() {
+fn command_translation_resolves_catalogue_names_and_context_is_complete() {
     assert!(command_instruction("translate to French.")
         .unwrap()
         .contains("French"));
@@ -39,5 +39,5 @@ fn command_translation_resolves_catalogue_names_and_context_is_bounded() {
     };
     let inputs = context.inputs(1024);
     assert_eq!(inputs.len(), 1);
-    assert!(inputs[0].1.chars().count() <= 683);
+    assert_eq!(inputs[0].1, "日本語".repeat(1000));
 }

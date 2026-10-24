@@ -85,6 +85,9 @@ impl CircuitBreaker {
 /// expects; mismatched names cause 4xx errors or routing to a non-existent
 /// model slot.
 const MODEL_NAME_TABLE: &[(&str, &str)] = &[
+    ("qwen3.5-4b", "Qwen3.5-4B"),
+    ("minicpm5-2b", "MiniCPM5-2B"),
+    ("gemma4-e4b", "gemma-4-E4B-it"),
     ("qwen3.5-2b", "Qwen3.5-2B"),
     ("qwen3.5-0.8b", "Qwen3.5-0.8B"),
 ];
@@ -275,17 +278,20 @@ impl FlowClient {
         let estimate = messages
             .iter()
             .filter_map(|m| m["content"].as_str())
-            .map(estimate_tokens)
+            .map(str::len)
             .sum::<usize>()
             .saturating_add(64);
         let prompt_tokens = self
             .rendered_prompt_tokens(base, &messages, deadline)
             .unwrap_or(estimate);
         let available = (self.context_size as usize).saturating_sub(prompt_tokens);
-        if available < 64 {
-            return Err("Task input exceeds the local model context window".into());
+        let output_budget = self
+            .max_completion_tokens
+            .min((self.context_size as usize / 3).max(128));
+        if available < output_budget.saturating_add(128) {
+            return Err("Text and context exceed this model's available context. Shorten the selected text or clipboard, disable optional context, or choose a larger context window. Original transcript preserved.".into());
         }
-        let max_tokens = available.min(self.max_completion_tokens);
+        let max_tokens = output_budget;
         let timeout = deadline.saturating_sub(started.elapsed());
         if timeout.is_zero() {
             return Err("Task deadline expired during context accounting".into());
@@ -779,6 +785,14 @@ pub(crate) fn polish_with_context_or_fallback(
         inputs,
     );
     let prompt_tokens = estimate_tokens(&system) + TEMPLATE_OVERHEAD_TOKENS;
+    if !inputs.is_empty() && prompt_tokens + 512 >= client.context_size as usize {
+        return PolishOutcome {
+            final_text: smart_text.to_owned(),
+            used: false,
+            error: Some("Selected text or clipboard exceeds the cleanup context budget. Shorten it or disable optional context. Original transcript preserved.".into()),
+            fallback_reason: Some(REASON_CONTEXT_OVERFLOW),
+        };
+    }
     let max_input = chunker::max_chunk_input_tokens(client.context_size, prompt_tokens);
     let chunks = chunker::split(smart_text, MAX_CHUNK_WORDS, max_input);
 
@@ -920,6 +934,24 @@ impl PolishOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_optional_context_preserves_transcript_and_explains_recovery() {
+        let client = FlowClient::new_missing();
+        let source = "Please remember that we agreed to ship the package tomorrow morning.";
+        let req = sample_req("light", "normal", source);
+        let outcome = polish_with_context_or_fallback(
+            &client,
+            source,
+            &req,
+            None,
+            &[("Clipboard", "日本語".repeat(20_000))],
+        );
+        assert_eq!(outcome.final_text, source);
+        assert!(!outcome.used);
+        assert_eq!(outcome.fallback_reason, Some(REASON_CONTEXT_OVERFLOW));
+        assert!(outcome.error.unwrap().contains("Shorten"));
+    }
 
     #[test]
     fn paragraph_restoration_preserves_content_and_refuses_ambiguous_or_literal_anchors() {

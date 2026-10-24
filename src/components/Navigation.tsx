@@ -1,13 +1,19 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Mic, History, Settings, FolderOpen, NotebookPen, Power } from "lucide-react";
-import { AppState, ModelStatus, isModelReady } from "../types";
+import { AppState, ModelStatus, PythonSetupProgress, isModelReady } from "../types";
 import { api } from "../services/tauriApi";
+import { createEventScope } from "../services/eventScope";
+import { newestSpeechSetupProgress } from "../services/speechSetup";
+import type { IntelligenceHub } from "../hooks/useIntelligenceHub";
+import { SetupProgress } from "./SetupProgress";
+import { useSpeechModelSetup } from "../services/speechModelSetup";
 import logoUrl from "../assets/logo.png";
 
 export type NavTab = "dictate" | "history" | "notes" | "settings";
 export type PageTab = Exclude<NavTab, "settings">;
 
 interface NavigationProps {
+  intelligence?: IntelligenceHub;
   activeTab: PageTab;
   setActiveTab: (tab: PageTab) => void;
   appState: AppState;
@@ -33,6 +39,7 @@ function modelBadgeLabel(status: ModelStatus | null): string | null {
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
+  intelligence,
   activeTab,
   setActiveTab,
   appState,
@@ -41,6 +48,25 @@ export const Navigation: React.FC<NavigationProps> = ({
   settingsOpen,
   onOpenSettings,
 }) => {
+  const [speechSetup, setSpeechSetup] = useState<PythonSetupProgress | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const scope = createEventScope();
+    api
+      .getPythonSetupProgress()
+      .then((progress) => {
+        if (alive) setSpeechSetup((current) => newestSpeechSetupProgress(current, progress));
+      })
+      .catch(() => {});
+    void scope.listen<PythonSetupProgress>("python-runtime:setup-progress", (progress) =>
+      setSpeechSetup((current) => newestSpeechSetupProgress(current, progress)),
+    );
+    return () => {
+      alive = false;
+      scope.dispose();
+    };
+  }, []);
+  const speechModelSetup = useSpeechModelSetup();
   const badge = modelBadgeLabel(modelStatus);
   const live = appState === "RECORDING" || appState === "PROCESSING" || appState === "INJECTING";
   const pct = Math.round(modelStatus?.download_progress_pct ?? 0);
@@ -71,6 +97,30 @@ export const Navigation: React.FC<NavigationProps> = ({
       </nav>
 
       <div className="sidebar-footer">
+        {speechModelSetup?.phase === "error" && (
+          <div className="sidebar-card" role="alert">
+            <strong>Speech setup needs attention</strong>
+            <p>{speechModelSetup.error}</p>
+            <button className="btn btn-secondary" onClick={() => onOpenSettings("model")}>
+              Review setup
+            </button>
+          </div>
+        )}
+        <SetupProgress
+          writing={
+            Object.values(intelligence?.intelligenceDownloads ?? {}).find(
+              (event) => event && !["complete", "cancelled", "error"].includes(event.phase),
+            ) ?? intelligence?.intelligenceDownload
+          }
+          runtime={intelligence?.runtimeDownload}
+          speech={
+            speechModelSetup?.phase === "runtime"
+              ? (speechModelSetup.progress ?? { phase: "verifying" })
+              : speechSetup
+          }
+          speechModelPending={speechModelSetup?.phase === "runtime"}
+          onReview={() => onOpenSettings("model")}
+        />
         {modelStatus?.is_downloading ? (
           <div className="sidebar-card" role="status">
             <strong>Downloading speech model</strong>

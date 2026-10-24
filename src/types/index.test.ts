@@ -32,6 +32,18 @@ describe("normalizeSettings", () => {
     history_save_audio: false,
   } as unknown as AppSettings;
 
+  it("preserves explicit model choices across both polishing depths", () => {
+    for (const intelligence_tier of ["smart_flow", "deep_context"] as const) {
+      for (const flow_model of ["qwen3.5-4b", "minicpm5-2b", "gemma4-e4b"] as const) {
+        const normalized = normalizeSettings({ ...minimalSettings, intelligence_tier, flow_model });
+        expect(normalized.flow_model).toBe(flow_model);
+        expect(normalized.refinement.model).toBe(flow_model);
+        expect(normalized.last_polish_model).toBe(flow_model);
+        expect(normalized.summary_model).toBe("follow_writing");
+      }
+    }
+  });
+
   it("populates default nested sections when missing entirely", () => {
     const normalized = normalizeSettings(minimalSettings);
 

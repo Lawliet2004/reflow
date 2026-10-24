@@ -599,7 +599,12 @@ pub struct AppSettings {
     #[serde(default = "default_intelligence_tier")]
     pub last_polish_tier: String,
     #[serde(default = "default_flow_model")]
+    pub last_polish_model: String,
+    #[serde(default = "default_flow_model")]
     pub flow_model: String,
+    /// Independent summary choice; follow_writing uses the selected polish model.
+    #[serde(default = "default_summary_model")]
+    pub summary_model: String,
     #[serde(default = "default_style")]
     pub style: String,
     #[serde(default = "default_auto_style")]
@@ -800,6 +805,10 @@ fn default_intelligence_tier() -> String {
     "smart_flow".into()
 }
 
+fn default_summary_model() -> String {
+    "follow_writing".into()
+}
+
 fn default_flow_model() -> String {
     "qwen3.5-0.8b".into()
 }
@@ -876,7 +885,9 @@ impl Default for AppSettings {
             // not silently demoted.
             intelligence_tier: "raw_verbatim".into(),
             last_polish_tier: "raw_verbatim".into(),
+            last_polish_model: default_flow_model(),
             flow_model: default_flow_model(),
+            summary_model: default_summary_model(),
             style: "faithful".into(),
             auto_style_from_app: false,
             dictation_mode: "normal".into(),
@@ -1054,6 +1065,17 @@ fn processing_mode_for_cleanup(level: &str) -> &'static str {
 }
 
 impl AppSettings {
+    pub fn resolved_summary_model(&self) -> String {
+        if self.summary_model != "follow_writing" {
+            return self.summary_model.clone();
+        }
+        if self.flow_model != "none" {
+            self.flow_model.clone()
+        } else {
+            self.last_polish_model.clone()
+        }
+    }
+
     pub fn for_application(&self, process: &str) -> Self {
         let process = super::expansion::process_basename(process);
         let mut effective = self.clone();
@@ -1099,7 +1121,15 @@ impl AppSettings {
             tier_for_cleanup(cleanup_for_processing_mode(&self.processing_mode)).into()
         };
 
-        let flow_model: String = flow_model_for_tier(&tier).into();
+        let flow_model: String = if tier != "raw_verbatim"
+            && matches!(
+                self.flow_model.as_str(),
+                "qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b"
+            ) {
+            self.flow_model.clone()
+        } else {
+            flow_model_for_tier(&tier).into()
+        };
 
         // Fall back through the same chain the tier used, so a legacy document
         // that only has `processing_mode` keeps the level that field implies
@@ -1161,7 +1191,10 @@ impl AppSettings {
         if !matches!(self.asr.runtime.as_str(), "python" | "native") {
             self.asr.runtime = default_asr_runtime();
         }
-        if matches!(self.asr.model.as_str(), "phonon-2" | "zipformer-20m") {
+        if matches!(
+            self.asr.model.as_str(),
+            "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8"
+        ) {
             self.asr.runtime = "python".into();
         }
         let intent = self.resolve_intent();
@@ -1169,10 +1202,31 @@ impl AppSettings {
         self.cleanup_level = intent.cleanup_level;
         self.processing_mode = intent.processing_mode;
 
-        // `intelligence_tier` and `refinement.model` are the same choice
-        // expressed twice, so one has to be the authority. The tier is, because
-        // it is what the tier UI writes; `refinement.model` follows. Without
-        // this the two drift and the app loads one model while claiming another.
+        // Legacy tiers retain their historical default models. Explicit named
+        // choices take precedence within a polishing tier, and the runtime's
+        // nested model setting follows the same resolved choice.
+        if self.summary_model != "follow_writing"
+            && !crate::rewrite::server::FLOW_MODELS
+                .iter()
+                .any(|model| model.id != "none" && model.id == self.summary_model)
+        {
+            self.summary_model = default_summary_model();
+        }
+        if intent.flow_model != "none" {
+            self.last_polish_model = intent.flow_model.clone();
+        } else if self.flow_model != "none"
+            && crate::rewrite::server::FLOW_MODELS
+                .iter()
+                .any(|model| model.id == self.flow_model)
+        {
+            self.last_polish_model = self.flow_model.clone();
+        }
+        if !crate::rewrite::server::FLOW_MODELS
+            .iter()
+            .any(|model| model.id != "none" && model.id == self.last_polish_model)
+        {
+            self.last_polish_model = default_flow_model();
+        }
         self.flow_model = intent.flow_model.clone();
         self.refinement.model = intent.flow_model;
 
@@ -1556,6 +1610,60 @@ impl SettingsStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn named_models_and_summary_choice_survive_normalization_and_serialization() {
+        for model in ["qwen3.5-4b", "minicpm5-2b", "gemma4-e4b"] {
+            let settings = super::AppSettings {
+                intelligence_tier: "smart_flow".into(),
+                cleanup_level: "light".into(),
+                flow_model: model.into(),
+                summary_model: "qwen3.5-4b".into(),
+                ..Default::default()
+            };
+            let settings = settings.normalized();
+            assert_eq!(settings.resolve_intent().flow_model, model);
+            assert_eq!(settings.refinement.model, model);
+            assert_eq!(settings.resolved_summary_model(), "qwen3.5-4b");
+            let loaded: super::AppSettings =
+                serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+            assert_eq!(loaded.summary_model, settings.summary_model);
+        }
+    }
+
+    #[test]
+    fn named_model_survives_polish_toggle_and_tier_change() {
+        let mut settings = super::AppSettings {
+            intelligence_tier: "smart_flow".into(),
+            flow_model: "qwen3.5-4b".into(),
+            ..Default::default()
+        };
+        settings = settings.normalized();
+        settings.intelligence_tier = "raw_verbatim".into();
+        settings = settings.normalized();
+        assert_eq!(settings.flow_model, "none");
+        assert_eq!(settings.last_polish_model, "qwen3.5-4b");
+        assert_eq!(settings.resolved_summary_model(), "qwen3.5-4b");
+        settings.intelligence_tier = "deep_context".into();
+        settings.flow_model = settings.last_polish_model.clone();
+        settings = settings.normalized();
+        assert_eq!(settings.resolve_intent().flow_model, "qwen3.5-4b");
+        settings.intelligence_tier = "smart_flow".into();
+        assert_eq!(settings.resolve_intent().flow_model, "qwen3.5-4b");
+    }
+
+    #[test]
+    fn missing_summary_preference_follows_writing_and_invalid_choice_resets() {
+        let mut document = serde_json::to_value(super::AppSettings::default()).unwrap();
+        document.as_object_mut().unwrap().remove("summary_model");
+        let mut settings: super::AppSettings = serde_json::from_value(document).unwrap();
+        assert_eq!(settings.summary_model, "follow_writing");
+        settings.intelligence_tier = "smart_flow".into();
+        settings.flow_model = "qwen3.5-4b".into();
+        settings.summary_model = "unavailable".into();
+        let settings = settings.normalized();
+        assert_eq!(settings.resolved_summary_model(), "qwen3.5-4b");
+    }
+
     #[test]
     fn application_profile_matches_exact_process_and_preserves_global_preferences() {
         let mut settings = super::AppSettings::default();

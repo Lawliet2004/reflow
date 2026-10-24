@@ -263,6 +263,22 @@ impl Store {
         if self.cipher.is_none() {
             self.cipher = Some(HistoryCipher::new(OsHistoryKeyProvider.load_key(false)?));
         }
+        // Checkpoint before converting any row. SQLite reports a blocked WAL
+        // checkpoint as a result row, not an SQL error.
+        let busy: i64 = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+            .map_err(err)?;
+        if busy != 0 {
+            return Err("Meeting history is in use by another reader. Close it and retry encryption; no data was changed.".into());
+        }
+        let journal: String = self
+            .conn
+            .query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))
+            .map_err(err)?;
+        if journal != "delete" {
+            return Err("Could not prepare a safe journal for meeting encryption. Close other database readers and retry.".into());
+        }
         let meetings = self.list()?;
         let tx = self.conn.unchecked_transaction().map_err(err)?;
         for mut m in meetings {
@@ -314,10 +330,9 @@ impl Store {
             )
             .map_err(err)?;
         }
-        tx.commit().map_err(err)?;
-        self.conn
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
-            .map_err(err)
+        // secure_delete clears replaced/freed cells; DELETE journaling removes
+        // the old plaintext journal at commit. No best-effort post-commit purge.
+        tx.commit().map_err(err)
     }
     pub fn retention(&self, audio: &str, history: &str) -> Result<(), String> {
         let days = |p: &str| -> Option<i64> {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FlowStatus,
-  IntelligenceTier,
+  WritingModelDownloadId,
   IntelligenceTierState,
   RuntimeDownloadEvent,
   SystemMetrics,
@@ -18,8 +18,8 @@ export interface IntelligenceHub {
   intelligenceTiers: IntelligenceTierState[] | null;
   capabilitiesRefreshKey: number;
   intelligenceDownload: IntelligenceDownloadEvent | null;
-  intelligenceDownloads?: Partial<Record<IntelligenceTier, IntelligenceDownloadEvent>>;
-  activeDownloadTiers: Set<IntelligenceTier>;
+  intelligenceDownloads?: Partial<Record<WritingModelDownloadId, IntelligenceDownloadEvent>>;
+  activeDownloadTiers: Set<WritingModelDownloadId>;
   runtimeDownload: RuntimeDownloadEvent | null;
   runtimeDownloadActive: boolean;
   runtimeDownloadError: string | null;
@@ -46,10 +46,12 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
   const [intelligenceDownload, setIntelligenceDownload] =
     useState<IntelligenceDownloadEvent | null>(null);
   const [intelligenceDownloads, setIntelligenceDownloads] = useState<
-    Partial<Record<IntelligenceTier, IntelligenceDownloadEvent>>
+    Partial<Record<WritingModelDownloadId, IntelligenceDownloadEvent>>
   >({});
-  const latestDownloads = useRef<Partial<Record<IntelligenceTier, IntelligenceDownloadEvent>>>({});
-  const [activeDownloadTiers, setActiveDownloadTiers] = useState<Set<IntelligenceTier>>(
+  const latestDownloads = useRef<
+    Partial<Record<WritingModelDownloadId, IntelligenceDownloadEvent>>
+  >({});
+  const [activeDownloadTiers, setActiveDownloadTiers] = useState<Set<WritingModelDownloadId>>(
     () => new Set(),
   );
   const [runtimeDownload, setRuntimeDownload] = useState<RuntimeDownloadEvent | null>(null);
@@ -213,7 +215,13 @@ export function useIntelligenceHub(pollEnabled = true): IntelligenceHub {
     void Promise.all([
       subscribe<IntelligenceDownloadEvent>("intelligence:download-progress", (event) => {
         if (!alive) return;
-        if (recordDownload(event) && TERMINAL.has(event.phase)) void refresh();
+        if (recordDownload(event) && TERMINAL.has(event.phase)) {
+          if (event.phase === "error")
+            notifyToast("error", `Model setup failed: ${event.error ?? "Open Models to retry."}`);
+          else if (event.phase === "complete")
+            notifyToast("info", "Model download verified. Ready to use.");
+          void refresh();
+        }
       }),
       subscribe<RuntimeDownloadEvent>("runtime:download-progress", (event) => {
         if (!alive || !recordRuntime(event)) return;

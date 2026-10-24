@@ -1,0 +1,11 @@
+
+> reflow@0.6.0 format:check
+> prettier --check .
+
+Checking formatting...
+[warn] .impeccable/surfaces/src-components-settings-modelpage-tsx.md
+[warn] docs/model-runtime-additions.md
+[warn] docs/verification/meetings-2026-10-24/local-llm-protocol.json
+[warn] docs/verification/meetings-2026-10-24/native-virtual-route-20s.json
+[warn] docs/verification/meetings-2026-10-24/process-kill.json
+[warn] Code style issues found in 5 files. Run Prettier with --write to fix.

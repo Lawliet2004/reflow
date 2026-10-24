@@ -339,3 +339,68 @@ async fn dictation_admission_cancel_and_concurrent_stop() {
     drop(ctx);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn encryption_refuses_busy_wal_before_changes_and_retry_removes_plaintext() {
+    let root = root();
+    let path = root.join("meeting.db");
+    let mut s = store::Store::open_with_key(&path, Some([42; 32])).unwrap();
+    let m = meeting(false);
+    s.create(&m).unwrap();
+    let marker = "PRIVATE_MEETING_ENCRYPTION_REGRESSION";
+    s.put(&m.id, "transcript", marker).unwrap();
+    let reader = rusqlite::Connection::open(&path).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT * FROM meeting_work;")
+        .unwrap();
+    assert!(s.set_encryption(true).unwrap_err().contains("reader"));
+    assert!(!s.get(&m.id).unwrap().encrypted);
+    assert_eq!(s.work(&m.id, "transcript").unwrap().unwrap(), marker);
+    reader.execute_batch("ROLLBACK").unwrap();
+    drop(reader);
+    s.set_encryption(true).unwrap();
+    assert!(s.get(&m.id).unwrap().encrypted);
+    assert_eq!(s.work(&m.id, "transcript").unwrap().unwrap(), marker);
+    for file in [
+        &path,
+        &path.with_extension("db-wal"),
+        &path.with_extension("db-journal"),
+    ] {
+        if let Ok(bytes) = std::fs::read(file) {
+            assert!(!bytes.windows(marker.len()).any(|v| v == marker.as_bytes()));
+        }
+    }
+    drop(s);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn periodic_retention_expires_ready_meetings_without_changing_settings() {
+    let root = root();
+    let ctx = AppContext::bootstrap_test(root.clone());
+    ctx.settings_store
+        .merge_update(serde_json::json!({"audio_retention":"1_day", "history_retention":"30_days"}))
+        .unwrap();
+    let mut s = store::Store::open_with_key(&ctx.meetings.path, None).unwrap();
+    let mut m = meeting(false);
+    m.capture = "saved".into();
+    m.processing = "ready".into();
+    m.created_at = (chrono::Utc::now() - chrono::Duration::days(2)).to_rfc3339();
+    s.create(&m).unwrap();
+    s.chunk(&mut m, 0, 0, 0, &[0.5; 160]).unwrap();
+    let guard = ctx.session_operation.try_lock().unwrap();
+    apply_retention_if_idle(&ctx).unwrap();
+    assert!(!s.chunks(&m.id).unwrap().is_empty());
+    drop(guard);
+    apply_retention_if_idle(&ctx).unwrap();
+    assert!(s.chunks(&m.id).unwrap().is_empty());
+    assert!(s.get(&m.id).unwrap().audio_removed);
+    let mut expired = s.get(&m.id).unwrap();
+    expired.created_at = (chrono::Utc::now() - chrono::Duration::days(31)).to_rfc3339();
+    s.save(&expired).unwrap();
+    apply_retention_if_idle(&ctx).unwrap();
+    assert!(s.get(&m.id).is_err());
+    drop(s);
+    drop(ctx);
+    std::fs::remove_dir_all(root).unwrap();
+}

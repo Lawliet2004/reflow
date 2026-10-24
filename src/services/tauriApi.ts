@@ -28,6 +28,7 @@ import {
   ResolvedProfile,
   RuntimePlan,
   IntelligenceTierState,
+  WritingModelDownloadId,
   LatencyMetrics,
   LatencyPercentiles,
   LatencyReport,
@@ -239,6 +240,7 @@ const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   style: "faithful",
   auto_style_from_app: false,
   flow_model: "qwen3.5-0.8b",
+  summary_model: "follow_writing",
   active_profile: "Default",
   launch_at_startup: false,
   start_minimized: false,
@@ -498,6 +500,8 @@ export const api = {
     safeInvoke<SpeechSetupPlan | null>("get_speech_setup_plan", undefined, null),
   getPythonSetupProgress: () =>
     safeInvoke<PythonSetupProgress | null>("get_python_setup_progress", undefined, null),
+  activateCachedSpeechRuntime: () =>
+    safeInvoke<boolean>("activate_cached_speech_runtime", undefined, false),
   verifySpeechRuntime: () => invoke<void>("verify_speech_runtime"),
   setupPythonRuntime: () => safeInvoke<void>("setup_python_runtime"),
   cancelPythonRuntimeSetup: (attemptId?: string) =>
@@ -670,11 +674,11 @@ export const api = {
     safeInvoke<FlowStatus>("get_intelligence_status", undefined, emptyFlowStatus()),
   getIntelligenceTiers: () =>
     safeInvoke<IntelligenceTierState[]>("get_intelligence_tiers", undefined, []),
-  installIntelligenceModel: (tier: AppSettings["intelligence_tier"]) =>
+  installIntelligenceModel: (tier: WritingModelDownloadId) =>
     safeInvoke<void>("install_intelligence_model", { tier }),
-  cancelIntelligenceDownload: (tier: AppSettings["intelligence_tier"], attemptId: string) =>
+  cancelIntelligenceDownload: (tier: WritingModelDownloadId, attemptId: string) =>
     safeInvoke<void>("cancel_intelligence_download", { tier, attemptId }),
-  removeIntelligenceModel: (tier: AppSettings["intelligence_tier"]) =>
+  removeIntelligenceModel: (tier: WritingModelDownloadId) =>
     safeInvoke<void>("remove_intelligence_model", { tier }),
   installLlamaRuntime: (computeBackend: AppSettings["refinement"]["device"]) =>
     safeInvoke<void>("install_llama_runtime", { computeBackend }),

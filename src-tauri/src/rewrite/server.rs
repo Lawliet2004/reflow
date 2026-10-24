@@ -39,6 +39,19 @@ fn native_attempt_admitted(
                 .is_some_and(|device| device.free_vram_mb >= required_vram))
 }
 
+/// Host memory is required even for GPU offload (mmap weights, context and
+/// runtime workspace). Enforce this for every launch and CPU retry, not only
+/// the dictation planner. Existing resident requests return before this check.
+fn admit_writing_load(model: &str, context_size: u32, available_mb: f32) -> Result<(), String> {
+    let spec = flow_model_spec(model);
+    let required =
+        spec.approx_bytes as f32 / (1024.0 * 1024.0) + 512.0 + context_size as f32 * 0.125 + 1024.0;
+    if !available_mb.is_finite() || available_mb < required {
+        return Err(format!("{} needs about {:.1} GB of available memory for this context; {:.1} GB is available. Close other apps or choose a smaller writing model, then retry. Your transcript is saved.", spec.label, required / 1024.0, available_mb.max(0.0) / 1024.0));
+    }
+    Ok(())
+}
+
 pub struct FlowModelSpec {
     pub id: &'static str,
     pub label: &'static str,
@@ -202,7 +215,7 @@ pub(crate) fn llama_server_threads(
     )
 }
 
-pub const FLOW_MODELS: [FlowModelSpec; 3] = [
+pub const FLOW_MODELS: [FlowModelSpec; 6] = [
     FlowModelSpec {
         id: "none",
         label: "None",
@@ -234,6 +247,30 @@ pub const FLOW_MODELS: [FlowModelSpec; 3] = [
         repo: "unsloth/Qwen3.5-2B-GGUF",
         approx_bytes: 1_290_000_000,
         gpu_layer_count: 24,
+    },
+    FlowModelSpec {
+        id: "qwen3.5-4b",
+        label: "Qwen3.5 4B",
+        filename: "Qwen3.5-4B-Q4_K_M.gguf",
+        repo: "unsloth/Qwen3.5-4B-GGUF",
+        approx_bytes: 2740937888,
+        gpu_layer_count: 32,
+    },
+    FlowModelSpec {
+        id: "minicpm5-2b",
+        label: "MiniCPM5 2B",
+        filename: "MiniCPM5-2B-Q4_K_M.gguf",
+        repo: "openbmb/MiniCPM5-2B-GGUF",
+        approx_bytes: 1561318368,
+        gpu_layer_count: 42,
+    },
+    FlowModelSpec {
+        id: "gemma4-e4b",
+        label: "Gemma 4 E4B",
+        filename: "gemma-4-E4B-it-Q4_K_M.gguf",
+        repo: "unsloth/gemma-4-E4B-it-GGUF",
+        approx_bytes: 4977171584,
+        gpu_layer_count: 42,
     },
 ];
 
@@ -687,6 +724,15 @@ impl FlowRuntime {
                     return Err(self.fail_ensure(FlowLaunchFailure::SpawnFailed(
                         "Native speech load cannot satisfy the requested device or current memory budget. Close applications, choose CPU/Auto, or use Zipformer 20M.".into(),
                     )));
+                }
+            }
+            if native_manifest.is_none() {
+                if let Err(message) = admit_writing_load(
+                    flow_model,
+                    context_size,
+                    capabilities_uncached().ram.available_mb,
+                ) {
+                    return Err(self.fail_ensure(FlowLaunchFailure::SpawnFailed(message)));
                 }
             }
             let layers_for_attempt = if attempt.is_gpu() {
@@ -1543,5 +1589,21 @@ mod audit_admission_tests {
         assert!(native_attempt_admitted(manifest, &caps, false, false));
         assert!(!native_attempt_admitted(manifest, &caps, false, true));
         assert!(!native_attempt_admitted(manifest, &caps, true, true));
+    }
+}
+
+#[cfg(test)]
+mod writing_admission_tests {
+    use super::*;
+    #[test]
+    fn all_writing_launches_require_host_memory_including_context() {
+        for model in FLOW_MODELS {
+            assert!(admit_writing_load(model.id, 4096, 256.0).is_err());
+            assert!(admit_writing_load(model.id, 4096, f32::NAN).is_err());
+            assert!(admit_writing_load(model.id, 4096, 64000.0).is_ok());
+        }
+        let base = flow_model_spec("gemma4-e4b").approx_bytes as f32 / (1024.0 * 1024.0) + 2200.0;
+        assert!(admit_writing_load("gemma4-e4b", 4096, base).is_ok());
+        assert!(admit_writing_load("gemma4-e4b", 32768, base).is_err());
     }
 }

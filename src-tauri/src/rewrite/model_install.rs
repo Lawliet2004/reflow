@@ -94,11 +94,16 @@ fn publish(
 }
 
 pub fn start(tier: String, app: AppHandle, ctx: AppContext) -> Result<(), String> {
-    let tier = tier.trim().to_ascii_lowercase();
+    let tier = match tier.trim().to_ascii_lowercase().as_str() {
+        "qwen3.5-0.8b" => "smart_flow".to_owned(),
+        "qwen3.5-2b" => "deep_context".to_owned(),
+        id => id.to_owned(),
+    };
     let model = match tier.as_str() {
         "smart_flow" => "qwen3.5-0.8b",
         "deep_context" => "qwen3.5-2b",
-        _ => return Err(format!("Tier '{tier}' has no model to install")),
+        id @ ("qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b") => id,
+        _ => return Err(format!("Unknown writing model or tier: {tier}")),
     };
     let existing = ctx
         .active_intelligence_downloads
@@ -160,21 +165,55 @@ pub fn start(tier: String, app: AppHandle, ctx: AppContext) -> Result<(), String
         );
     }
     publish(&ctx, &app, &tier, &attempt_id, |_| {});
-    let verified = super::runtime_install::verify_active(Some(&cancel));
     drop(operation);
-    if let Err(error) = verified {
-        publish(&ctx, &app, &tier, &attempt_id, |event| {
-            event.phase = if cancel.load(Ordering::Acquire) {
-                "cancelled"
-            } else {
-                "error"
-            }
-            .into();
-            event.error = Some(error.clone());
-        });
-        return Err(error);
-    }
     tauri::async_runtime::spawn(async move {
+        let runtime_ctx = ctx.clone();
+        let runtime_app = app.clone();
+        let runtime_tier = tier.clone();
+        let runtime_attempt = attempt_id.clone();
+        let runtime_cancel = cancel.clone();
+        let verified = tokio::task::spawn_blocking(move || {
+            let backend = runtime_ctx.settings_store.get().refinement.device;
+            super::runtime_install::ensure_for_model(
+                &runtime_app,
+                &runtime_ctx,
+                &backend,
+                runtime_cancel,
+                |phase| {
+                    publish(
+                        &runtime_ctx,
+                        &runtime_app,
+                        &runtime_tier,
+                        &runtime_attempt,
+                        |event| {
+                            event.phase = phase.into();
+                        },
+                    )
+                },
+            )
+        })
+        .await
+        .map_err(|error| format!("Runtime setup worker stopped: {error}"))
+        .and_then(|result| result);
+        match verified {
+            Ok(generation) if !cancel.load(Ordering::Acquire) => {
+                publish(&ctx, &app, &tier, &attempt_id, |event| {
+                    event.runtime_generation = generation;
+                });
+            }
+            outcome => {
+                publish(&ctx, &app, &tier, &attempt_id, |event| {
+                    event.phase = if cancel.load(Ordering::Acquire) {
+                        "cancelled"
+                    } else {
+                        "error"
+                    }
+                    .into();
+                    event.error = outcome.err();
+                });
+                return;
+            }
+        }
         let url = format!(
             "https://huggingface.co/{}/resolve/{}/{}",
             manifest.repo, manifest.revision, manifest.filename
@@ -269,6 +308,22 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn prerequisite_phases_remain_owned_and_cancellable() {
+        for phase in ["checking_runtime", "installing_runtime"] {
+            let mut current = job("owned");
+            current
+                .update("owned", |event| event.phase = phase.into())
+                .unwrap();
+            assert!(current.active());
+            current.request_cancel("owned").unwrap();
+            current
+                .update("owned", |event| event.phase = "downloading".into())
+                .unwrap();
+            assert_eq!(current.snapshot.phase, "cancelling");
+        }
+    }
+
     #[test]
     fn stale_cancellation_and_progress_cannot_take_over_a_replacement() {
         let mut current = job("replacement");

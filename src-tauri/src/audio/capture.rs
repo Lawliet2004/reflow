@@ -502,9 +502,11 @@ impl AudioCaptureEngine {
                             &resampler_clone,
                             &vad_clone,
                             &audio_level_ref,
-                            &sender_clone,
-                            &auto_stop_clone,
-                            &dropped_chunks,
+                            CaptureSink {
+                                sender: &sender_clone,
+                                auto_stop: &auto_stop_clone,
+                                dropped_chunks: &dropped_chunks,
+                            },
                         );
                     },
                     err_fn,
@@ -531,9 +533,11 @@ impl AudioCaptureEngine {
                             &resampler_clone,
                             &vad_clone,
                             &audio_level_ref,
-                            &sender_clone,
-                            &auto_stop_clone,
-                            &dropped_chunks,
+                            CaptureSink {
+                                sender: &sender_clone,
+                                auto_stop: &auto_stop_clone,
+                                dropped_chunks: &dropped_chunks,
+                            },
                         );
                     },
                     err_fn,
@@ -562,9 +566,11 @@ impl AudioCaptureEngine {
                             &resampler_clone,
                             &vad_clone,
                             &audio_level_ref,
-                            &sender_clone,
-                            &auto_stop_clone,
-                            &dropped_chunks,
+                            CaptureSink {
+                                sender: &sender_clone,
+                                auto_stop: &auto_stop_clone,
+                                dropped_chunks: &dropped_chunks,
+                            },
                         );
                     },
                     err_fn,
@@ -593,9 +599,11 @@ impl AudioCaptureEngine {
                             &resampler_clone,
                             &vad_clone,
                             &audio_level_ref,
-                            &sender_clone,
-                            &auto_stop_clone,
-                            &dropped_chunks,
+                            CaptureSink {
+                                sender: &sender_clone,
+                                auto_stop: &auto_stop_clone,
+                                dropped_chunks: &dropped_chunks,
+                            },
                         );
                     },
                     err_fn,
@@ -665,9 +673,11 @@ impl AudioCaptureEngine {
                     &resampler,
                     &vad_mutex,
                     &audio_level_ref,
-                    &sample_sender,
-                    &auto_stop_notify,
-                    &dropped_chunks,
+                    CaptureSink {
+                        sender: &sample_sender,
+                        auto_stop: &auto_stop_notify,
+                        dropped_chunks: &dropped_chunks,
+                    },
                 );
             },
             move |message: String| {
@@ -707,15 +717,19 @@ impl AudioCaptureEngine {
     }
 }
 
+struct CaptureSink<'a> {
+    sender: &'a mpsc::Sender<Vec<f32>>,
+    auto_stop: &'a mpsc::Sender<()>,
+    dropped_chunks: &'a AtomicU64,
+}
+
 fn dispatch_chunk(
     native: &[f32],
     pause: &Mutex<CapturePause>,
     resampler: &Mutex<AudioResampler>,
     vad: &Mutex<VoiceActivityDetector>,
     audio_level: &Mutex<f32>,
-    sender: &mpsc::Sender<Vec<f32>>,
-    auto_stop: &mpsc::Sender<()>,
-    dropped_chunks: &AtomicU64,
+    sink: CaptureSink<'_>,
 ) {
     let pause_guard = pause.lock();
     if pause_guard.since.is_some() {
@@ -731,15 +745,15 @@ fn dispatch_chunk(
     drop(vad_guard);
 
     *audio_level.lock() = (rms * 6.0).min(1.0);
-    match sender.try_send(mono_16k) {
+    match sink.sender.try_send(mono_16k) {
         Ok(()) => {}
         Err(mpsc::error::TrySendError::Full(_)) => {
-            dropped_chunks.fetch_add(1, Ordering::Relaxed);
+            sink.dropped_chunks.fetch_add(1, Ordering::Relaxed);
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {}
     }
     if should_auto_stop {
-        let _ = auto_stop.try_send(());
+        let _ = sink.auto_stop.try_send(());
     }
 }
 
@@ -767,9 +781,11 @@ mod tests {
                 &resampler,
                 &vad,
                 &engine.audio_level,
-                &tx,
-                &auto_stop,
-                &engine.dropped_chunks,
+                CaptureSink {
+                    sender: &tx,
+                    auto_stop: &auto_stop,
+                    dropped_chunks: &engine.dropped_chunks,
+                },
             )
         };
         dispatch(&vec![0.25; 1600]);

@@ -64,11 +64,11 @@ export function LlmSelector({
                 className="text-accent underline underline-offset-2"
                 onClick={onOpenSettings}
               >
-                Download in Performance
+                Download in Models
               </button>
             </>
           ) : (
-            " Download it in Settings → Performance when you want to use it."
+            " Download it in Settings → Models when you want to use it."
           ))}
       </p>
     </div>

@@ -1,0 +1,1148 @@
+
+> reflow@0.6.0 test
+> vitest run
+
+
+ RUN  v4.1.12 /home/papan/Desktop/Projects/reflow
+
+ ❯ src/components/NotesView.test.tsx (15 tests | 1 failed) 15413ms
+   × returns to the previous page when the last note on a page is deleted 4075ms
+stderr | src/components/settings/ModesPage.test.tsx > Modes > shows an app-aware Dictation draft as custom until a task is chosen
+An update to WritingTaskPicker inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ❯ src/components/settings/ModesPage.test.tsx (3 tests | 1 failed) 7840ms
+     × shows an app-aware Dictation draft as custom until a task is chosen 6078ms
+ ❯ src/components/settings/CalibrationPanel.test.tsx (4 tests | 1 failed) 11008ms
+   × requires a reference before explicitly recording and applying a qualified result 6824ms
+ ❯ src/components/settings/CleanupPage.test.tsx (5 tests | 1 failed) 9893ms
+   × limits custom format guidance and provides a default restore action 6283ms
+ ❯ src/components/settings/AppearancePage.test.tsx (2 tests | 1 failed) 8571ms
+   × keeps the current style by default and previews the saved waveform choice in every phase 8399ms
+stderr | src/App.smoothness.test.tsx > measures whole-window commits from microphone levels away from dictation
+Could not bind window resize listener: TypeError: Cannot read properties of undefined (reading 'metadata')
+    at getCurrentWindow (file:///home/papan/Desktop/Projects/reflow/node_modules/@tauri-apps/api/window.js:85:50)
+    at /home/papan/Desktop/Projects/reflow/src/components/TitleBar.tsx:15:27
+    at /home/papan/Desktop/Projects/reflow/src/components/TitleBar.tsx:30:5
+    at Object.react_stack_bottom_frame (/home/papan/Desktop/Projects/reflow/node_modules/react-dom/cjs/react-dom-client.development.js:25989:20)
+    at runWithFiberInDEV (/home/papan/Desktop/Projects/reflow/node_modules/react-dom/cjs/react-dom-client.development.js:874:13)
+    at commitHookEffectListMount (/home/papan/Desktop/Projects/reflow/node_modules/react-dom/cjs/react-dom-client.development.js:13249:29)
+    at commitHookPassiveMountEffects (/home/papan/Desktop/Projects/reflow/node_modules/react-dom/cjs/react-dom-client.development.js:13336:11)
+    at commitPassiveMountOnFiber (/home/papan/Desktop/Projects/reflow/node_modules/react-dom/cjs/react-dom-client.development.js:15484:13)
+    at recursivelyTraversePassiveMountEffects (/home/papan/Desktop/Projects/reflow/node_modules/react-dom/cjs/react-dom-client.development.js:15439:11)
+    at commitPassiveMountOnFiber (/home/papan/Desktop/Projects/reflow/node_modules/react-dom/cjs/react-dom-client.development.js:15718:11)
+
+ ❯ src/App.smoothness.test.tsx (1 test | 1 failed) 6195ms
+   × measures whole-window commits from microphone levels away from dictation 6187ms
+ ❯ src/components/DictationTrial.test.tsx (6 tests | 1 failed) 2800ms
+   × does not accept typing, unrelated sessions, or a final transcript alone as insertion proof 1700ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.smoothness.test.tsx > measures whole-window commits from microphone levels away from dictation
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/App.smoothness.test.tsx:8:1
+      6| import * as bridge from "./services/tauriApi";
+      7|
+      8| it("measures whole-window commits from microphone levels away from dic…
+       | ^
+      9|   const model = await bridge.api.getModelStatus();
+     10|   vi.spyOn(bridge.api, "getModelStatus").mockResolvedValue({
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯
+
+ FAIL  src/components/DictationTrial.test.tsx > does not accept typing, unrelated sessions, or a final transcript alone as insertion proof
+Error: expect(element).toBeEnabled()
+
+Received element is not enabled:
+  <button
+  class="btn btn-secondary"
+  disabled=""
+  type="button"
+/>
+
+Ignored nodes: comments, script, style
+[36m<html>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"space-y-3"[39m
+      [36m>[39m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-sm text-muted"[39m
+        [36m>[39m
+          [0mFocus the box and use your shortcut, or choose Record. Say a sentence, then stop.[0m
+        [36m</p>[39m
+        [36m<textarea[39m
+          [33maria-label[39m=[32m"Try dictation here"[39m
+          [33mclass[39m=[32m"field w-full resize-none"[39m
+          [33mplaceholder[39m=[32m"Your dictated sentence appears here…"[39m
+          [33mrows[39m=[32m"4"[39m
+        [36m/>[39m
+        [36m<button[39m
+          [33mclass[39m=[32m"btn btn-secondary"[39m
+          [33mdisabled[39m=[32m""[39m
+          [33mtype[39m=[32m"button"[39m
+        [36m>[39m
+          [0mRecord a sentence[0m
+        [36m</button>[39m
+        [36m<div[39m
+          [33maria-live[39m=[32m"polite"[39m
+        [36m/>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+  [36m</body>[39m
+[36m</html>[39m
+ ❯ src/components/DictationTrial.test.tsx:28:71
+     26|   const view = render(<DictationTrial onSuccess={success} onReset={res…
+     27|   await waitFor(() =>
+     28|     expect(screen.getByRole("button", { name: "Record a sentence" })).…
+       |                                                                       ^
+     29|   );
+     30|   return {
+ ❯ runWithExpensiveErrorDiagnosticsDisabled node_modules/@testing-library/dom/dist/config.js:47:12
+ ❯ checkCallback node_modules/@testing-library/dom/dist/wait-for.js:124:77
+ ❯ Timeout.checkRealTimersCallback node_modules/@testing-library/dom/dist/wait-for.js:118:16
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯
+
+ FAIL  src/components/NotesView.test.tsx > returns to the previous page when the last note on a page is deleted
+TestingLibraryElementError: Unable to find an element with the text: An earlier idea. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"workspace-page notes-page animate-fade-rise"[39m
+    [36m>[39m
+      [36m<header[39m
+        [33mclass[39m=[32m"page-heading notes-heading"[39m
+      [36m>[39m
+        [36m<div>[39m
+          [36m<h1>[39m
+            [0mNotes[0m
+          [36m</h1>[39m
+          [36m<p>[39m
+            [0mWrite it down. Talk it through. Keep it here.[0m
+          [36m</p>[39m
+        [36m</div>[39m
+        [36m<button[39m
+          [33mclass[39m=[32m"btn btn-ghost"[39m
+          [33mdisabled[39m=[32m""[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"lucide lucide-arrow-down-to-line w-4 h-4"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mheight[39m=[32m"24"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-linecap[39m=[32m"round"[39m
+            [33mstroke-linejoin[39m=[32m"round"[39m
+            [33mstroke-width[39m=[32m"2"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [33mwidth[39m=[32m"24"[39m
+            [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M12 17V3"[39m
+            [36m/>[39m
+            [36m<path[39m
+              [33md[39m=[32m"m6 11 6 6 6-6"[39m
+            [36m/>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M19 21H5"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+          [0mExport Markdown[0m
+        [36m</button>[39m
+      [36m</header>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"notes-layout"[39m
+      [36m>[39m
+        [36m<section[39m
+          [33maria-labelledby[39m=[32m"note-compose-heading"[39m
+          [33mclass[39m=[32m"notes-compose"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-composer"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"notes-composer-heading"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-notebook-pen w-4 h-4 text-muted"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 6h4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 10h4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 14h4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 18h4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [36m<h2[39m
+                [33mid[39m=[32m"note-compose-heading"[39m
+              [36m>[39m
+                [0mNew note[0m
+              [36m</h2>[39m
+            [36m</div>[39m
+            [36m<textarea[39m
+              [33maria-label[39m=[32m"New note"[39m
+              [33mclass[39m=[32m"notes-textarea"[39m
+              [33mmaxlength[39m=[32m"100000"[39m
+              [33mplaceholder[39m=[32m"What’s on your mind?"[39m
+            [36m/>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"notes-composer-footer"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"text-xs text-muted"[39m
+              [36m>[39m
+                [0mA little space for a thought.[0m
+              [36m</span>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"btn btn-primary"[39m
+                [33mdisabled[39m=[32m""[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"lucide lucide-check w-3.5 h-3.5"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"24"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"2"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"24"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M20 6 9 17l-5-5"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [0mSave note[0m
+              [36m</button>[39m
+            [36m</div>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-record "[39m
+          [36m>[39m
+            [36m<div>[39m
+              [36m<h2>[39m
+                [0mPrefer to say it?[0m
+              [36m</h2>[39m
+              [36m<p>[39m
+                [0mVoice notes are saved here, without pasting into another app.[0m
+              [36m</p>[39m
+            [36m</div>[39m
+            [36m<button[39m
+              [33mclass[39m=[32m"btn btn-secondary"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-mic w-4 h-4"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 19v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M19 10v2a7 7 0 0 1-14 0v-2"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"13"[39m
+                  [33mrx[39m=[32m"3"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [0mRecord note[0m
+            [36m</button>[39m
+          [36m</div>[39m
+          [36m<details[39m
+            [33mclass[39m=[32m"notes-export-settings"[39m
+          [36m>[39m
+            [36m<summary>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-folder-open w-4 h-4"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [36m<span>[39m
+                [0mExport location[0m
+              [36m</span>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-chevron-down w-3.5 h-3.5 notes-disclosure"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 9 6 6 6-6"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</summary>[39m
+            [36m<p>[39m
+              [0mMarkdown exports go to Documents / Reflow Notes unless you choose another folder.[0m
+            [36m</p>[39m
+            [36m<label[39m
+              [33mfor[39m=[32m"notes-export-folder"[39m
+            [36m>[39m
+              [0mExport folder[0m
+            [36m</label>[39m
+            [36m<input[39m
+              [33mclass[39m=[32m"field w-full"[39m
+              [33mid[39m=[32m"notes-export-folder"[39m
+              [33mplaceholder[39m=[32m"Documents / Reflow Notes"[39m
+              [33mvalue[39m=[32m""[39m
+            [36m/>[39m
+            [36m<button[39m
+              [33mclass[39m=[32m"btn btn-ghost"[39m
+              [33mdisabled[39m=[32m""[39m
+            [36m>[39m
+              [0mSave folder[0m
+            [36m</button>[39m
+          [36m</details>[39m
+        [36m</section>[39m
+        [36m<section[39m
+          [33maria-busy[39m=[32m"true"[39m
+          [33maria-labelledby[39m=[32m"saved-notes-heading"[39m
+          [33mclass[39m=[32m"notes-library"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-library-heading"[39m
+          [36m>[39m
+            [36m<h2[39m
+              [33mid[39m=[32m"saved-notes-heading"[39m
+            [36m>[39m
+              [0mYour notes[0m
+            [36m</h2>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"text-xs text-muted"[39m
+            [36m/>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search w-4 h-4 text-muted"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"24"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"24"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m21 21-4.34-4.34"[39m
+              [36m/>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39m=[32m"8"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [36m<input[39m
+              [33maria-label[39m=[32m"Search notes"[39m
+              [33mclass[39m=[32m"field"[39m
+              [33mplaceholder[39m=[32m"Find a note…"[39m
+              [33mtype[39m=[32m"search"[39m
+              [33mvalue[39m=[32m""[39m
+            [36m/>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-list"[39m
+          [36m>[39m
+            [36m<article[39m
+              [33mclass[39m=[32m"note-item "[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"note-meta"[39m
+              [36m>[39m
+                [36m<time[39m
+                  [33mdatetime[39m=[32m"2026-10-02T12:00:00Z"[39m
+                [36m>[39m
+                  [0mOct 2[0m
+                  [36m<span>[39m
+                    [0m [0m
+                    [0m·[0m
+                    [0m [0m
+                    [0m5:30 PM[0m
+                  [36m</span>[39m
+                [36m</time>[39m
+                [36m<div />[39m
+              [36m</div>[39m
+              [36m<p[39m
+                [33mclass[39m=[32m"note-content"[39m
+              [36m>[39m
+                [0mKeep this idea[0m
+              [36m</p>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"note-actions"[39m
+              [36m>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Pin note"[39m
+                  [33maria-pressed[39m=[32m"false"[39m
+                  [33mclass[39m=[32m"icon-btn "[39m
+                  [33mtitle[39m=[32m"Pin note"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-pin w-3.5 h-3.5"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"24"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"24"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M12 17v5"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Copy note"[39m
+                  [33mclass[39m=[32m"icon-btn"[39m
+                  [33mtitle[39m=[32m"Copy note"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-copy w-3.5 h-3.5"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"24"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"24"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<rect[39m
+                      [33mheight[39m=[32m"14"[39m
+                      [33mrx[39m=[32m"2"[39m
+                      [33mry[39m=[32m"2"[39m
+                      [33mwidth[39m=[32m"14"[39m
+                      [33mx[39m=[32m"8"[39m
+                      [33my[39m=[32m"8"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Edit note"[39m
+                  [33mclass[39m=[32m"icon-btn"[39m
+                  [33mtitle[39m=[32m"Edit note"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-pencil w-3.5 h-3.5"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"24"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"24"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"m15 5 4 4"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Delete note"[39m
+                  [33mclass[39m=[32m"icon-btn note-delete"[39m
+                  [33mdisabled[39m=[32m""[39m
+                  [33mhidden[39m=[32m""[39m
+                  [33mtitle[39m=[32m"Delete note"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-trash2 lucide-trash-2 w-3.5 h-3.5"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"24"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"24"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M10 11v6"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M14 11v6"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M3 6h18"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</button>[39m
+              [36m</div>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"note-delete-confirm"[39m
+              [36m>[39m
+                [36m<p>[39m
+                  [0mDelete note?[0m
+                [36m</p>[39m
+                [36m<span>[39m
+                  [0mThis permanently removes it from Notes and History.[0m
+                [36m</span>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"flex flex-wrap gap-2"[39m
+                [36m>[39m
+                  [36m<button[39m
+                    [33mclass[39m=[32m"btn btn-ghost"[39m
+                  [36m>[39m
+                    [0mKeep note[0m
+                  [36m</button>[39m
+                  [36m<button[39m
+                    [33mclass[39m=[32m"btn btn-danger"[39m
+                  [36m>[39m
+                    [0mDelete note[0m
+                  [36m</button>[39m
+                [36m</div>[39m
+              [36m</div>[39m
+            [36m</article>[39m
+          [36m</div>[39m
+        [36m</section>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"workspace-page notes-page animate-fade-rise"[39m
+    [36m>[39m
+      [36m<header[39m
+        [33mclass[39m=[32m"page-heading notes-heading"[39m
+      [36m>[39m
+        [36m<div>[39m
+          [36m<h1>[39m
+            [0mNotes[0m
+          [36m</h1>[39m
+          [36m<p>[39m
+            [0mWrite it down. Talk it through. Keep it here.[0m
+          [36m</p>[39m
+        [36m</div>[39m
+        [36m<button[39m
+          [33mclass[39m=[32m"btn btn-ghost"[39m
+          [33mdisabled[39m=[32m""[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"lucide lucide-arrow-down-to-line w-4 h-4"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mheight[39m=[32m"24"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-linecap[39m=[32m"round"[39m
+            [33mstroke-linejoin[39m=[32m"round"[39m
+            [33mstroke-width[39m=[32m"2"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [33mwidth[39m=[32m"24"[39m
+            [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M12 17V3"[39m
+            [36m/>[39m
+            [36m<path[39m
+              [33md[39m=[32m"m6 11 6 6 6-6"[39m
+            [36m/>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M19 21H5"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+          [0mExport Markdown[0m
+        [36m</button>[39m
+      [36m</header>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"notes-layout"[39m
+      [36m>[39m
+        [36m<section[39m
+          [33maria-labelledby[39m=[32m"note-compose-heading"[39m
+          [33mclass[39m=[32m"notes-compose"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-composer"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"notes-composer-heading"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-notebook-pen w-4 h-4 text-muted"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 6h4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 10h4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 14h4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 18h4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [36m<h2[39m
+                [33mid[39m=[32m"note-compose-heading"[39m
+              [36m>[39m
+                [0mNew note[0m
+              [36m</h2>[39m
+            [36m</div>[39m
+            [36m<textarea[39m
+              [33maria-label[39m=[32m"New note"[39m
+              [33mclass[39m=[32m"notes-textarea"[39m
+              [33mmaxlength[39m=[32m"100000"[39m
+              [33mplaceholder[39m=[32m"What’s on your mind?"[39m
+            [36m/>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"notes-composer-footer"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"text-xs text-muted"[39m
+              [36m>[39m
+                [0mA little space for a thought.[0m
+              [36m</span>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"btn btn-primary"[39m
+                [33mdisabled[39m=[32m""[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"lucide lucide-check w-3.5 h-3.5"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"24"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"2"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"24"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M20 6 9 17l-5-5"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [0mSave note[0m
+              [36m</button>[39m
+            [36m</div>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-record "[39m
+          [36m>[39m
+            [36m<div>[39m
+              [36m<h2>[39m
+                [0mPrefer to say it?[0m
+              [36m</h2>[39m
+              [36m<p>[39m
+                [0mVoice notes are saved here, without pasting into another app.[0m
+              [36m</p>[39m
+            [36m</div>[39m
+            [36m<button[39m
+              [33mclass[39m=[32m"btn btn-secondary"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-mic w-4 h-4"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 19v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M19 10v2a7 7 0 0 1-14 0v-2"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"13"[39m
+                  [33mrx[39m=[32m"3"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [0mRecord note[0m
+            [36m</button>[39m
+          [36m</div>[39m
+          [36m<details[39m
+            [33mclass[39m=[32m"notes-export-settings"[39m
+          [36m>[39m
+            [36m<summary>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-folder-open w-4 h-4"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [36m<span>[39m
+                [0mExport location[0m
+              [36m</span>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-chevron-down w-3.5 h-3.5 notes-disclosure"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 9 6 6 6-6"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</summary>[39m
+            [36m<p>[39m
+              [0mMarkdown exports go to Documents / Reflow Notes unless you choose another folder.[0m
+            [36m</p>[39m
+            [36m<label[39m
+              [33mfor[39m=[32m"notes-export-folder"[39m
+            [36m>[39m
+              [0mExport folder[0m
+            [36m</label>[39m
+            [36m<input[39m
+              [33mclass[39m=[32m"field w-full"[39m
+              [33mid[39m=[32m"notes-export-folder"[39m
+              [33mplaceholder[39m=[32m"Documents / Reflow Notes"[39m
+              [33mvalue[39m=[32m""[39m
+            [36m/>[39m
+            [36m<button[39m
+              [33mclass[39m=[32m"btn btn-ghost"[39m
+              [33mdisabled[39m=[32m""[39m
+            [36m>[39m
+              [0mSave folder[0m
+            [36m</button>[39m
+          [36m</details>[39m
+        [36m</section>[39m
+        [36m<section[39m
+          [33maria-busy[39m=[32m"true"[39m
+          [33maria-labelledby[39m=[32m"saved-notes-heading"[39m
+          [33mclass[39m=[32m"notes-library"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-library-heading"[39m
+          [36m>[39m
+            [36m<h2[39m
+              [33mid[39m=[32m"saved-notes-heading"[39m
+            [36m>[39m
+              [0mYour notes[0m
+            [36m</h2>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"text-xs text-muted"[39m
+            [36m/>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search w-4 h-4 text-muted"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"24"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"24"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m21 21-4.34-4.34"[39m
+              [36m/>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39m=[32m"8"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [36m<input[39m
+              [33maria-label[39m=[32m"Search notes"[39m
+              [33mclass[39m=[32m"field"[39m
+              [33mplaceholder[39m=[32m"Find a note…"[39m
+              [33mtype[39m=[32m"search"[39m
+              [33mvalue[39m=[32m""[39m
+            [36m/>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"notes-list"[39m
+          [36m>[39m
+            [36m<article[39m
+              [33mclass[39m=[32m"note-item "[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"note-meta"[39m
+              [36m>[39m
+                [36m<time[39m
+                  [33mdatetime[39m=[32m"2026-10-02T12:00:00Z"[39m
+                [36m>[39m
+                  [0mOct 2[0m
+                  [36m<span>[39m
+                    [0m [0m
+                    [0m·[0m
+                    [0m [0m
+                    [0m5:30 PM[0m
+                  [36m</span>[39m
+                [36m</time>[39m
+                [36m<div />[39m
+              [36m</div>[39m
+              [36m<p[39m
+                [33mclass[39m=[32m"note-content"[39m
+              [36m>[39m
+                [0mKeep this idea[0m
+              [36m</p>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"note-actions"[39m
+              [36m>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Pin note"[39m
+                  [33maria-pressed[39m=[32m"false"[39m
+                  [33mclass[39m=[32m"icon-btn "[39m
+                  [33mtitle[39m=[32m"Pin note"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-pin w-3.5 h-3.5"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"24"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"24"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M12 17v5"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Copy note"[39m
+                  [33mclass[39m=[32m"icon-btn"[39m
+                  [33mtitle[39m=[32m"Copy note"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-copy w-3.5 h-3.5"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"24"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"24"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<rect[39m
+                      [33mheight[39m=[32m"14"[39m
+                      [33mrx[39m=[32m"2"[39m
+                      [33mry[39m=[32m"2"[39m
+                      [33mwidth[39m=[32m"14"[39m
+                      [33mx[39m=[32m"8"[39m
+                      [33my[39m=[32m"8"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Edit note"[39m
+                  [33mclass[39m=[32m"icon-btn"[39m
+                  [33mtitle[39m=[32m"Edit note"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-pencil w-3.5 h-3.5"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"24"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"24"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"m15 5 4 4"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Delete note"[39m
+                  [33mclass[39m=[32m"icon-btn note-delete"[39m
+                  [33mdisabled[39m=[32m""[39m
+                  [33mhidden[39m=[32m""[39m
+                  [33mtitle[39m=[32m"Delete note"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-trash2 lucide-trash-2 w-3.5 h-3.5"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"24"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"24"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M10 11v6"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M14 11v6"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M3 6h18"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</button>[39m
+              [36m</div>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"note-delete-confirm"[39m
+              [36m>[39m
+                [36m<p>[39m
+                  [0mDelete note?[0m
+                [36m</p>[39m
+                [36m<span>[39m
+                  [0mThis permanently removes it from Notes and History.[0m
+                [36m</span>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"flex flex-wrap gap-2"[39m
+                [36m>[39m
+                  [36m<button[39m
+                    [33mclass[39m=[32m"btn btn-ghost"[39m
+                  [36m>[39m
+                    [0mKeep note[0m
+                  [36m</button>[39m
+                  [36m<button[39m
+                    [33mclass[39m=[32m"btn btn-danger"[39m
+                  [36m>[39m
+                    [0mDelete note[0m
+                  [36m</button>[39m
+                [36m</div>[39m
+              [36m</div>[39m
+            [36m</article>[39m
+          [36m</div>[39m
+        [36m</section>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ src/components/NotesView.test.tsx:277:23
+    275|   fireEvent.click(screen.getByRole("button", { name: "Delete note" }));
+    276|
+    277|   expect(await screen.findByText("An earlier idea")).toBeInTheDocument…
+       |                       ^
+    278|   expect(screen.queryByText("Keep this idea")).toBeNull();
+    279|   expect(screen.queryByRole("button", { name: "Previous page" })).toBe…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯
+
+ FAIL  src/components/settings/AppearancePage.test.tsx > keeps the current style by default and previews the saved waveform choice in every phase
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/components/settings/AppearancePage.test.tsx:7:1
+      5| import { AppearancePage } from "./AppearancePage";
+      6|
+      7| it("keeps the current style by default and previews the saved waveform…
+       | ^
+      8|   const settings = await api.getSettings();
+      9|   const update = vi.fn();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯
+
+ FAIL  src/components/settings/CalibrationPanel.test.tsx > requires a reference before explicitly recording and applying a qualified result
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/components/settings/CalibrationPanel.test.tsx:27:1
+     25| const complete = { ...idle, phase: "complete", candidates: [winner], w…
+     26|
+     27| it("requires a reference before explicitly recording and applying a qu…
+       | ^
+     28|   vi.spyOn(api, "getCalibrationStatus").mockResolvedValue(idle);
+     29|   let finish!: (value: typeof complete) => void;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯
+
+ FAIL  src/components/settings/CleanupPage.test.tsx > limits custom format guidance and provides a default restore action
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/components/settings/CleanupPage.test.tsx:62:1
+     60| });
+     61|
+     62| it("limits custom format guidance and provides a default restore actio…
+       | ^
+     63|   await renderPage();
+     64|   fireEvent.click(screen.getByText("Custom formatting instruction"));
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/7]⎯
+
+ FAIL  src/components/settings/ModesPage.test.tsx > Modes > shows an app-aware Dictation draft as custom until a task is chosen
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/components/settings/ModesPage.test.tsx:8:3
+      6|
+      7| describe("Modes", () => {
+      8|   it("shows an app-aware Dictation draft as custom until a task is cho…
+       |   ^
+      9|     render(
+     10|       <ModesPage
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯
+
+
+ Test Files  7 failed | 53 passed (60)
+      Tests  7 failed | 400 passed (407)
+   Start at  14:47:23
+   Duration  101.33s (transform 57.39s, setup 93.20s, import 176.50s, tests 229.52s, environment 461.15s)
+

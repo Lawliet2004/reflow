@@ -1,0 +1,9 @@
+
+ RUN  v4.1.12 /home/papan/Desktop/Projects/reflow
+
+
+ Test Files  60 passed (60)
+      Tests  407 passed (407)
+   Start at  14:50:17
+   Duration  106.55s (transform 1.35s, setup 6.44s, import 5.26s, tests 40.37s, environment 41.01s)
+

@@ -259,7 +259,14 @@ pub fn current_plan(ctx: &crate::context::AppContext) -> RuntimePlan {
         engine.loaded,
         refinement_is_resident(ctx, &settings),
     );
-    if let Some(choice) = crate::calibration::cached_choice(ctx, &caps, &settings) {
+    if let Some(choice) =
+        crate::calibration::cached_choice(ctx, &caps, &settings).filter(|choice| {
+            !matches!(
+                settings.flow_model.as_str(),
+                "qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b"
+            ) || choice.refinement_model == settings.resolve_intent().flow_model
+        })
+    {
         let resident = ctx.flow_runtime.active_model().as_deref()
             == Some(choice.refinement_model.as_str())
             && ctx.flow_runtime.status_ready();
@@ -338,7 +345,10 @@ pub fn has_installed_asr(ctx: &crate::context::AppContext, settings: &AppSetting
             ))
     };
     if settings.preset == "custom"
-        || matches!(settings.asr.model.as_str(), "phonon-2" | "zipformer-20m")
+        || matches!(
+            settings.asr.model.as_str(),
+            "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8"
+        )
     {
         installed(&settings.asr.model)
     } else {

@@ -1,0 +1,14 @@
+{
+  "archive_sha256": "b72bef9be75862684098e722d79fefecf9f10fefd3a0b2950738977b4c6b4147",
+  "files": {
+    "model.int8.onnx": [
+      "440facfa94ed53cd132aca02db450f36e8fc0cdf2af3c5d80021921df7f18cff",
+      328006844
+    ],
+    "tokens.txt": ["14aab5cabf425ea1a5efdce2bcb74a24f836947baeab52cfb720eacd28492974", 100918]
+  },
+  "cold_seconds": 23.74809690300026,
+  "warm_seconds": 0.20648850799625507,
+  "warm_files_unchanged": true,
+  "scope": "extraction and integrity only, no recognition quality claim"
+}

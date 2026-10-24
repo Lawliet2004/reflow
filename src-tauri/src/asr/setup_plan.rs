@@ -184,8 +184,8 @@ pub async fn get_speech_setup_plan(
             hardware: caps, architecture: std::env::consts::ARCH.into(), cpu_has_avx2: avx2,
             torch_variant: variant.receipt_name().into(), acceleration: acceleration.into(), explanation: explanation.into(),
             required_disk_bytes: required, available_disk_bytes: available,
-            supported_models: if target == "x86_64-apple-darwin" { vec!["zipformer-20m".into()] } else {
-                ["0.6b", "1.7b", "phonon-2", "zipformer-20m"].map(String::from).to_vec()
+            supported_models: if target == "x86_64-apple-darwin" { vec!["zipformer-20m".into(), "omnilingual-300m-int8".into()] } else {
+                ["0.6b", "1.7b", "phonon-2", "zipformer-20m", "omnilingual-300m-int8"].map(String::from).to_vec()
             }, blocker,
         }
     }).await.map_err(|error| format!("Could not check this computer: {error}"))

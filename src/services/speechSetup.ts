@@ -51,6 +51,15 @@ export async function prepareSpeechRuntime(
     return;
   }
 
+  if (!joinAttempt && !status?.setting_up) {
+    if (await api.activateCachedSpeechRuntime()) {
+      signal.throwIfAborted();
+      await api.verifySpeechRuntime();
+      signal.throwIfAborted();
+      return;
+    }
+  }
+
   let unsubscribe: (() => void) | undefined;
   let subscribed = false;
   let abort: (() => void) | undefined;

@@ -610,27 +610,6 @@ pub(super) fn probe(config: &MeetingConfig, active: Arc<Active>) -> Result<[f32;
     drop(native);
     Ok(peaks)
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn overflow_stops_without_silent_loss() {
-        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
-        let a = Active::default();
-        let packet = || Packet {
-            track: 0,
-            at: 0,
-            rate: 16000,
-            channels: 1,
-            samples: vec![0.5; 160],
-        };
-        send(&tx, &a, packet());
-        send(&tx, &a, packet());
-        assert!(a.overflow.load(Ordering::Acquire));
-        assert!(a.stop.load(Ordering::Acquire));
-    }
-}
-
 fn freeze_sources(config: &mut MeetingConfig) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     if config.microphone.is_none()
@@ -651,4 +630,25 @@ fn freeze_sources(config: &mut MeetingConfig) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn overflow_stops_without_silent_loss() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let a = Active::default();
+        let packet = || Packet {
+            track: 0,
+            at: 0,
+            rate: 16000,
+            channels: 1,
+            samples: vec![0.5; 160],
+        };
+        send(&tx, &a, packet());
+        send(&tx, &a, packet());
+        assert!(a.overflow.load(Ordering::Acquire));
+        assert!(a.stop.load(Ordering::Acquire));
+    }
 }

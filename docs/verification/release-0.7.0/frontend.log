@@ -1,0 +1,13 @@
+
+> reflow@0.6.0 test
+> vitest run --maxWorkers=1
+
+
+ RUN  v4.1.12 /home/papan/Desktop/Projects/reflow
+
+
+ Test Files  60 passed (60)
+      Tests  409 passed (409)
+   Start at  15:10:47
+   Duration  126.20s (transform 1.82s, setup 7.86s, import 6.25s, tests 44.34s, environment 50.58s)
+

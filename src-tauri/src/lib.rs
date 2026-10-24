@@ -141,7 +141,9 @@ pub fn run() {
                             &ctx.history_store,
                             &ctx.settings_store.get().history_retention,
                         )?;
-                        ctx.history_store.purge_expired_audio()
+                        let purged = ctx.history_store.purge_expired_audio()?;
+                        crate::meetings::apply_retention_if_idle(&ctx)?;
+                        Ok::<_, String>(purged)
                     })
                     .await
                     {
@@ -655,6 +657,7 @@ pub fn run() {
             asr::python_setup::get_python_runtime_status,
             asr::python_setup::get_python_setup_progress,
             asr::python_setup::verify_speech_runtime,
+            asr::python_setup::activate_cached_speech_runtime,
             asr::setup_plan::get_speech_setup_plan,
             asr::python_setup::setup_python_runtime,
             asr::python_setup::cancel_python_runtime_setup,

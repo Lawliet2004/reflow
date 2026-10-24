@@ -28,7 +28,7 @@ Recognition (Qwen3-ASR / Phonon-2) and cleanup run entirely on the user's machin
 
 ## Capabilities and Constraints
 
-- Surfaces: Home (dictate), Notes, History, Settings (General incl. Output, Modes & Snippets, Appearance, Speech, Performance, Writing, Dictionary, Phone, Advanced), Onboarding wizard, Overlay HUD window, assistant answer card.
+- Surfaces: Home (dictate), Notes, History, Settings (General incl. Output, Modes & Snippets, Appearance, Speech, Models, Performance, Writing, Dictionary, Phone, Advanced), Onboarding wizard, Overlay HUD window, assistant answer card.
 - Cleanup levels: Original, Clean, Polished, Refined (the last two need a local LLM).
 - Light/dark/system theme, user-selectable accent (sky, indigo, emerald, amber, rose, violet, graphite), UI font scale, reduce motion, HUD contrast.
 - Windows 11 Mica behind chrome; custom title bar.

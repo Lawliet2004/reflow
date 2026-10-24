@@ -1,0 +1,102 @@
+    Checking reflow v0.6.0 (/home/papan/Desktop/Projects/reflow/src-tauri)
+error: this function has too many arguments (8/7)
+   --> src/audio/capture.rs:710:1
+    |
+710 | / fn dispatch_chunk(
+711 | |     native: &[f32],
+712 | |     pause: &Mutex<CapturePause>,
+713 | |     resampler: &Mutex<AudioResampler>,
+...   |
+718 | |     dropped_chunks: &AtomicU64,
+719 | | ) {
+    | |_^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: unneeded `return` statement
+  --> src/meetings/inhibit.rs:10:13
+   |
+10 | /             return tauri::async_runtime::block_on(async {
+11 | |                 let conn = zbus::Connection::system()
+12 | |                     .await
+13 | |                     .map_err(|e| e.to_string())?;
+...  |
+29 | |                 Ok(Self { _fd: fd })
+30 | |             });
+   | |______________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_return
+   = note: `-D clippy::needless-return` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::needless_return)]`
+help: remove `return`
+   |
+10 ~             tauri::async_runtime::block_on(async {
+11 +                 let conn = zbus::Connection::system()
+12 +                     .await
+13 +                     .map_err(|e| e.to_string())?;
+14 +                 let proxy = zbus::Proxy::new(
+15 +                     &conn,
+16 +                     "org.freedesktop.login1",
+17 +                     "/org/freedesktop/login1",
+18 +                     "org.freedesktop.login1.Manager",
+19 +                 )
+20 +                 .await
+21 +                 .map_err(|e| e.to_string())?;
+22 +                 let fd: zbus::zvariant::OwnedFd = proxy
+23 +                     .call(
+24 +                         "Inhibit",
+25 +                         &("idle", "Reflow", "Recording a meeting", "block"),
+26 +                     )
+27 +                     .await
+28 +                     .map_err(|e| format!("Cannot inhibit idle sleep: {e}"))?;
+29 +                 Ok(Self { _fd: fd })
+30 ~             })
+   |
+
+error: could not compile `reflow` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: items after a test module
+   --> src/meetings/capture.rs:614:1
+    |
+614 | mod tests {
+    | ^^^^^^^^^
+...
+634 | fn freeze_sources(config: &mut MeetingConfig) -> Result<(), String> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#items_after_test_module
+    = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+    = help: move the items to before the test module was defined
+
+error: field assignment outside of initializer for an instance created with Default::default()
+    --> src/settings/config.rs:1617:13
+     |
+1617 |             settings.intelligence_tier = "smart_flow".into();
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: consider initializing the variable with `settings::config::AppSettings { intelligence_tier: "smart_flow".into(), cleanup_level: "light".into(), flow_model: model.into(), summary_model: "qwen3.5-4b".into(), ..Default::default() }` and removing relevant reassignments
+    --> src/settings/config.rs:1616:13
+     |
+1616 |             let mut settings = super::AppSettings::default();
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#field_reassign_with_default
+     = note: `-D clippy::field-reassign-with-default` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::field_reassign_with_default)]`
+
+error: field assignment outside of initializer for an instance created with Default::default()
+    --> src/settings/config.rs:1634:9
+     |
+1634 |         settings.intelligence_tier = "smart_flow".into();
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: consider initializing the variable with `settings::config::AppSettings { intelligence_tier: "smart_flow".into(), flow_model: "qwen3.5-4b".into(), ..Default::default() }` and removing relevant reassignments
+    --> src/settings/config.rs:1633:9
+     |
+1633 |         let mut settings = super::AppSettings::default();
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#field_reassign_with_default
+
+error: could not compile `reflow` (lib test) due to 5 previous errors

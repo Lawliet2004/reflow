@@ -783,6 +783,14 @@ fn select_asr_load_for_runtime_unchecked(
             measured,
         );
     }
+    if requested_model == "omnilingual-300m-int8" {
+        return select_cpu_int8_load(
+            &super::manifest::OMNILINGUAL_MODEL,
+            preset,
+            requested_device,
+            requested_precision,
+        );
+    }
     if requested_model == "zipformer-20m" {
         return select_zipformer_load(preset, requested_device, requested_precision);
     }
@@ -886,6 +894,14 @@ fn select_asr_load_unchecked(
             requested_precision,
             caps,
             measured,
+        );
+    }
+    if requested_model == "omnilingual-300m-int8" {
+        return select_cpu_int8_load(
+            &super::manifest::OMNILINGUAL_MODEL,
+            preset,
+            requested_device,
+            requested_precision,
         );
     }
     if requested_model == "zipformer-20m" {
@@ -1145,10 +1161,26 @@ fn select_zipformer_load(
     requested_device: &str,
     requested_precision: &str,
 ) -> AsrSelection {
-    let model = &super::manifest::ZIPFORMER_MODEL;
+    select_cpu_int8_load(
+        &super::manifest::ZIPFORMER_MODEL,
+        preset,
+        requested_device,
+        requested_precision,
+    )
+}
+
+fn select_cpu_int8_load(
+    model: &'static ModelManifest,
+    preset: Preset,
+    requested_device: &str,
+    requested_precision: &str,
+) -> AsrSelection {
     let mut notes = Vec::new();
     if !matches!(requested_device, "auto" | "cpu") {
-        notes.push("Zipformer 20M is CPU-optimized; the GPU selection does not apply.".to_string());
+        notes.push(format!(
+            "{} uses the CPU runtime; the GPU selection does not apply.",
+            model.label
+        ));
     }
     let supported = model.supported_precisions_on(Device::Cpu);
     let error = Precision::parse(requested_precision)
@@ -1163,7 +1195,8 @@ fn select_zipformer_load(
                 ))
             } else {
                 notes.push(format!(
-                    "Zipformer 20M ships int8 weights; {} is unavailable.",
+                    "{} ships int8 weights; {} is unavailable.",
+                    model.label,
                     p.as_str()
                 ));
                 None
@@ -1452,6 +1485,32 @@ mod audit_admission_tests {
                 selected.error.as_ref().map(|e| e.code.as_str()),
                 Some("gpu_required")
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod omnilingual_selection_tests {
+    use super::*;
+
+    #[test]
+    fn omnilingual_keeps_its_id_for_both_runtime_preferences() {
+        for runtime in ["python", "native"] {
+            let caps = crate::capability::Capabilities::default();
+            let selection = select_asr_load_for_runtime_unchecked(
+                runtime,
+                Preset::Custom,
+                "omnilingual-300m-int8",
+                "cpu",
+                "int8",
+                &|_| true,
+                &caps,
+                &|_, _, _| MeasuredPeaks::default(),
+            );
+            assert_eq!(selection.model_id, "omnilingual-300m-int8");
+            assert_eq!(selection.device, Device::Cpu);
+            assert_eq!(selection.precision, Precision::Int8);
+            assert!(selection.error.is_none());
         }
     }
 }

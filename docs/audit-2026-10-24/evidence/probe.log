@@ -1,0 +1,7 @@
+   Compiling reflow v0.6.0 (/home/papan/Desktop/Projects/reflow/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.49s
+     Running `src-tauri/target/debug/examples/audit_20261024_probe`
+encryption_with_reader=Ok(())
+row_encrypted=true
+plaintext_in_wal=true
+context_window=4096 captured_chars=8190 section_lengths=[2730, 2730, 2730]

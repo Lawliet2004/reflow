@@ -5,6 +5,15 @@ import { api } from "../../services/tauriApi";
 import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
 import type { AsrSettings } from "../../types";
 
+vi.mock("../../services/speechModelSetup", () => ({
+  useSpeechModelSetup: () => null,
+  setupSpeechModel: async (model: string) => {
+    const status = await api.getModelStatus();
+    if (status.installed) await api.reloadModel();
+    else await api.installModel(model);
+  },
+}));
+
 it("saves a persistent Python interpreter without changing model or precision", async () => {
   const { save } = await modelPage(true);
   fireEvent.change(screen.getByRole("textbox", { name: "Python interpreter" }), {
@@ -106,6 +115,7 @@ async function modelPage(
       settings={{
         ...settings,
         preset: "custom",
+        offline_mode: false,
         asr: { ...settings.asr, model: "0.6b", precision: "auto", runtime: "python", ...asr },
       }}
       modelStatus={{
@@ -136,7 +146,7 @@ it("offers installation for the selected missing speech model", async () => {
   const install = vi.spyOn(api, "installModel").mockResolvedValue();
   await modelPage(false);
   expect(screen.getByText("Speech model is not installed")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Download speech model" }));
+  fireEvent.click(screen.getByRole("button", { name: "Set up & download" }));
   await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith("0.6b"));
 });
 
@@ -306,8 +316,6 @@ it("switches to an installed model without downloading", async () => {
       asr: expect.objectContaining({ model: "1.7b" }),
     }),
   );
-  // The backend reloads on the settings write itself — the page must not
-  // pile a second switch on top of it.
-  expect(reload).not.toHaveBeenCalled();
+  await waitFor(() => expect(reload).toHaveBeenCalledOnce());
   expect(install).not.toHaveBeenCalled();
 });

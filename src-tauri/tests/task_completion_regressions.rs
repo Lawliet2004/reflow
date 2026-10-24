@@ -218,9 +218,9 @@ fn coding_dictation_ignores_custom_mode_transformations_but_is_still_cleaned() {
 }
 
 #[test]
-fn task_completion_uses_only_the_remaining_context_for_output() {
+fn task_completion_reserves_output_within_the_shared_context() {
     let server = ModelStub::new("Result.", Some(160));
-    let client = server.client(256);
+    let client = server.client(1024);
     assert_eq!(
         client
             .complete(vec![json!({"role":"user", "content":"Shorten this text."})])
@@ -229,7 +229,19 @@ fn task_completion_uses_only_the_remaining_context_for_output() {
     );
 
     let requests = server.requests();
-    assert_eq!(requests[0]["max_tokens"], 96);
+    assert_eq!(requests[0]["max_tokens"], 341);
+    assert!(160 + requests[0]["max_tokens"].as_u64().unwrap() + 128 <= 1024);
+}
+
+#[test]
+fn task_does_not_silently_shrink_its_reserved_answer_to_fit_large_context() {
+    let server = ModelStub::new("Partial answer.", Some(160));
+    let error = server
+        .client(256)
+        .complete(vec![json!({"role":"user", "content":"Shorten this text."})])
+        .unwrap_err();
+    assert!(error.contains("Shorten the selected text"));
+    assert!(server.requests().is_empty());
 }
 
 #[test]

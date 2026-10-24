@@ -129,6 +129,20 @@ impl Meetings {
         }
     }
 }
+/// Called at startup and while the app remains in the tray. A busy session
+/// defers cleanup to the next tick, never interrupts capture or processing.
+pub fn apply_retention_if_idle(ctx: &AppContext) -> Result<(), String> {
+    let Ok(_session) = ctx.session_operation.try_lock() else {
+        return Ok(());
+    };
+    if ctx.meetings.busy() || !ctx.meetings.path.exists() {
+        return Ok(());
+    }
+    let settings = ctx.settings_store.get();
+    store::Store::open(&ctx.meetings.path, settings.history_encryption)?
+        .retention(&settings.audio_retention, &settings.history_retention)
+}
+
 pub fn limit_reached(hours: u32, ms: u64) -> bool {
     ms >= hours.min(5) as u64 * 3_600_000
 }
@@ -149,10 +163,13 @@ fn validate(c: &MeetingConfig) -> Result<(), String> {
 }
 #[tauri::command]
 pub async fn start_durable_meeting(
-    config: MeetingConfig,
+    mut config: MeetingConfig,
     app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<String, String> {
+    if config.summary_model.as_deref() == Some("follow_writing") {
+        config.summary_model = Some(ctx.settings_store.get().resolved_summary_model());
+    }
     validate(&config)?;
     if !ctx.settings_store.get().meeting_mode {
         return Err("Enable meeting mode in Advanced settings first".into());

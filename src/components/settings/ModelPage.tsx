@@ -6,6 +6,7 @@ import {
   Capabilities,
   DownloadedModel,
   IntelligenceTier,
+  WritingModelDownloadId,
   INTELLIGENCE_TIERS,
   ModelStatus,
   RuntimeDownloadEvent,
@@ -15,6 +16,7 @@ import {
   tierState,
 } from "../../types";
 import { api } from "../../services/tauriApi";
+import { setupSpeechModel, useSpeechModelSetup } from "../../services/speechModelSetup";
 import { ModelNotice } from "../ModelNotice";
 import { PresetSelector } from "./PresetSelector";
 import { RuntimeInventoryPanel } from "./RuntimeInventoryPanel";
@@ -36,16 +38,20 @@ import {
 } from "lucide-react";
 import type { IntelligenceDownloadEvent } from "../../App";
 import type { IntelligenceHub } from "../../hooks/useIntelligenceHub";
+import { writingSetupLabel } from "../SetupProgress";
+import { WritingCatalog } from "./WritingCatalog";
+import { CatalogDetails, CatalogUnavailable, MODEL_CATALOG } from "./modelCatalog";
 import { llmSelectionPatch, selectedLlm } from "../../llmSelection";
 
 interface Props {
+  view?: "models" | "performance" | "all";
   intelligence: IntelligenceHub;
   settings: AppSettings;
   onUpdateSettings: (s: Partial<AppSettings>) => Promise<boolean>;
   modelStatus: ModelStatus | null;
   onReloadModel: () => void;
   intelligenceDownload: IntelligenceDownloadEvent | null;
-  activeDownloadTiers: Set<IntelligenceTier>;
+  activeDownloadTiers: Set<WritingModelDownloadId>;
   runtimeDownload: RuntimeDownloadEvent | null;
   runtimeDownloadActive: boolean;
   runtimeDownloadError: string | null;
@@ -85,6 +91,11 @@ const MODELS: { id: string; title: string; desc: string }[] = [
     desc: "English only · no recognition hotword hints",
   },
   {
+    id: "omnilingual-300m-int8",
+    title: "Omnilingual ASR 300M INT8",
+    desc: "Automatic language recognition · CPU · broad language coverage",
+  },
+  {
     id: "zipformer-20m",
     title: "Zipformer 20M INT8",
     desc: "English only · streaming · CPU-optimized",
@@ -96,6 +107,7 @@ const DOWNLOAD_SIZE: Record<string, { python: string; native: string }> = {
   "0.6b": { python: "1.6 GB", native: "1.0 GB" },
   "1.7b": { python: "4.1 GB", native: "2.5 GB" },
   "phonon-2": { python: "164 MB", native: "164 MB" },
+  "omnilingual-300m-int8": { python: "247 MB", native: "247 MB" },
   "zipformer-20m": { python: "44 MB", native: "44 MB" },
 };
 
@@ -122,6 +134,7 @@ const PRECISIONS: {
 const ICON_PROPS = { strokeWidth: 1.75, "aria-hidden": true } as const;
 
 export const ModelPage: React.FC<Props> = ({
+  view = "all",
   settings,
   intelligence,
   onUpdateSettings,
@@ -135,8 +148,13 @@ export const ModelPage: React.FC<Props> = ({
   onInstallRuntime,
   onRemoveRuntime,
 }) => {
+  const [task, setTask] = useState<"all" | "speech" | "polish" | "notes">("all");
+  const showModels = view !== "performance";
+  const showPerformance = view !== "models";
   const [pythonPathDraft, setPythonPathDraft] = useState<string | null>(null);
-  const [installingModel, setInstallingModel] = useState<string | null>(null);
+  const speechSetup = useSpeechModelSetup();
+  const installingModel =
+    speechSetup && ["runtime", "model"].includes(speechSetup.phase) ? speechSetup.model : null;
   const [importPath, setImportPath] = useState("");
   const [importing, setImporting] = useState(false);
   const { flowStatus, intelligenceTiers } = intelligence;
@@ -158,6 +176,7 @@ export const ModelPage: React.FC<Props> = ({
     null,
   );
 
+  const [downloadedError, setDownloadedError] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState<DownloadedModel[] | null>(null);
   // One confirm strip and one in-flight delete across the whole page, keyed
   // `${kind}:${id}` — "asr" rows use the concrete on-disk id, "llm" the tier,
@@ -168,7 +187,11 @@ export const ModelPage: React.FC<Props> = ({
   const refreshDownloaded = useCallback(async () => {
     try {
       setDownloaded(await api.getDownloadedModels());
+      setDownloadedError(null);
     } catch (e) {
+      setDownloadedError(
+        "Could not read downloaded models. Retry to check files on this computer.",
+      );
       console.error("getDownloadedModels failed", e);
     }
   }, []);
@@ -205,7 +228,7 @@ export const ModelPage: React.FC<Props> = ({
     setDeleting(key);
     try {
       if (kind === "asr") await api.removeModel(id);
-      else if (kind === "llm") await api.removeIntelligenceModel(id as IntelligenceTier);
+      else if (kind === "llm") await api.removeIntelligenceModel(id as WritingModelDownloadId);
       else await onRemoveRuntime();
       await Promise.allSettled([refreshDownloaded(), intelligence.refresh()]);
     } catch (e) {
@@ -272,14 +295,18 @@ export const ModelPage: React.FC<Props> = ({
 
   const phononSelected = settings.asr.model === "phonon-2";
   const zipformerSelected = settings.asr.model === "zipformer-20m";
-  const pythonOnlySelected = phononSelected || zipformerSelected;
+  const omnilingualSelected = settings.asr.model === "omnilingual-300m-int8";
+  const pythonOnlySelected = phononSelected || zipformerSelected || omnilingualSelected;
   const handleSelectModel = async (id: string) => {
-    if (settings.asr.model === id) return;
+    if (settings.asr.model === id) {
+      await installSelectedModel();
+      return;
+    }
     if (
       !(await change("asr", {
         ...settings.asr,
         model: id,
-        ...(id === "phonon-2" || id === "zipformer-20m"
+        ...(id === "phonon-2" || id === "zipformer-20m" || id === "omnilingual-300m-int8"
           ? { runtime: "python" as const, precision: "auto" as const }
           : pythonOnlySelected
             ? { precision: "auto" as const }
@@ -289,18 +316,10 @@ export const ModelPage: React.FC<Props> = ({
       return;
     const title = MODELS.find((m) => m.id === id)?.title ?? id;
     try {
-      const status = await api.getModelStatus();
-      if (!status.installed) {
-        // Installed models are reloaded by update_settings itself — calling
-        // reloadModel here too raced the same session_operation path.
-        setInstallingModel(id);
-        await api.installModel(id);
-      }
+      await setupSpeechModel(id);
     } catch (e) {
       intelligence.notifyToast("error", `Couldn't switch to ${title}: ${String(e)}`);
       console.error("Model select error:", e);
-    } finally {
-      setInstallingModel(null);
     }
   };
 
@@ -328,14 +347,11 @@ export const ModelPage: React.FC<Props> = ({
   };
 
   const installSelectedModel = async () => {
-    setInstallingModel(settings.asr.model);
     try {
-      await api.installModel(settings.asr.model);
+      await setupSpeechModel(settings.asr.model);
     } catch (error) {
-      intelligence.notifyToast("error", `Could not download the speech model: ${String(error)}`);
+      intelligence.notifyToast("error", `Could not prepare the speech model: ${String(error)}`);
       console.error("Speech model install failed:", error);
-    } finally {
-      setInstallingModel(null);
     }
   };
 
@@ -388,7 +404,10 @@ export const ModelPage: React.FC<Props> = ({
 
   /** Where a speech model's files land for the currently selected runtime. */
   const asrOnDiskId = (id: string) =>
-    id === "phonon-2" || id === "zipformer-20m" || settings.asr.runtime !== "native"
+    id === "phonon-2" ||
+    id === "zipformer-20m" ||
+    id === "omnilingual-300m-int8" ||
+    settings.asr.runtime !== "native"
       ? id
       : `native-${id}`;
 
@@ -461,6 +480,8 @@ export const ModelPage: React.FC<Props> = ({
 
   const speechRuntimeHint = (() => {
     if (phononSelected) return "Phonon uses the Fermion Python runtime.";
+    if (omnilingualSelected)
+      return "Omnilingual uses the sherpa-onnx Python runtime on CPU with automatic language recognition.";
     if (zipformerSelected) return "Zipformer uses the sherpa-onnx Python runtime.";
     return "Native is an experimental Python-free runtime; download its model files separately.";
   })();
@@ -491,703 +512,989 @@ export const ModelPage: React.FC<Props> = ({
 
   return (
     <>
-      <Section
-        icon={<Cpu className="w-4 h-4" {...ICON_PROPS} />}
-        title="Speech model"
-        description="Recognizes what you say, entirely on this computer."
-      >
-        <div>
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <span
-                aria-hidden
-                className={`w-2 h-2 mx-1 rounded-full shrink-0 ${statusDotClass}`}
-              />
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-ink truncate">
-                  {modelStatus?.name || "Qwen3-ASR Engine"}
-                </p>
-                <p className="text-xs text-muted truncate">{engineStatusText}</p>
-                {precisionLabel && (
-                  <p className="text-2xs text-accent mt-0.5 font-medium">{precisionLabel}</p>
-                )}
-              </div>
-            </div>
-            {modelStatus?.installed && (
+      {view === "models" && (
+        <div className="space-y-3">
+          <p className="text-sm text-ink-2 leading-relaxed">
+            Models run locally after download. Expand a row to compare sources, language coverage
+            and runtime requirements.
+          </p>
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter models by task">
+            {(
+              [
+                ["all", "All models"],
+                ["speech", "Speech"],
+                ["polish", "Text polish"],
+                ["notes", "Meeting notes"],
+              ] as const
+            ).map(([id, label]) => (
               <button
+                key={id}
                 type="button"
-                className="icon-btn"
-                title="Reload speech model"
-                aria-label="Reload speech model"
-                onClick={onReloadModel}
-                disabled={loading || downloading || installingModel !== null}
+                className={`btn ${task === id ? "btn-primary" : "btn-secondary"} !text-xs`}
+                aria-pressed={task === id}
+                onClick={() => setTask(id)}
               >
-                <RefreshCw className="w-3.5 h-3.5" {...ICON_PROPS} />
+                {label}
               </button>
-            )}
+            ))}
           </div>
-
-          {modelStatus?.installed && !speechBusy && !loading && (
-            <button type="button" className="btn btn-secondary mt-3" onClick={installSelectedModel}>
-              Verify and repair download
-            </button>
-          )}
-          {downloading && (
-            <button
-              type="button"
-              className="btn btn-secondary mt-3"
-              onClick={() =>
-                api
-                  .cancelModelDownload(settings.asr.model)
-                  .catch((error) => intelligence.notifyToast("error", String(error)))
-              }
-            >
-              Cancel model download
-            </button>
-          )}
-          {downloading && (
-            <div className="h-1.5 rounded-full bg-line mt-3 overflow-hidden">
-              <div
-                className="progress-fill bg-accent"
-                style={{
-                  transform: `scaleX(${Math.max(0, Math.min(100, modelStatus?.download_progress_pct ?? 0)) / 100})`,
-                }}
-              />
-            </div>
-          )}
-
-          {modelStatus?.error && (
-            <p className="text-xs text-danger mt-2 leading-relaxed font-medium">
-              {modelStatus.error}
+          {task === "notes" && (
+            <p className="text-xs text-muted leading-relaxed">
+              Meeting notes need a writing model to organize the transcript. Choose a supported
+              writing model below; larger alternatives are listed with their current runtime
+              requirements.
             </p>
           )}
-          {modelStatus && !modelStatus.installed && !downloading && (
-            <button
-              type="button"
-              className="btn btn-primary mt-3"
-              onClick={installSelectedModel}
-              disabled={installingModel !== null}
-            >
-              <Download className="w-4 h-4" {...ICON_PROPS} />
-              {installingModel ? "Downloading…" : "Download speech model"}
-            </button>
-          )}
-          {settings.offline_mode && !modelReady && !downloading && (
-            <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-line bg-base-2 px-3 py-2.5">
-              <p className="text-xs text-muted leading-snug">
-                Airplane mode is on — models can’t be downloaded until it is off.
-              </p>
-              <button
-                type="button"
-                className="btn btn-secondary shrink-0"
-                onClick={() => {
-                  change("offline_mode", false);
-                }}
-              >
-                Turn off
-              </button>
-            </div>
-          )}
         </div>
-
-        <ModelNotice notice={modelStatus?.asr_selection_notice} />
-
-        {showGpuHint && (
-          <div role="status" className="space-y-2">
-            <div className="flex items-start gap-2 text-sm text-warning">
-              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" {...ICON_PROPS} />
-              <div>
-                <p className="font-medium">GPU detected, but speech is using CPU.</p>
-                <p className="mt-1 leading-snug text-muted">
-                  Your system Python&rsquo;s <code>torch</code> was installed without CUDA support.
-                  Run the command below in a terminal, then reload the speech model:
-                </p>
-              </div>
-            </div>
-            <pre className="text-xs font-mono bg-surface border border-line rounded-[var(--radius-control)] px-2 py-1.5 overflow-x-auto whitespace-pre">
-              {modelStatus?.asr_gpu_hint}
-            </pre>
-          </div>
-        )}
-
-        <ul aria-label="Speech models" className="divide-y divide-line-soft">
-          {MODELS.map((m) => {
-            const isActive = settings.asr.model === m.id;
-            const entry = asrEntry(m.id);
-            const partial = Boolean(entry?.partial);
-            const installed = isActive
-              ? Boolean(modelStatus?.installed)
-              : Boolean(entry) && !partial;
-            const hasFiles = Boolean(entry) || (isActive && Boolean(modelStatus?.installed));
-            const key = `asr:${asrOnDiskId(m.id)}`;
-            const sizeText = entry ? formatBytes(entry.size_bytes) : approxDownloadSize(m.id);
-            const statusText = (() => {
-              if (isActive && downloading) {
-                return `Downloading · ${modelStatus?.download_progress_pct ?? 0}%`;
-              }
-              if (installingModel === m.id) return "Downloading…";
-              if (partial) return "Incomplete download";
-              return installed ? "Installed" : "Not installed";
-            })();
-            return (
-              <li key={m.id} className="py-3 first:pt-0 last:pb-0">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-ink">{m.title}</p>
-                    <p className="text-xs text-muted leading-snug mt-0.5">{m.desc}</p>
-                    <p className="text-2xs text-muted tabular-nums mt-1">
-                      {entry ? sizeText : `${sizeText} download`} · {statusText}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {isActive && installed ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-medium text-accent">
-                        <Check className="w-3.5 h-3.5" {...ICON_PROPS} />
-                        In use
-                      </span>
-                    ) : installed ? (
-                      <button
-                        type="button"
-                        className="btn btn-secondary !py-1 !px-2.5 !text-xs"
-                        aria-label={`Use ${m.title}`}
-                        disabled={speechBusy || deleting !== null}
-                        onClick={() => handleSelectModel(m.id)}
-                      >
-                        Use
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="btn btn-primary !py-1 !px-2.5 !text-xs"
-                        aria-label={
-                          partial ? `Resume and use ${m.title}` : `Download and use ${m.title}`
-                        }
-                        disabled={speechBusy || deleting !== null}
-                        onClick={() =>
-                          isActive ? installSelectedModel() : handleSelectModel(m.id)
-                        }
-                      >
-                        {installingModel === m.id && (
-                          <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
-                        )}
-                        {partial ? "Resume & use" : "Download & use"}
-                      </button>
-                    )}
-                    {hasFiles && (
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={`Delete ${m.title}`}
-                        title={`Delete ${m.title}`}
-                        disabled={speechBusy || deleting !== null}
-                        onClick={() => setConfirmDelete(key)}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" {...ICON_PROPS} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-                {isActive && downloading && (
-                  <div className="h-1.5 rounded-full bg-line mt-2 overflow-hidden">
-                    <div
-                      className="progress-fill bg-accent"
-                      style={{
-                        transform: `scaleX(${Math.max(0, Math.min(100, modelStatus?.download_progress_pct ?? 0)) / 100})`,
-                      }}
-                    />
-                  </div>
-                )}
-                {confirmDelete === key &&
-                  confirmStrip(
-                    key,
-                    <>
-                      Delete {m.title} ({sizeText})? {deleteWarning(isActive, "asr")}
-                    </>,
-                    () => deleteModel("asr", asrOnDiskId(m.id), m.title),
-                  )}
-              </li>
-            );
-          })}
-        </ul>
-
-        {phononSelected && (
-          <p className="text-sm text-muted" role="status">
-            English only. Choose English or Auto-detect for dictation. Download size is 164 MB;
-            memory use is higher. CPU speed depends on your hardware. Dictionary replacements still
-            apply; recognition hotword bias is unavailable.
-          </p>
-        )}
-        {zipformerSelected && (
-          <p className="text-sm text-muted" role="status">
-            English only. Choose English or Auto-detect for dictation. Download size is 44 MB; runs
-            on CPU with streaming partial results. Dictionary replacements still apply; recognition
-            hotword bias is unavailable.
-          </p>
-        )}
-        <Row
-          label="Import model files"
-          hint="Point at a model directory (Python models need the full folder; a GGUF file works for the native runtime) — already on this computer, so no download is needed."
+      )}
+      {view === "performance" && (
+        <Section
+          icon={<HardDrive className="w-4 h-4" {...ICON_PROPS} />}
+          title="Hardware"
+          description="Your available resources guide automatic tuning. Detection does not download or load models."
         >
-          <div className="flex gap-2 items-center">
-            <input
-              className="field"
-              aria-label="Model import path"
-              placeholder="Path to a model folder or file"
-              value={importPath}
-              onChange={(event) => setImportPath(event.target.value)}
-            />
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={importing || !importPath.trim() || speechBusy}
-              onClick={importModel}
-            >
-              {importing ? "Importing…" : "Import"}
-            </button>
-          </div>
-        </Row>
-      </Section>
-
-      <Section
-        icon={<Sparkles className="w-4 h-4" {...ICON_PROPS} />}
-        title="Writing model"
-        description="Optional. Rewrites your transcript locally after recognition."
-      >
-        <ul aria-label="Writing models" className="divide-y divide-line-soft">
-          <li className="py-3 first:pt-0 last:pb-0">
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-ink">No LLM · speech only</p>
-                <p className="text-xs text-muted leading-snug mt-0.5">
-                  Speech recognition and basic cleanup. Nothing to download.
-                </p>
+          {!capabilities ? (
+            <p className="text-sm text-muted" role={capabilitiesError ? "alert" : "status"}>
+              {capabilitiesError
+                ? `${capabilitiesError}. Reopen Performance to retry.`
+                : "Checking processor, memory and GPU…"}
+            </p>
+          ) : (
+            <dl className="space-y-3 text-sm">
+              <div className="flex justify-between gap-4">
+                <dt className="text-muted">Processor</dt>
+                <dd className="text-ink-2 text-right">
+                  {capabilities.cpu.logical_cores > 0
+                    ? `${capabilities.cpu.model} · ${capabilities.cpu.logical_cores} threads`
+                    : "Processor details unavailable"}
+                </dd>
               </div>
-              <button
-                type="button"
-                className="btn btn-secondary !py-1 !px-2.5 !text-xs shrink-0 aria-pressed:text-accent"
-                aria-label="Use no LLM"
-                aria-pressed={selectedLlm(settings) === "none"}
-                disabled={selectingLlm}
-                onClick={() => selectLlm("none")}
-              >
-                {selectedLlm(settings) === "none" ? "In use" : "Use"}
-              </button>
-            </div>
-          </li>
-          {(["smart_flow", "deep_context"] as IntelligenceTier[]).map((tier) => {
-            const meta = INTELLIGENCE_TIERS[tier];
-            const state = tierState(intelligenceTiers, tier);
-            const ggufInstalled = state?.weights_installed ?? state?.installed ?? false;
-            const runtimeInstalled = flowStatus?.runtime_installed ?? false;
-            const installed = ggufInstalled && runtimeInstalled;
-            const showRuntimeMissing = ggufInstalled && !runtimeInstalled;
-            const tierDownloading = isIntelligenceDownloading(tier);
-            const isActive = selectedLlm(settings) === meta.modelId;
-            const key = `llm:${tier}`;
-            const statusText = (() => {
-              if (tierDownloading) {
-                return `Downloading ${intelligenceDownload?.progress_pct ?? 0}% · ${(intelligenceDownload?.speed_mbps ?? 0).toFixed(1)} MB/s`;
-              }
-              if (installed) return "Installed";
-              if (showRuntimeMissing) return "Weights only";
-              if (runtimeDownloadActive) return "Installing runtime";
-              return "Not installed";
-            })();
-            return (
-              <li key={tier} className="py-3 first:pt-0 last:pb-0">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-ink">{meta.label}</p>
-                    <p className="text-xs text-muted leading-snug mt-0.5">{meta.tagline}</p>
-                    <p className="text-2xs text-muted tabular-nums mt-1">
-                      {FORMAT_SIZE(meta.downloadSizeMB)} download ·{" "}
-                      {FORMAT_SIZE(meta.ramRequiredMB)} RAM · {statusText}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      className="btn btn-secondary !py-1 !px-2.5 !text-xs aria-pressed:text-accent"
-                      aria-label={`Use ${meta.label}`}
-                      aria-pressed={isActive}
-                      disabled={selectingLlm}
-                      onClick={() => selectLlm(meta.modelId)}
-                    >
-                      {isActive ? "In use" : "Use"}
-                    </button>
-                    {!installed &&
-                      !showRuntimeMissing &&
-                      !tierDownloading &&
-                      !runtimeDownloadActive && (
-                        <button
-                          type="button"
-                          className="btn btn-primary !py-1 !px-2.5 !text-xs"
-                          onClick={() => handleInstallIntelligence(tier)}
-                          disabled={installingIntelligence === tier}
-                        >
-                          {installingIntelligence === tier ? (
-                            <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
-                          ) : (
-                            <Download className="w-3 h-3" {...ICON_PROPS} />
-                          )}
-                          Download
-                        </button>
-                      )}
-                    {showRuntimeMissing && (
-                      <button
-                        type="button"
-                        className="btn btn-primary !py-1 !px-2.5 !text-xs"
-                        onClick={onInstallRuntime}
-                        disabled={runtimeDownloadActive}
-                      >
-                        {runtimeDownloadActive ? (
-                          <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
-                        ) : (
-                          <Cpu className="w-3 h-3" {...ICON_PROPS} />
-                        )}
-                        Install runtime
-                      </button>
-                    )}
-                    {ggufInstalled && (
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={`Delete ${meta.label}`}
-                        title={`Delete ${meta.label}`}
-                        disabled={deleting !== null}
-                        onClick={() => setConfirmDelete(key)}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" {...ICON_PROPS} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {installed &&
-                  flowStatus?.ready &&
-                  flowStatus.active_model === meta.modelId &&
-                  isActive && (
-                    <p className="text-2xs text-muted leading-snug mt-2">
-                      Loaded on {flowStatus.backend || "runtime"}
-                      {flowStatus.n_gpu_layers !== undefined && (
-                        <>
-                          {" "}
-                          · {flowStatus.n_gpu_layers}
-                          {flowStatus.mode === "gpu" ? "/99 layers" : " layers"}
-                          {flowStatus.mode === "gpu" && flowStatus.vram_used_mb
-                            ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB GPU memory in use`
-                            : ""}
-                        </>
-                      )}
-                    </p>
-                  )}
-
-                {showRuntimeMissing && (
-                  <p className="text-2xs text-warning leading-snug mt-2">
-                    This model is downloaded, but its writing runtime is missing. Install the
-                    runtime to use it.
-                  </p>
-                )}
-                {tierDownloading && (
-                  <div className="space-y-1 mt-2">
-                    <div className="flex items-center justify-between text-2xs text-muted">
-                      <span>Downloading weights</span>
-                      <span>
-                        {intelligenceDownload?.progress_pct ?? 0}% ·{" "}
-                        {(intelligenceDownload?.speed_mbps ?? 0).toFixed(1)} MB/s
-                      </span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-line overflow-hidden">
-                      <div
-                        className="progress-fill bg-accent"
-                        style={{
-                          transform: `scaleX(${Math.max(0, Math.min(100, intelligenceDownload?.progress_pct ?? 0)) / 100})`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
-                {runtimeDownloadActive && runtimeDownload && (
-                  <div className="space-y-1 mt-2">
-                    <div className="flex items-center justify-between text-2xs text-muted">
-                      <span>Installing {runtimeDownload.kind_label ?? "runtime"} runtime</span>
-                      <span>
-                        {runtimeDownload.progress_pct}% · {runtimeDownload.speed_mbps.toFixed(1)}{" "}
-                        MB/s
-                      </span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-line overflow-hidden">
-                      <div
-                        className="progress-fill bg-accent"
-                        style={{
-                          transform: `scaleX(${Math.max(0, Math.min(100, runtimeDownload.progress_pct)) / 100})`,
-                        }}
-                      />
-                    </div>
-                    {runtimeDownloadError && (
-                      <p className="text-2xs text-danger leading-snug">{runtimeDownloadError}</p>
-                    )}
-                  </div>
-                )}
-                {showRuntimeMissing && !runtimeDownloadActive && runtimeDownloadError && (
-                  <p className="text-2xs text-danger leading-snug mt-2">
-                    Last install attempt failed: {runtimeDownloadError}
-                  </p>
-                )}
-                {confirmDelete === key &&
-                  confirmStrip(
-                    key,
-                    <>
-                      Delete {meta.label} ({FORMAT_SIZE(meta.downloadSizeMB)})? You can download it
-                      again later.
-                    </>,
-                    () => deleteModel("llm", tier, meta.label),
-                  )}
-              </li>
-            );
-          })}
-        </ul>
-
-        <div className="space-y-2">
-          <Row
-            label="Runs on"
-            hint={`Choose CPU or GPU. GPU offload is tuned automatically for the lowest expected latency while reserving enough VRAM for speech recognition and the desktop. ${gpuDetectionText}`}
-          >
-            <div className="segmented-control" role="radiogroup" aria-label="Stage 2 processor">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={refinementDevice === "cpu"}
-                onClick={() => handleSelectRefinementDevice("cpu")}
-              >
-                CPU
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={refinementDevice === "gpu"}
-                disabled={!refinementGpuAvailable}
-                onClick={() => handleSelectRefinementDevice("gpu")}
-              >
-                GPU
-              </button>
-            </div>
-          </Row>
-          {refinementDevice === "gpu" && (
-            <p className="text-2xs text-muted leading-snug">{gpuOffloadHint}</p>
+              <div className="flex justify-between gap-4">
+                <dt className="text-muted">System memory</dt>
+                <dd className="text-ink-2 tabular-nums text-right">
+                  {capabilities.ram.total_mb > 0
+                    ? `${FORMAT_SIZE(Math.round(capabilities.ram.available_mb))} available / ${FORMAT_SIZE(Math.round(capabilities.ram.total_mb))}`
+                    : "Memory details unavailable"}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt className="text-muted">Graphics</dt>
+                <dd className="text-ink-2 text-right">
+                  {detectedGpu?.name ??
+                    (capabilities.cpu.logical_cores > 0
+                      ? "No compatible GPU detected"
+                      : "Graphics details unavailable")}
+                </dd>
+              </div>
+            </dl>
           )}
-        </div>
-      </Section>
-
-      <Section
-        icon={<SlidersHorizontal className="w-4 h-4" {...ICON_PROPS} />}
-        title="Tuning"
-        description="How Reflow balances speed, accuracy and memory."
-      >
-        <PresetSelector
-          selectedPreset={settings.preset}
-          capabilities={capabilities}
-          onSelectPreset={(preset) => {
-            void (async () => {
-              if (!(await onUpdateSettings({ preset }))) return;
-              try {
-                await api.reloadModel();
-                await intelligence.refresh();
-              } catch (error) {
-                intelligence.notifyToast("error", String(error));
-              }
-            })();
-          }}
-        />
-        {settings.asr.runtime === "python" && (
-          <PythonRuntimeSetup
-            settings={settings}
-            modelStatus={modelStatus}
-            onUpdateSettings={onUpdateSettings}
-            showRemove
+        </Section>
+      )}
+      {showPerformance && (
+        <Section
+          icon={<SlidersHorizontal className="w-4 h-4" {...ICON_PROPS} />}
+          title="Performance preset"
+          description="Choose how Reflow balances speed, accuracy and memory."
+        >
+          <PresetSelector
+            selectedPreset={settings.preset}
+            capabilities={capabilities}
+            onSelectPreset={(preset) => {
+              void (async () => {
+                if (!(await onUpdateSettings({ preset }))) return;
+                try {
+                  await api.reloadModel();
+                  await intelligence.refresh();
+                } catch (error) {
+                  intelligence.notifyToast("error", String(error));
+                }
+              })();
+            }}
           />
-        )}
-        {settings.asr.runtime === "python" && (
-          <Row
-            label="Python interpreter"
-            hint="Leave blank for automatic discovery. Save a full interpreter path to use the same environment from the app menu and installers. REFLOW_PYTHON overrides this choice."
-          >
-            <div className="flex gap-2 items-center">
-              <input
-                className="field"
-                aria-label="Python interpreter"
-                placeholder="Automatic"
-                value={pythonPathDraft ?? settings.asr.python_path ?? ""}
-                onChange={(event) => setPythonPathDraft(event.target.value)}
-              />
+        </Section>
+      )}
+      {(showPerformance || (showModels && (task === "all" || task === "speech"))) && (
+        <Section
+          icon={<Cpu className="w-4 h-4" {...ICON_PROPS} />}
+          title={view === "performance" ? "Speech engine" : "Speech models"}
+          description="Recognizes what you say, entirely on this computer."
+        >
+          <div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span
+                  aria-hidden
+                  className={`w-2 h-2 mx-1 rounded-full shrink-0 ${statusDotClass}`}
+                />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-ink truncate">
+                    {modelStatus?.name || "Qwen3-ASR Engine"}
+                  </p>
+                  <p className="text-xs text-muted truncate">{engineStatusText}</p>
+                  {precisionLabel && (
+                    <p className="text-2xs text-accent mt-0.5 font-medium">{precisionLabel}</p>
+                  )}
+                </div>
+              </div>
+              {modelStatus?.installed && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Reload speech model"
+                  aria-label="Reload speech model"
+                  onClick={onReloadModel}
+                  disabled={loading || downloading || installingModel !== null}
+                >
+                  <RefreshCw className="w-3.5 h-3.5" {...ICON_PROPS} />
+                </button>
+              )}
+            </div>
+
+            {showModels && modelStatus?.installed && !speechBusy && !loading && (
               <button
                 type="button"
-                className="btn btn-secondary"
-                disabled={loading || downloading}
-                onClick={async () => {
-                  const python_path =
-                    (pythonPathDraft ?? settings.asr.python_path ?? "").trim() || null;
-                  if (!(await onUpdateSettings({ asr: { ...settings.asr, python_path } }))) return;
-                  setPythonPathDraft(null);
-                  onReloadModel();
-                }}
+                className="btn btn-secondary mt-3"
+                onClick={installSelectedModel}
+                disabled={settings.offline_mode}
               >
-                Apply and reload
+                Verify and repair download
               </button>
-            </div>
-          </Row>
-        )}
-        {settings.preset === "custom" ? (
-          <>
-            <Row label="Speech runtime" hint={speechRuntimeHint}>
-              <select
-                className="field"
-                value={settings.asr.runtime}
-                disabled={pythonOnlySelected || modelStatus?.is_downloading}
-                onChange={async (e) => {
-                  const runtime = e.target.value as AsrSettings["runtime"];
-                  if (!(await change("asr", { ...settings.asr, runtime }))) return;
-                  try {
-                    const status = await api.getModelStatus();
-                    if (status.installed) await api.reloadModel();
-                  } catch (error) {
-                    intelligence.notifyToast(
-                      "error",
-                      "Could not switch speech runtime. Check the model and runtime downloads.",
-                    );
-                    console.error("Runtime switch error:", error);
-                  }
-                }}
-              >
-                <option value="python">Python (default)</option>
-                <option value="native">Native (experimental)</option>
-              </select>
-            </Row>
-
-            <Row
-              label="Compute backend"
-              hint={
-                settings.asr.runtime === "native"
-                  ? "Native uses Vulkan when a compatible GPU is present"
-                  : "Auto uses CUDA when a compatible GPU is present"
-              }
-            >
-              <select
-                className="field"
-                value={settings.asr.device}
-                onChange={(e) =>
-                  change("asr", {
-                    ...settings.asr,
-                    device: e.target.value as AsrSettings["device"],
-                  })
+            )}
+            {downloading && (
+              <button
+                type="button"
+                className="btn btn-secondary mt-3"
+                onClick={() =>
+                  api
+                    .cancelModelDownload(settings.asr.model)
+                    .catch((error) => intelligence.notifyToast("error", String(error)))
                 }
               >
-                <option value="auto">Auto (GPU prioritized)</option>
-                <option value="cuda">
-                  GPU only ({settings.asr.runtime === "native" ? "Vulkan" : "CUDA"})
-                </option>
-                <option value="cpu">CPU only</option>
-              </select>
-            </Row>
-
-            {settings.asr.runtime === "python" && !pythonOnlySelected && (
-              <Row
-                label="Model precision"
-                hint="Lower precision uses less VRAM; 16-bit is the most accurate. The choice is remembered across launches."
-              >
-                <div className="flex flex-col items-end gap-1">
-                  <div className="segmented-control">
-                    {PRECISIONS.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        aria-pressed={settings.asr.precision === p.id}
-                        onClick={() => handleSelectPrecision(p.id)}
-                        disabled={downloading || installingModel !== null}
-                      >
-                        {p.title}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-2xs text-muted text-right leading-snug max-w-56">
-                    {PRECISIONS.find((p) => p.id === settings.asr.precision)?.desc}
-                  </p>
-                </div>
-              </Row>
+                Cancel model download
+              </button>
+            )}
+            {downloading && (
+              <div className="h-1.5 rounded-full bg-line mt-3 overflow-hidden">
+                <div
+                  className="progress-fill bg-accent"
+                  style={{
+                    transform: `scaleX(${Math.max(0, Math.min(100, modelStatus?.download_progress_pct ?? 0)) / 100})`,
+                  }}
+                />
+              </div>
             )}
 
-            <Row label="Keep model loaded" hint="Pre-warms the model in memory at startup">
-              <Toggle
-                on={settings.asr.keep_loaded}
-                onChange={(v) => change("asr", { ...settings.asr, keep_loaded: v })}
-                ariaLabel="Keep model loaded"
-              />
-            </Row>
-          </>
-        ) : (
-          <p className="text-sm text-muted">
-            Speech runtime, precision and compute settings are managed automatically. Select Custom
-            above to tune them manually.
-          </p>
-        )}
-      </Section>
+            {modelStatus?.error && (
+              <p className="text-xs text-danger mt-2 leading-relaxed font-medium">
+                {modelStatus.error}
+              </p>
+            )}
+            {showModels && modelStatus && !modelStatus.installed && !downloading && (
+              <button
+                type="button"
+                className="btn btn-primary mt-3"
+                onClick={installSelectedModel}
+                disabled={installingModel !== null || settings.offline_mode}
+              >
+                <Download className="w-4 h-4" {...ICON_PROPS} />
+                {installingModel ? "Setting up…" : "Set up & download"}
+              </button>
+            )}
+            {showModels && settings.offline_mode && !downloading && (
+              <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-line bg-base-2 px-3 py-2.5">
+                <p className="text-xs text-muted leading-snug">
+                  Airplane mode is on — models can’t be downloaded until it is off.
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-secondary shrink-0"
+                  onClick={() => {
+                    change("offline_mode", false);
+                  }}
+                >
+                  Turn off
+                </button>
+              </div>
+            )}
+          </div>
 
-      <Section
-        icon={<HardDrive className="w-4 h-4" {...ICON_PROPS} />}
-        title="On this computer"
-        description={downloadedDescription}
-      >
-        {downloaded === null || downloaded.length === 0 ? (
-          <p className="text-sm text-muted">Models and runtimes you download appear here.</p>
-        ) : (
-          <ul aria-label="Downloaded files" className="divide-y divide-line-soft">
-            {downloaded.map((m) => {
-              const key = `${m.kind}:${m.id}`;
-              const confirmKey = `disk:${key}`;
-              return (
-                <li key={key} className="py-3 first:pt-0 last:pb-0">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-ink truncate">{m.label}</p>
-                      <p className="text-2xs text-muted tabular-nums">
-                        {DOWNLOADED_KIND_LABEL[m.kind]} · {formatBytes(m.size_bytes)}
-                        {m.partial ? " · incomplete download" : ""}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {m.active && <span className="chip">In use</span>}
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={`Delete ${m.label}`}
-                        title={`Delete ${m.label}`}
-                        disabled={deleting !== null}
-                        onClick={() => setConfirmDelete(confirmKey)}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" {...ICON_PROPS} />
-                      </button>
-                    </div>
+          <ModelNotice notice={modelStatus?.asr_selection_notice} />
+
+          {showGpuHint && (
+            <div role="status" className="space-y-2">
+              <div className="flex items-start gap-2 text-sm text-warning">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" {...ICON_PROPS} />
+                <div>
+                  <p className="font-medium">GPU detected, but speech is using CPU.</p>
+                  <p className="mt-1 leading-snug text-muted">
+                    Your system Python&rsquo;s <code>torch</code> was installed without CUDA
+                    support. Run the command below in a terminal, then reload the speech model:
+                  </p>
+                </div>
+              </div>
+              <pre className="text-xs font-mono bg-surface border border-line rounded-[var(--radius-control)] px-2 py-1.5 overflow-x-auto whitespace-pre">
+                {modelStatus?.asr_gpu_hint}
+              </pre>
+            </div>
+          )}
+
+          {showModels && (
+            <>
+              <ul aria-label="Speech models" className="divide-y divide-line-soft">
+                {MODELS.map((m) => {
+                  const isActive = settings.asr.model === m.id;
+                  const entry = asrEntry(m.id);
+                  const partial = Boolean(entry?.partial);
+                  const installed = isActive
+                    ? Boolean(modelStatus?.installed)
+                    : Boolean(entry) && !partial;
+                  const hasFiles = Boolean(entry) || (isActive && Boolean(modelStatus?.installed));
+                  const key = `asr:${asrOnDiskId(m.id)}`;
+                  const sizeText = entry ? formatBytes(entry.size_bytes) : approxDownloadSize(m.id);
+                  const statusText = (() => {
+                    if (isActive && downloading) {
+                      return `Downloading · ${modelStatus?.download_progress_pct ?? 0}%`;
+                    }
+                    if (installingModel === m.id)
+                      return speechSetup?.phase === "runtime"
+                        ? "Preparing runtime…"
+                        : "Downloading…";
+                    if (partial) return "Incomplete download";
+                    return installed ? "Installed" : "Not installed";
+                  })();
+                  return (
+                    <li key={m.id} className="py-3 first:pt-0 last:pb-0">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-ink">{m.title}</p>
+                          <p className="text-xs text-muted leading-snug mt-0.5">{m.desc}</p>
+                          <p className="text-2xs text-muted tabular-nums mt-1">
+                            {entry ? sizeText : `${sizeText} download`} · {statusText}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {isActive && installed && modelStatus?.loaded ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-accent">
+                              <Check className="w-3.5 h-3.5" {...ICON_PROPS} />
+                              Ready
+                            </span>
+                          ) : installed ? (
+                            <button
+                              type="button"
+                              className="btn btn-secondary !py-1 !px-2.5 !text-xs"
+                              aria-label={`Use ${m.title}`}
+                              disabled={
+                                speechBusy ||
+                                deleting !== null ||
+                                (!installed && settings.offline_mode)
+                              }
+                              onClick={() => handleSelectModel(m.id)}
+                            >
+                              Use
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn btn-primary !py-1 !px-2.5 !text-xs"
+                              aria-label={
+                                partial
+                                  ? `Resume and use ${m.title}`
+                                  : `Download and use ${m.title}`
+                              }
+                              disabled={
+                                speechBusy ||
+                                deleting !== null ||
+                                (!installed && settings.offline_mode)
+                              }
+                              onClick={() =>
+                                isActive ? installSelectedModel() : handleSelectModel(m.id)
+                              }
+                            >
+                              {installingModel === m.id && (
+                                <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
+                              )}
+                              {partial ? "Resume & use" : "Download & use"}
+                            </button>
+                          )}
+                          {hasFiles && (
+                            <button
+                              type="button"
+                              className="icon-btn"
+                              aria-label={`Delete ${m.title}`}
+                              title={`Delete ${m.title}`}
+                              disabled={
+                                speechBusy ||
+                                deleting !== null ||
+                                (!installed && settings.offline_mode)
+                              }
+                              onClick={() => setConfirmDelete(key)}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" {...ICON_PROPS} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <CatalogDetails model={MODEL_CATALOG.find((item) => item.id === m.id)} />
+                      {isActive && downloading && (
+                        <div className="h-1.5 rounded-full bg-line mt-2 overflow-hidden">
+                          <div
+                            className="progress-fill bg-accent"
+                            style={{
+                              transform: `scaleX(${Math.max(0, Math.min(100, modelStatus?.download_progress_pct ?? 0)) / 100})`,
+                            }}
+                          />
+                        </div>
+                      )}
+                      {confirmDelete === key &&
+                        confirmStrip(
+                          key,
+                          <>
+                            Delete {m.title} ({sizeText})? {deleteWarning(isActive, "asr")}
+                          </>,
+                          () => deleteModel("asr", asrOnDiskId(m.id), m.title),
+                        )}
+                    </li>
+                  );
+                })}
+              </ul>
+
+              {omnilingualSelected && (
+                <p className="text-xs text-muted leading-relaxed" role="status">
+                  Omnilingual detects the language automatically. Forced language selection,
+                  recognition hotword hints and streaming partial transcripts are unavailable. Its
+                  1,600+ language coverage is reported upstream and has not been tested locally.
+                </p>
+              )}
+              <CatalogUnavailable task="speech" />
+              {phononSelected && (
+                <p className="text-sm text-muted" role="status">
+                  English only. Choose English or Auto-detect for dictation. Download size is 164
+                  MB; memory use is higher. CPU speed depends on your hardware. Dictionary
+                  replacements still apply; recognition hotword bias is unavailable.
+                </p>
+              )}
+              {zipformerSelected && (
+                <p className="text-sm text-muted" role="status">
+                  English only. Choose English or Auto-detect for dictation. Download size is 44 MB;
+                  runs on CPU with streaming partial results. Dictionary replacements still apply;
+                  recognition hotword bias is unavailable.
+                </p>
+              )}
+              <Row
+                label="Import model files"
+                hint="Point at a model directory (Python models need the full folder; a GGUF file works for the native runtime) — already on this computer, so no download is needed."
+              >
+                <div className="flex gap-2 items-center">
+                  <input
+                    className="field"
+                    aria-label="Model import path"
+                    placeholder="Path to a model folder or file"
+                    value={importPath}
+                    onChange={(event) => setImportPath(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={importing || !importPath.trim() || speechBusy}
+                    onClick={importModel}
+                  >
+                    {importing ? "Importing…" : "Import"}
+                  </button>
+                </div>
+              </Row>
+            </>
+          )}
+        </Section>
+      )}
+
+      {showModels && task !== "speech" && (
+        <Section
+          icon={<Sparkles className="w-4 h-4" {...ICON_PROPS} />}
+          title={task === "notes" ? "Models for meeting notes" : "Writing models"}
+          description={
+            task === "notes"
+              ? "Choose a separate model to turn transcripts into summaries and organized notes."
+              : "Optional. Rewrites your transcript locally after recognition."
+          }
+        >
+          <ul aria-label="Writing models" className="divide-y divide-line-soft">
+            {task !== "notes" && (
+              <li className="py-3 first:pt-0 last:pb-0">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-ink">No LLM · speech only</p>
+                    <p className="text-xs text-muted leading-snug mt-0.5">
+                      Speech recognition and basic cleanup. Nothing to download.
+                    </p>
                   </div>
-                  {confirmDelete === confirmKey &&
-                    confirmStrip(
-                      key,
-                      <>
-                        Delete {m.label} ({formatBytes(m.size_bytes)})?{" "}
-                        {deleteWarning(m.active, m.kind)}
-                      </>,
-                      () => deleteModel(m.kind, m.id, m.label),
-                    )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Section>
+                  <button
+                    type="button"
+                    className="btn btn-secondary !py-1 !px-2.5 !text-xs shrink-0 aria-pressed:text-accent"
+                    aria-label="Use no LLM"
+                    aria-pressed={selectedLlm(settings) === "none"}
+                    disabled={selectingLlm}
+                    onClick={() => selectLlm("none")}
+                  >
+                    {selectedLlm(settings) === "none" ? "In use" : "Use"}
+                  </button>
+                </div>
+              </li>
+            )}
+            {(["smart_flow", "deep_context"] as IntelligenceTier[])
+              .filter((tier) => task !== "notes" || tier === "deep_context")
+              .map((tier) => {
+                const meta = INTELLIGENCE_TIERS[tier];
+                const tierProgress =
+                  intelligence.intelligenceDownloads?.[tier] ??
+                  (intelligenceDownload?.tier === tier ? intelligenceDownload : null);
+                const state = tierState(intelligenceTiers, tier);
+                const ggufInstalled = state?.weights_installed ?? state?.installed ?? false;
+                const runtimeInstalled = flowStatus?.runtime_installed ?? false;
+                const installed = ggufInstalled && runtimeInstalled;
+                const showRuntimeMissing = ggufInstalled && !runtimeInstalled;
+                const tierDownloading = isIntelligenceDownloading(tier);
+                const isActive =
+                  (task === "notes"
+                    ? settings.summary_model === "follow_writing"
+                      ? selectedLlm(settings)
+                      : settings.summary_model
+                    : selectedLlm(settings)) === meta.modelId;
+                const key = `llm:${tier}`;
+                const statusText = (() => {
+                  if (tierDownloading) {
+                    return `${writingSetupLabel(tierProgress?.phase ?? "starting")} · ${tierProgress?.progress_pct ?? 0}%`;
+                  }
+                  if (installed) return "Installed";
+                  if (showRuntimeMissing) return "Weights only";
+                  if (runtimeDownloadActive) return "Installing runtime";
+                  if (!runtimeInstalled) return "Needs writing runtime, then model";
+                  return "Not installed";
+                })();
+                return (
+                  <li key={tier} className="py-3 first:pt-0 last:pb-0">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-ink">{meta.label}</p>
+                        <p className="text-xs text-muted leading-snug mt-0.5">{meta.tagline}</p>
+                        <p className="text-2xs text-muted tabular-nums mt-1">
+                          {FORMAT_SIZE(meta.downloadSizeMB)} download ·{" "}
+                          {FORMAT_SIZE(meta.ramRequiredMB)} RAM · {statusText}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          className="btn btn-secondary !py-1 !px-2.5 !text-xs aria-pressed:text-accent"
+                          aria-label={
+                            task === "notes" ? `Use ${meta.label} for notes` : `Use ${meta.label}`
+                          }
+                          aria-pressed={isActive}
+                          disabled={selectingLlm}
+                          onClick={() =>
+                            task === "notes"
+                              ? onUpdateSettings({
+                                  summary_model: meta.modelId as AppSettings["summary_model"],
+                                })
+                              : selectLlm(meta.modelId)
+                          }
+                        >
+                          {isActive
+                            ? "Selected"
+                            : task === "notes"
+                              ? "Use for notes"
+                              : view === "all"
+                                ? "Use"
+                                : "Use for polish"}
+                        </button>
+                        {!installed &&
+                          !showRuntimeMissing &&
+                          !tierDownloading &&
+                          !runtimeDownloadActive && (
+                            <button
+                              type="button"
+                              className="btn btn-primary !py-1 !px-2.5 !text-xs"
+                              aria-label="Download"
+                              onClick={() => handleInstallIntelligence(tier)}
+                              disabled={installingIntelligence === tier || settings.offline_mode}
+                            >
+                              {installingIntelligence === tier ? (
+                                <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
+                              ) : (
+                                <Download className="w-3 h-3" {...ICON_PROPS} />
+                              )}
+                              {runtimeInstalled ? "Download" : "Set up & download"}
+                            </button>
+                          )}
+                        {showRuntimeMissing && (
+                          <button
+                            type="button"
+                            className="btn btn-primary !py-1 !px-2.5 !text-xs"
+                            onClick={onInstallRuntime}
+                            disabled={runtimeDownloadActive || settings.offline_mode}
+                          >
+                            {runtimeDownloadActive ? (
+                              <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
+                            ) : (
+                              <Cpu className="w-3 h-3" {...ICON_PROPS} />
+                            )}
+                            Install runtime
+                          </button>
+                        )}
+                        {tierDownloading && tierProgress?.attempt_id && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary !text-xs"
+                            onClick={() =>
+                              api
+                                .cancelIntelligenceDownload(tier, tierProgress.attempt_id!)
+                                .catch((error) => intelligence.notifyToast("error", String(error)))
+                            }
+                          >
+                            Cancel download
+                          </button>
+                        )}
+                        {ggufInstalled && (
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            aria-label={`Delete ${meta.label}`}
+                            title={`Delete ${meta.label}`}
+                            disabled={deleting !== null}
+                            onClick={() => setConfirmDelete(key)}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" {...ICON_PROPS} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
 
-      <Section icon={<Wrench className="w-4 h-4" {...ICON_PROPS} />} title="Diagnostics">
-        <RuntimeInventoryPanel busy={runtimeDownloadActive} />
-        <CalibrationPanel />
-      </Section>
+                    {tierProgress?.phase === "error" && (
+                      <p className="text-xs text-danger mt-2" role="alert">
+                        Setup failed: {tierProgress.error ?? "Try setup again."}
+                      </p>
+                    )}
+                    <CatalogDetails
+                      model={MODEL_CATALOG.find((item) => item.id === meta.modelId)}
+                    />
+                    {installed &&
+                      flowStatus?.ready &&
+                      flowStatus.active_model === meta.modelId &&
+                      isActive && (
+                        <p className="text-2xs text-muted leading-snug mt-2">
+                          Loaded on {flowStatus.backend || "runtime"}
+                          {flowStatus.n_gpu_layers !== undefined && (
+                            <>
+                              {" "}
+                              · {flowStatus.n_gpu_layers}
+                              {flowStatus.mode === "gpu" ? "/99 layers" : " layers"}
+                              {flowStatus.mode === "gpu" && flowStatus.vram_used_mb
+                                ? ` · ${flowStatus.vram_used_mb.toFixed(0)} MB GPU memory in use`
+                                : ""}
+                            </>
+                          )}
+                        </p>
+                      )}
+
+                    {showRuntimeMissing && (
+                      <p className="text-2xs text-warning leading-snug mt-2">
+                        This model is downloaded, but its writing runtime is missing. Install the
+                        runtime to use it.
+                      </p>
+                    )}
+                    {tierDownloading && (
+                      <div className="space-y-1 mt-2">
+                        <div className="flex items-center justify-between text-2xs text-muted">
+                          <span>{writingSetupLabel(tierProgress?.phase ?? "starting")}</span>
+                          <span>
+                            {tierProgress?.progress_pct ?? 0}% ·{" "}
+                            {(tierProgress?.speed_mbps ?? 0).toFixed(1)} MB/s
+                          </span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-line overflow-hidden">
+                          <div
+                            className="progress-fill bg-accent"
+                            style={{
+                              transform: `scaleX(${Math.max(0, Math.min(100, tierProgress?.progress_pct ?? 0)) / 100})`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {runtimeDownloadActive && runtimeDownload && (
+                      <div className="space-y-1 mt-2">
+                        <div className="flex items-center justify-between text-2xs text-muted">
+                          <span>Installing {runtimeDownload.kind_label ?? "runtime"} runtime</span>
+                          <span>
+                            {runtimeDownload.progress_pct}% ·{" "}
+                            {runtimeDownload.speed_mbps.toFixed(1)} MB/s
+                          </span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-line overflow-hidden">
+                          <div
+                            className="progress-fill bg-accent"
+                            style={{
+                              transform: `scaleX(${Math.max(0, Math.min(100, runtimeDownload.progress_pct)) / 100})`,
+                            }}
+                          />
+                        </div>
+                        {runtimeDownloadError && (
+                          <p className="text-2xs text-danger leading-snug">
+                            {runtimeDownloadError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {showRuntimeMissing && !runtimeDownloadActive && runtimeDownloadError && (
+                      <p className="text-2xs text-danger leading-snug mt-2">
+                        Last install attempt failed: {runtimeDownloadError}
+                      </p>
+                    )}
+                    {confirmDelete === key &&
+                      confirmStrip(
+                        key,
+                        <>
+                          Delete {meta.label} ({FORMAT_SIZE(meta.downloadSizeMB)})? You can download
+                          it again later.
+                        </>,
+                        () => deleteModel("llm", tier, meta.label),
+                      )}
+                  </li>
+                );
+              })}
+          </ul>
+
+          <WritingCatalog
+            task={task === "notes" ? "notes" : task === "polish" ? "polish" : "all"}
+            settings={settings}
+            intelligence={intelligence}
+            onUpdateSettings={onUpdateSettings}
+            onInstallRuntime={onInstallRuntime}
+          />
+        </Section>
+      )}
+
+      {showPerformance && (
+        <Section
+          icon={<Sparkles className="w-4 h-4" {...ICON_PROPS} />}
+          title="Writing processor"
+          description="Choose where text refinement runs. Speech and writing share your available memory."
+        >
+          <div className="space-y-2">
+            <Row
+              label="Runs on"
+              hint={`Choose CPU or GPU. GPU offload is tuned automatically for the lowest expected latency while reserving enough VRAM for speech recognition and the desktop. ${gpuDetectionText}`}
+            >
+              <div className="segmented-control" role="radiogroup" aria-label="Stage 2 processor">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={refinementDevice === "cpu"}
+                  onClick={() => handleSelectRefinementDevice("cpu")}
+                >
+                  CPU
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={refinementDevice === "gpu"}
+                  disabled={!refinementGpuAvailable}
+                  onClick={() => handleSelectRefinementDevice("gpu")}
+                >
+                  GPU
+                </button>
+              </div>
+            </Row>
+            {refinementDevice === "gpu" && (
+              <p className="text-2xs text-muted leading-snug">{gpuOffloadHint}</p>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {showPerformance && (
+        <Section
+          icon={<SlidersHorizontal className="w-4 h-4" {...ICON_PROPS} />}
+          title="Runtime controls"
+          description="Speech dependencies, execution settings and precision."
+        >
+          {settings.asr.runtime === "python" && (
+            <PythonRuntimeSetup
+              settings={settings}
+              modelStatus={modelStatus}
+              onUpdateSettings={onUpdateSettings}
+              showRemove
+            />
+          )}
+          {settings.asr.runtime === "python" && (
+            <Row
+              label="Python interpreter"
+              hint="Leave blank for automatic discovery. Save a full interpreter path to use the same environment from the app menu and installers. REFLOW_PYTHON overrides this choice."
+            >
+              <div className="flex gap-2 items-center">
+                <input
+                  className="field"
+                  aria-label="Python interpreter"
+                  placeholder="Automatic"
+                  value={pythonPathDraft ?? settings.asr.python_path ?? ""}
+                  onChange={(event) => setPythonPathDraft(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={loading || downloading}
+                  onClick={async () => {
+                    const python_path =
+                      (pythonPathDraft ?? settings.asr.python_path ?? "").trim() || null;
+                    if (!(await onUpdateSettings({ asr: { ...settings.asr, python_path } })))
+                      return;
+                    setPythonPathDraft(null);
+                    onReloadModel();
+                  }}
+                >
+                  Apply and reload
+                </button>
+              </div>
+            </Row>
+          )}
+          {settings.preset === "custom" ? (
+            <>
+              <Row label="Speech runtime" hint={speechRuntimeHint}>
+                <select
+                  className="field"
+                  value={settings.asr.runtime}
+                  disabled={pythonOnlySelected || modelStatus?.is_downloading}
+                  onChange={async (e) => {
+                    const runtime = e.target.value as AsrSettings["runtime"];
+                    if (!(await change("asr", { ...settings.asr, runtime }))) return;
+                    try {
+                      const status = await api.getModelStatus();
+                      if (status.installed) await api.reloadModel();
+                    } catch (error) {
+                      intelligence.notifyToast(
+                        "error",
+                        "Could not switch speech runtime. Check the model and runtime downloads.",
+                      );
+                      console.error("Runtime switch error:", error);
+                    }
+                  }}
+                >
+                  <option value="python">Python (default)</option>
+                  <option value="native">Native (experimental)</option>
+                </select>
+              </Row>
+
+              <Row
+                label="Compute backend"
+                hint={
+                  settings.asr.runtime === "native"
+                    ? "Native uses Vulkan when a compatible GPU is present"
+                    : "Auto uses CUDA when a compatible GPU is present"
+                }
+              >
+                <select
+                  className="field"
+                  value={settings.asr.device}
+                  onChange={(e) =>
+                    change("asr", {
+                      ...settings.asr,
+                      device: e.target.value as AsrSettings["device"],
+                    })
+                  }
+                >
+                  <option value="auto">Auto (GPU prioritized)</option>
+                  <option value="cuda">
+                    GPU only ({settings.asr.runtime === "native" ? "Vulkan" : "CUDA"})
+                  </option>
+                  <option value="cpu">CPU only</option>
+                </select>
+              </Row>
+
+              {settings.asr.runtime === "python" && !pythonOnlySelected && (
+                <Row
+                  label="Model precision"
+                  hint="Lower precision uses less VRAM; 16-bit is the most accurate. The choice is remembered across launches."
+                >
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="segmented-control">
+                      {PRECISIONS.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          aria-pressed={settings.asr.precision === p.id}
+                          onClick={() => handleSelectPrecision(p.id)}
+                          disabled={downloading || installingModel !== null}
+                        >
+                          {p.title}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-2xs text-muted text-right leading-snug max-w-56">
+                      {PRECISIONS.find((p) => p.id === settings.asr.precision)?.desc}
+                    </p>
+                  </div>
+                </Row>
+              )}
+
+              <Row label="Keep model loaded" hint="Pre-warms the model in memory at startup">
+                <Toggle
+                  on={settings.asr.keep_loaded}
+                  onChange={(v) => change("asr", { ...settings.asr, keep_loaded: v })}
+                  ariaLabel="Keep model loaded"
+                />
+              </Row>
+            </>
+          ) : (
+            <p className="text-sm text-muted">
+              Speech runtime, precision and compute settings are managed automatically. Select
+              Custom above to tune them manually.
+            </p>
+          )}
+        </Section>
+      )}
+
+      {showPerformance && (
+        <Section
+          icon={<HardDrive className="w-4 h-4" {...ICON_PROPS} />}
+          title="Memory"
+          description="Leave room for speech, writing and the rest of your desktop."
+        >
+          <Row
+            label="GPU memory reserve"
+            hint="Automatic derives a safe reserve from your hardware. A manual reserve leaves this much GPU memory available for other work."
+          >
+            <select
+              className="field"
+              value={settings.memory_policy.vram_reserve_mb}
+              onChange={(event) =>
+                onUpdateSettings({
+                  memory_policy: {
+                    ...settings.memory_policy,
+                    vram_reserve_mb: Number(event.target.value),
+                  },
+                })
+              }
+            >
+              {[0, 512, 1024, 2048, 4096].map((value) => (
+                <option key={value} value={value}>
+                  {value === 0 ? "Automatic" : `${value} MB`}
+                </option>
+              ))}
+              {![0, 512, 1024, 2048, 4096].includes(settings.memory_policy.vram_reserve_mb) && (
+                <option value={settings.memory_policy.vram_reserve_mb}>
+                  {settings.memory_policy.vram_reserve_mb} MB
+                </option>
+              )}
+            </select>
+          </Row>
+          <Row
+            label="Unload idle models"
+            hint="Release model memory after a quiet period. The next request may take longer while the model reloads."
+          >
+            <select
+              className="field"
+              value={settings.memory_policy.unload_idle_after_seconds}
+              onChange={(event) =>
+                onUpdateSettings({
+                  memory_policy: {
+                    ...settings.memory_policy,
+                    unload_idle_after_seconds: Number(event.target.value),
+                  },
+                })
+              }
+            >
+              {[
+                [0, "Never"],
+                [60, "After 1 minute"],
+                [300, "After 5 minutes"],
+                [900, "After 15 minutes"],
+              ].map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+              {![0, 60, 300, 900].includes(settings.memory_policy.unload_idle_after_seconds) && (
+                <option value={settings.memory_policy.unload_idle_after_seconds}>
+                  After {settings.memory_policy.unload_idle_after_seconds} seconds
+                </option>
+              )}
+            </select>
+          </Row>
+        </Section>
+      )}
+
+      {showModels && (
+        <Section
+          icon={<HardDrive className="w-4 h-4" {...ICON_PROPS} />}
+          title="On this computer"
+          description={downloadedDescription}
+        >
+          {downloadedError ? (
+            <div className="space-y-2">
+              <p className="text-sm text-danger" role="alert">
+                {downloadedError}
+              </p>
+              <button type="button" className="btn btn-secondary" onClick={refreshDownloaded}>
+                Retry
+              </button>
+            </div>
+          ) : downloaded === null ? (
+            <p className="text-sm text-muted" role="status">
+              Checking downloaded files…
+            </p>
+          ) : downloaded.length === 0 ? (
+            <p className="text-sm text-muted">Models and runtimes you download appear here.</p>
+          ) : (
+            <ul aria-label="Downloaded files" className="divide-y divide-line-soft">
+              {downloaded.map((m) => {
+                const key = `${m.kind}:${m.id}`;
+                const confirmKey = `disk:${key}`;
+                return (
+                  <li key={key} className="py-3 first:pt-0 last:pb-0">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-ink truncate">{m.label}</p>
+                        <p className="text-2xs text-muted tabular-nums">
+                          {DOWNLOADED_KIND_LABEL[m.kind]} · {formatBytes(m.size_bytes)}
+                          {m.partial ? " · incomplete download" : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {m.active && <span className="chip">In use</span>}
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label={`Delete ${m.label}`}
+                          title={`Delete ${m.label}`}
+                          disabled={deleting !== null}
+                          onClick={() => setConfirmDelete(confirmKey)}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" {...ICON_PROPS} />
+                        </button>
+                      </div>
+                    </div>
+                    {confirmDelete === confirmKey &&
+                      confirmStrip(
+                        key,
+                        <>
+                          Delete {m.label} ({formatBytes(m.size_bytes)})?{" "}
+                          {deleteWarning(m.active, m.kind)}
+                        </>,
+                        () => deleteModel(m.kind, m.id, m.label),
+                      )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Section>
+      )}
+
+      {showPerformance && (
+        <Section icon={<Wrench className="w-4 h-4" {...ICON_PROPS} />} title="Diagnostics">
+          <RuntimeInventoryPanel busy={runtimeDownloadActive} />
+          <CalibrationPanel />
+        </Section>
+      )}
     </>
   );
 };

@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   AppSettings,
   IntelligenceTier,
+  WritingModelDownloadId,
   INTELLIGENCE_TIERS,
   ModelStatus,
   RuntimeDownloadEvent,
@@ -38,7 +39,7 @@ interface Props {
   onUpdateSettings: (s: Partial<AppSettings>) => Promise<boolean>;
   modelStatus: ModelStatus | null;
   intelligenceDownload: IntelligenceDownloadEvent | null;
-  activeDownloadTiers: Set<IntelligenceTier>;
+  activeDownloadTiers: Set<WritingModelDownloadId>;
   runtimeDownload: RuntimeDownloadEvent | null;
   runtimeDownloadActive: boolean;
   runtimeDownloadError: string | null;
@@ -94,19 +95,18 @@ export const CleanupPage: React.FC<Props> = ({
   const [previewNotice, setPreviewNotice] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [removing, setRemoving] = useState<IntelligenceTier | null>(null);
-  const [formatInstructionDraft, setFormatInstructionDraft] = useState(
-    settings.custom_format_instructions ?? "",
-  );
+  const [formatDraft, setFormatDraft] = useState<{ source: string; value: string } | null>(null);
+  const formatSource = settings.custom_format_instructions ?? "";
+  const formatInstructionDraft =
+    formatDraft?.source === formatSource ? formatDraft.value : formatSource;
+  const setFormatInstructionDraft = (value: string) =>
+    setFormatDraft({ source: formatSource, value });
   const [formatSaving, setFormatSaving] = useState(false);
   const [formatError, setFormatError] = useState<string | null>(null);
 
   const tier: IntelligenceTier = settings.intelligence_tier ?? "smart_flow";
   const transcriptFormat = settings.transcript_format ?? "off";
   const formattingEnabled = transcriptFormat !== "off";
-
-  useEffect(() => {
-    setFormatInstructionDraft(settings.custom_format_instructions ?? "");
-  }, [settings.custom_format_instructions]);
 
   const hasGpu = Boolean(systemMetrics?.gpu_present || modelStatus?.gpu_available);
   const totalRamMb = systemMetrics?.total_ram_mb ?? 0;
@@ -182,8 +182,17 @@ export const CleanupPage: React.FC<Props> = ({
   const downloadSpeed = (t: IntelligenceTier) =>
     isDownloading(t) ? (eventForTier(t)?.speed_mbps ?? 0) : 0;
 
-  const handleSelectTier = (t: IntelligenceTier) =>
-    onUpdateSettings(llmSelectionPatch(settings, flowModelForTier(t)));
+  const handleSelectTier = (t: IntelligenceTier) => {
+    const selected =
+      settings.flow_model === "none" ? settings.last_polish_model : settings.flow_model;
+    const model =
+      t !== "raw_verbatim" &&
+      selected &&
+      ["qwen3.5-4b", "minicpm5-2b", "gemma4-e4b"].includes(selected)
+        ? selected
+        : flowModelForTier(t);
+    onUpdateSettings({ ...llmSelectionPatch(settings, model), intelligence_tier: t });
+  };
 
   const handleInstall = async (t: IntelligenceTier) => {
     if (t === "raw_verbatim") return;

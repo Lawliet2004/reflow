@@ -10,10 +10,7 @@
   "integrity": "ok",
   "checksums_valid": true,
   "previous_commits_preserved": true,
-  "last_audio_end_s": [
-    6.6655625,
-    6.7029375
-  ],
+  "last_audio_end_s": [6.6655625, 6.7029375],
   "rpo_upper_bound_s": 1.8643240270015085,
   "meeting": {
     "id": "e41903fd-b09a-405a-87e2-f37a961091d4",
@@ -30,17 +27,11 @@
     "transcription_status": "pending",
     "summary_status": "pending",
     "elapsed_ms": 6795,
-    "saved_frames": [
-      106112,
-      100352
-    ],
+    "saved_frames": [106112, 100352],
     "last_commit_ms": 6795,
     "queue_depth": 0,
     "peak_queue_depth": 23,
-    "levels": [
-      0.0,
-      0.0
-    ],
+    "levels": [0.0, 0.0],
     "gaps": [],
     "warning": "Reflow stopped during capture. Only committed audio was recovered; no audio was recorded while the app was closed.",
     "error": null,

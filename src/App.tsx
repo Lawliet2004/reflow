@@ -522,6 +522,7 @@ export const App: React.FC = () => {
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <Navigation
+          intelligence={intelligence}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           appState={appState}

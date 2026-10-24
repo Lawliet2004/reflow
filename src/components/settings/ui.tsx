@@ -3,6 +3,7 @@ import {
   Keyboard,
   Mic,
   Cpu,
+  Layers,
   ShieldCheck,
   BookOpen,
   Sparkles,
@@ -19,7 +20,8 @@ export const PAGE_ICONS: Record<string, React.ReactNode> = {
   general: <Keyboard {...ICON} />,
   appearance: <Palette {...ICON} />,
   audio: <Mic {...ICON} />,
-  model: <Cpu {...ICON} />,
+  model: <Layers {...ICON} />,
+  performance: <Cpu {...ICON} />,
   cleanup: <Sparkles {...ICON} />,
   dictionary: <BookOpen {...ICON} />,
   phone: <Smartphone {...ICON} />,
@@ -100,18 +102,24 @@ export const PAGES: { id: string; label: string; description: string; keywords: 
   },
   {
     id: "model",
+    label: "Models",
+    description: "Find, compare and manage local speech and writing models.",
+    keywords: ["model", "asr", "qwen", "download", "import", "catalog", "llm", "meeting"],
+  },
+  {
+    id: "performance",
     label: "Performance",
-    description: "Speech model, compute device, downloads and calibration.",
+    description: "Hardware, memory, processing speed and runtime health.",
     keywords: [
-      "model",
-      "asr",
-      "qwen",
       "compute",
       "gpu",
       "cuda",
-      "download",
       "runtime",
       "calibration",
+      "precision",
+      "memory",
+      "cpu",
+      "tuning",
     ],
   },
   {
@@ -152,7 +160,7 @@ export const PAGES: { id: string; label: string; description: string; keywords: 
 
 export const PAGE_GROUPS: { label: string; ids: string[] }[] = [
   { label: "Dictation", ids: ["general", "audio", "cleanup", "dictionary"] },
-  { label: "App", ids: ["appearance", "model", "phone", "advanced"] },
+  { label: "App", ids: ["appearance", "model", "performance", "phone", "advanced"] },
 ];
 
 export function qrSrc(svg: string): string {

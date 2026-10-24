@@ -509,6 +509,14 @@ fn claim_download(
     ctx: &AppContext,
     spec: &LlamaRuntimeSpec,
 ) -> Result<Option<(String, Arc<AtomicBool>)>, String> {
+    claim_download_with_cancel(ctx, spec, Arc::new(AtomicBool::new(false)))
+}
+
+fn claim_download_with_cancel(
+    ctx: &AppContext,
+    spec: &LlamaRuntimeSpec,
+    cancel: Arc<AtomicBool>,
+) -> Result<Option<(String, Arc<AtomicBool>)>, String> {
     crate::network_policy::require_online(ctx.settings_store.get().offline_mode)?;
     let _operation = ctx
         .session_operation
@@ -522,7 +530,6 @@ fn claim_download(
         return Err("Another runtime variant is being installed. Wait or cancel it before changing variants.".into());
     }
     let attempt = uuid::Uuid::new_v4().to_string();
-    let cancel = Arc::new(AtomicBool::new(false));
     *job = Some(RuntimeDownload {
         cancel: cancel.clone(),
         snapshot: RuntimeDownloadEvent {
@@ -570,6 +577,60 @@ fn execute_download(
         );
     }
     outcome
+}
+
+/// Synchronous prerequisite for a user-requested model install. Reuses the
+/// runtime installer ownership, verification, and immutable-generation activation.
+/// Run on a blocking worker; a shared installation is joined, never duplicated.
+pub(crate) fn ensure_for_model(
+    app: &AppHandle,
+    ctx: &AppContext,
+    backend: &str,
+    cancel: Arc<AtomicBool>,
+    phase: impl Fn(&str),
+) -> Result<String, String> {
+    check_cancel(&cancel)?;
+    phase("checking_runtime");
+    if runtime_matches(backend) {
+        if let Ok(generation) = verify_active(Some(&cancel)) {
+            return Ok(generation);
+        }
+    }
+    check_cancel(&cancel)?;
+    let spec = pick_runtime_spec(backend)
+        .ok_or("No verified writing runtime package is available for this platform")?;
+    phase("installing_runtime");
+    match claim_download_with_cancel(ctx, &spec, cancel.clone())? {
+        Some((attempt, owner_cancel)) => {
+            execute_download(app, ctx, &spec, &attempt, &owner_cancel)?;
+        }
+        None => {
+            // A manual setup or another model owns this same runtime. Its
+            // cancellation token remains independent from this waiting model.
+            let joined = download_status(ctx)
+                .ok_or("Runtime setup status is unavailable")?
+                .attempt_id;
+            loop {
+                check_cancel(&cancel)?;
+                let status = download_status(ctx).ok_or("Runtime setup status is unavailable")?;
+                if status.attempt_id != joined {
+                    return Err("Runtime setup was replaced; retry model setup".into());
+                }
+                match status.phase {
+                    RuntimePhase::Complete => break,
+                    RuntimePhase::Error | RuntimePhase::Cancelled => {
+                        return Err(status.error.unwrap_or_else(|| {
+                            "Runtime setup did not complete; retry model setup".into()
+                        }));
+                    }
+                    _ => std::thread::sleep(std::time::Duration::from_millis(100)),
+                }
+            }
+        }
+    }
+    check_cancel(&cancel)?;
+    phase("checking_runtime");
+    verify_active(Some(&cancel))
 }
 
 /// Inspect the result of a `FlowRuntime::ensure` call. If the runtime
@@ -1514,6 +1575,47 @@ mod tests {
         job.update("replacement", RuntimePhase::Complete, 100, 0.0, None, None)
             .unwrap();
         assert!(!job.active());
+    }
+
+    #[tokio::test]
+    async fn model_runtime_claim_shares_cancellation_and_never_starts_a_duplicate() {
+        let root =
+            std::env::temp_dir().join(format!("reflow-runtime-claim-{}", uuid::Uuid::new_v4()));
+        let ctx = AppContext::bootstrap_test(root.join("settings"));
+        ctx.settings_store
+            .merge_update(serde_json::json!({"offline_mode": false}))
+            .unwrap();
+        let spec = pick_runtime_spec("cpu").expect("supported test platform");
+        let model_cancel = Arc::new(AtomicBool::new(false));
+        let (attempt, owned_cancel) = claim_download_with_cancel(&ctx, &spec, model_cancel.clone())
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&model_cancel, &owned_cancel));
+        assert!(Arc::ptr_eq(
+            &ctx.runtime_download.lock().as_ref().unwrap().cancel,
+            &model_cancel
+        ));
+        let waiter_cancel = Arc::new(AtomicBool::new(false));
+        assert!(
+            claim_download_with_cancel(&ctx, &spec, waiter_cancel.clone())
+                .unwrap()
+                .is_none()
+        );
+        waiter_cancel.store(true, Ordering::Release);
+        assert!(
+            !owned_cancel.load(Ordering::Acquire),
+            "a waiting model does not own the shared runtime"
+        );
+        let mut other = spec.clone();
+        other.kind_label = "different".into();
+        assert!(
+            claim_download_with_cancel(&ctx, &other, Arc::new(AtomicBool::new(false))).is_err()
+        );
+        assert_eq!(download_status(&ctx).unwrap().attempt_id, attempt);
+        model_cancel.store(true, Ordering::Release);
+        assert!(check_cancel(&owned_cancel).is_err());
+        drop(ctx);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

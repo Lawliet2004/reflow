@@ -20,12 +20,7 @@ pub async fn summarize_history(id: String, ctx: State<'_, AppContext>) -> Result
         .get_entry(&id)?
         .ok_or("Transcript no longer exists")?;
     let settings = ctx.settings_store.get();
-    let intent = settings.resolve_intent();
-    let model = if intent.flow_model == "none" {
-        "qwen3.5-0.8b".to_owned()
-    } else {
-        intent.flow_model
-    };
+    let model = settings.resolved_summary_model();
     let runtime = ctx.flow_runtime.clone();
     tokio::task::spawn_blocking(move || {
         runtime.ensure(

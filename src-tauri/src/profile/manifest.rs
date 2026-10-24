@@ -215,7 +215,10 @@ impl ModelManifest {
     /// optimized kernels keep packed int8 weights.
     pub fn estimated_cpu_ram_mb(&self) -> f32 {
         let weights_mb = (self.params as f32
-            * if matches!(self.id, "phonon-2" | "zipformer-20m") {
+            * if matches!(
+                self.id,
+                "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8"
+            ) {
                 1.1
             } else {
                 Precision::Fp32.bytes_per_weight()
@@ -246,7 +249,7 @@ impl ModelManifest {
                 Precision::Fp32
             }];
         }
-        if self.id == "zipformer-20m" {
+        if matches!(self.id, "zipformer-20m" | "omnilingual-300m-int8") {
             // The pinned int8 export is the only artifact this model has.
             return vec![Precision::Int8];
         }
@@ -394,6 +397,25 @@ pub const ZIPFORMER_MODEL: ModelManifest = ModelManifest {
     overhead_mb: 250.0,
 };
 
+/// Archive-only upstream distribution; verified before safe member copying.
+pub const OMNILINGUAL_MODEL: ModelManifest = ModelManifest {
+    id: "omnilingual-300m-int8",
+    label: "Omnilingual v2 300M INT8",
+    runtime: RuntimeKind::PythonAsr,
+    repo: "Edison2ST/sherpa-onnx-omnilingual-asr-1600-languages-ctc-v2",
+    revision: "5b5fae1ca6777861e13c4ac9e80b5a10d700ab18",
+    filename: "sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-v2-int8-2026-02-05.tar.bz2",
+    dir_name: "omnilingual-300m-int8",
+    sha256: "b72bef9be75862684098e722d79fefecf9f10fefd3a0b2950738977b4c6b4147",
+    auxiliary_files: &[],
+    download_bytes: 247417872,
+    params: 300000000,
+    precisions: &[Precision::Int8],
+    devices: &[Device::Cpu],
+    languages: &[],
+    overhead_mb: 700.0,
+};
+
 /// Refinement models served by `llama-server`.
 pub const REFINEMENT_MODELS: &[ModelManifest] = &[
     ModelManifest {
@@ -435,6 +457,57 @@ pub const REFINEMENT_MODELS: &[ModelManifest] = &[
         devices: &[Device::Cpu, Device::Cuda, Device::Vulkan],
         languages: &["en"],
         overhead_mb: 320.0,
+    },
+    ModelManifest {
+        id: "qwen3.5-4b",
+        label: "Qwen3.5 4B",
+        runtime: RuntimeKind::LlamaServer,
+        repo: "unsloth/Qwen3.5-4B-GGUF",
+        revision: "e87f176479d0855a907a41277aca2f8ee7a09523",
+        filename: "Qwen3.5-4B-Q4_K_M.gguf",
+        dir_name: "flow",
+        sha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+        auxiliary_files: &[],
+        download_bytes: 2740937888,
+        params: 4000000000,
+        precisions: &[Precision::Int4],
+        devices: &[Device::Cpu, Device::Cuda, Device::Vulkan],
+        languages: &[],
+        overhead_mb: 480.0,
+    },
+    ModelManifest {
+        id: "minicpm5-2b",
+        label: "MiniCPM5 2B",
+        runtime: RuntimeKind::LlamaServer,
+        repo: "openbmb/MiniCPM5-2B-GGUF",
+        revision: "2079a22f3beaa4e306449978533478fe0522f4b3",
+        filename: "MiniCPM5-2B-Q4_K_M.gguf",
+        dir_name: "flow",
+        sha256: "ec2d5801640099e97d8d7e8003ad4d81f336e757811f03a26173dddf386602fd",
+        auxiliary_files: &[],
+        download_bytes: 1561318368,
+        params: 2700000000,
+        precisions: &[Precision::Int4],
+        devices: &[Device::Cpu, Device::Cuda, Device::Vulkan],
+        languages: &[],
+        overhead_mb: 400.0,
+    },
+    ModelManifest {
+        id: "gemma4-e4b",
+        label: "Gemma 4 E4B",
+        runtime: RuntimeKind::LlamaServer,
+        repo: "unsloth/gemma-4-E4B-it-GGUF",
+        revision: "bfc15c382204943c3a8fff0c750b94ae2364d7a3",
+        filename: "gemma-4-E4B-it-Q4_K_M.gguf",
+        dir_name: "flow",
+        sha256: "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87",
+        auxiliary_files: &[],
+        download_bytes: 4977171584,
+        params: 8000000000,
+        precisions: &[Precision::Int4],
+        devices: &[Device::Cpu, Device::Cuda, Device::Vulkan],
+        languages: &[],
+        overhead_mb: 700.0,
     },
 ];
 
@@ -510,6 +583,9 @@ pub fn recommended_asr_model(available_ram_mb: f32, free_vram_mb: f32) -> &'stat
 }
 
 pub fn asr_manifest(id: &str) -> Option<&'static ModelManifest> {
+    if id == OMNILINGUAL_MODEL.id {
+        return Some(&OMNILINGUAL_MODEL);
+    }
     if id == PHONON_MODEL.id {
         return Some(&PHONON_MODEL);
     }
@@ -529,6 +605,7 @@ pub fn all_manifests() -> impl Iterator<Item = &'static ModelManifest> {
         .iter()
         .chain(std::iter::once(&PHONON_MODEL))
         .chain(std::iter::once(&ZIPFORMER_MODEL))
+        .chain(std::iter::once(&OMNILINGUAL_MODEL))
         .chain(REFINEMENT_MODELS.iter())
         .chain(NATIVE_ASR_MODELS.iter())
 }
@@ -585,10 +662,15 @@ mod tests {
                 "{} supports no device",
                 manifest.id
             );
-            if manifest.runtime == RuntimeKind::NativeAsr {
+            if manifest.runtime == RuntimeKind::NativeAsr
+                || matches!(
+                    manifest.id,
+                    "omnilingual-300m-int8" | "qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b"
+                )
+            {
                 assert!(
                     manifest.languages.is_empty(),
-                    "Native prototype must not claim language validation before benchmarking"
+                    "New models must not claim language validation before benchmarking"
                 );
             } else {
                 assert!(

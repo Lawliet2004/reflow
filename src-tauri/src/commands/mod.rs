@@ -645,6 +645,7 @@ pub fn update_settings(
             "asr",
             "refinement",
             "flow_model",
+            "summary_model",
             "preset",
             "intelligence_tier",
             "offline_mode",
@@ -1327,7 +1328,10 @@ pub fn resolve_asr_load(ctx: &AppContext) -> Result<(String, String, String), St
     let settings = ctx.settings_store.get();
     let requested = settings.asr.model.clone();
     if settings.asr.runtime != "native"
-        && requested != "zipformer-20m"
+        && !matches!(
+            requested.as_str(),
+            "zipformer-20m" | "omnilingual-300m-int8"
+        )
         && settings.asr.device != "cpu"
     {
         ctx.asr_handle.discover_capabilities_blocking()?;
@@ -1490,10 +1494,48 @@ pub fn apply_calibration(
 }
 
 #[tauri::command]
-pub fn install_model(
+pub async fn install_model(
     app: AppHandle,
     model_size: Option<String>,
     ctx: State<'_, AppContext>,
+) -> Result<(), String> {
+    let ctx = ctx.inner().clone();
+    let before = ctx.settings_store.get();
+    crate::network_policy::require_online(before.offline_mode)?;
+    let expected_asr = before.asr;
+    let requested = model_size.as_deref().unwrap_or(&expected_asr.model);
+    let concrete = crate::model::manager::runtime_model_id(requested, &expected_asr.runtime);
+    if !crate::model::manager::MODELS
+        .iter()
+        .any(|model| model.id == concrete)
+    {
+        return Err(format!(
+            "Speech model '{requested}' has no supported, verified runtime adapter in this build."
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        if expected_asr.runtime == "native" {
+            // Runtime setup claims/activation take session_operation themselves.
+            // Complete it before entering the model install's admission lock.
+            crate::rewrite::runtime_install::ensure_for_model(
+                &app,
+                &ctx,
+                &expected_asr.device,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                |_| {},
+            )?;
+        }
+        install_model_prepared(app, model_size, ctx, &expected_asr)
+    })
+    .await
+    .map_err(|error| format!("Speech setup worker stopped: {error}"))?
+}
+
+fn install_model_prepared(
+    app: AppHandle,
+    model_size: Option<String>,
+    ctx: AppContext,
+    expected_asr: &crate::settings::AsrSettings,
 ) -> Result<(), String> {
     crate::network_policy::require_online(ctx.settings_store.get().offline_mode)?;
     let _operation = ctx
@@ -1501,6 +1543,9 @@ pub fn install_model(
         .try_lock()
         .map_err(|_| "Finish the current operation before installing a model.")?;
     let settings = ctx.settings_store.get();
+    if &settings.asr != expected_asr {
+        return Err("Speech model or runtime selection changed during setup; retry with the current selection.".into());
+    }
     let requested_model = model_size.unwrap_or(settings.asr.model.clone());
     let active = crate::model::manager::runtime_model_id(&requested_model, &settings.asr.runtime);
     if !matches!(
@@ -1510,11 +1555,11 @@ pub fn install_model(
         return Err("Finish dictation before installing a speech model.".into());
     }
     if settings.asr.runtime == "python" {
-        crate::asr::python_setup::verify_speech_runtime_inner(ctx.inner(), Some(&requested_model))?;
+        crate::asr::python_setup::verify_speech_runtime_inner(&ctx, Some(&requested_model))?;
     } else {
         crate::rewrite::runtime_install::verify_active(None)?;
     }
-    prepare_asr_runtime(ctx.inner(), &app)?;
+    prepare_asr_runtime(&ctx, &app)?;
     let model_dir = ctx.model_manager.get_model_dir(&active);
     let repo = ctx.model_manager.repo_for(&active);
     ctx.model_manager.prepare_repair(&active)?;
@@ -1522,17 +1567,17 @@ pub fn install_model(
     // post-install auto-load on the same device/precision the load resolver
     // picked. Otherwise a first Qwen install loaded at "auto"/"auto" and
     // could land on a different device than the next reload.
-    let (_, backend, precision) = resolve_asr_load(ctx.inner())?;
+    let (_, backend, precision) = resolve_asr_load(&ctx)?;
     ctx.asr_handle.install_model_dir_with_options_blocking(
         &model_dir.to_string_lossy(),
         repo,
         &backend,
         &precision,
     )?;
-    spawn_model_status_watch(app.clone(), ctx.inner().clone());
+    spawn_model_status_watch(app.clone(), ctx.clone());
     // A selection change that queued while this install held the lock.
     drop(_operation);
-    kick_pending_asr_reload(&app, ctx.inner());
+    kick_pending_asr_reload(&app, &ctx);
     Ok(())
 }
 
@@ -1617,6 +1662,9 @@ fn build_downloaded_models(ctx: &AppContext) -> Vec<DownloadedModel> {
     for (tier, model_id) in [
         ("smart_flow", "qwen3.5-0.8b"),
         ("deep_context", "qwen3.5-2b"),
+        ("qwen3.5-4b", "qwen3.5-4b"),
+        ("minicpm5-2b", "minicpm5-2b"),
+        ("gemma4-e4b", "gemma4-e4b"),
     ] {
         let dest = crate::rewrite::flow_gguf_path(model_id);
         // Interrupted downloads keep a resumable `.gguf.part` file.
@@ -1632,7 +1680,8 @@ fn build_downloaded_models(ctx: &AppContext) -> Vec<DownloadedModel> {
                 .to_string(),
             size_bytes: std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0)
                 + std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0),
-            active: settings.flow_model == model_id,
+            active: settings.flow_model == model_id
+                || settings.resolved_summary_model() == model_id,
             partial: !dest.exists(),
         });
     }
@@ -1672,6 +1721,9 @@ pub(crate) fn reload_model_inner(app: AppHandle, ctx: &AppContext) -> Result<(),
         AppStateEnum::Ready | AppStateEnum::Idle
     ) {
         return Err("Wait for the active dictation to finish before reloading models.".into());
+    }
+    if ctx.settings_store.get().asr.runtime == "python" {
+        crate::asr::python_setup::verify_speech_runtime_inner(ctx, None)?;
     }
     ctx.flow_runtime.shutdown();
     ctx.asr_handle.unload_model_blocking()?;
@@ -2499,6 +2551,9 @@ pub fn get_intelligence_tiers(ctx: State<'_, AppContext>) -> Vec<IntelligenceTie
     [
         ("smart_flow", "qwen3.5-0.8b"),
         ("deep_context", "qwen3.5-2b"),
+        ("qwen3.5-4b", "qwen3.5-4b"),
+        ("minicpm5-2b", "minicpm5-2b"),
+        ("gemma4-e4b", "gemma4-e4b"),
     ]
     .iter()
     .map(|(tier, model_id)| {
@@ -2530,8 +2585,21 @@ pub fn set_intelligence_tier(
     if !valid {
         return Err(format!("Unknown intelligence tier: {tier}"));
     }
-    let flow_model = tier_to_flow_model(&normalized).to_string();
     let current = ctx.settings_store.get();
+    let selected = if current.flow_model == "none" {
+        &current.last_polish_model
+    } else {
+        &current.flow_model
+    };
+    let flow_model = if normalized != "raw_verbatim"
+        && matches!(
+            selected.as_str(),
+            "qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b"
+        ) {
+        selected.clone()
+    } else {
+        tier_to_flow_model(&normalized).to_string()
+    };
     // The three settings fields are independent now: do not clobber the
     // user's existing `cleanup_level` when they switch tier. The effective
     // cleanup level is resolved at read time via `AppSettings::resolve_intent`.
@@ -2598,6 +2666,11 @@ pub fn set_polish_enabled(
     };
 
     let updated = ctx.settings_store.update(AppSettings {
+        flow_model: if enabled {
+            current.last_polish_model.clone()
+        } else {
+            current.flow_model.clone()
+        },
         intelligence_tier: tier,
         last_polish_tier,
         preset: if enabled && current.preset == "fast" {
@@ -2697,7 +2770,8 @@ pub fn remove_intelligence_model(tier: String, ctx: State<'_, AppContext>) -> Re
     let flow_id = match normalized.as_str() {
         "smart_flow" => "qwen3.5-0.8b",
         "deep_context" => "qwen3.5-2b",
-        _ => return Err(format!("Tier '{tier}' has no model to remove")),
+        id @ ("qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b") => id,
+        _ => return Err(format!("Tier or model '{tier}' has no model to remove")),
     };
     if ctx
         .active_intelligence_downloads
@@ -2709,7 +2783,7 @@ pub fn remove_intelligence_model(tier: String, ctx: State<'_, AppContext>) -> Re
     }
     let path = crate::rewrite::flow_gguf_path(flow_id);
     let active = ctx.settings_store.get();
-    if active.flow_model == flow_id {
+    if active.flow_model == flow_id || active.resolved_summary_model() == flow_id {
         ctx.flow_runtime.shutdown();
     }
     if path.exists() {

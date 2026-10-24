@@ -132,7 +132,7 @@ export function PresetSelector({
       <div
         role="radiogroup"
         aria-label="Hardware intelligence presets"
-        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2"
+        className="divide-y divide-line-soft"
       >
         {PRESET_OPTIONS.map((opt, index) => {
           const isSelected = selectedPreset === opt.id;
@@ -147,10 +147,8 @@ export function PresetSelector({
               onClick={() => onSelectPreset(opt.id)}
               onKeyDown={(e) => handleKeyDown(e, index)}
               className={cn(
-                "relative flex flex-col p-3 rounded-[var(--radius-control)] border transition-colors cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                isSelected
-                  ? "bg-accent-soft border-accent"
-                  : "bg-surface border-line hover:border-line-strong",
+                "relative py-3 px-2 transition-colors cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                isSelected ? "bg-accent-soft" : "hover:bg-surface",
               )}
             >
               <div className="flex items-center justify-between gap-2 mb-1.5">

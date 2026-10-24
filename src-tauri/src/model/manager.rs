@@ -54,12 +54,23 @@ pub const MODELS: &[ModelSpec] = &[
         label: "Zipformer 20M INT8",
         approx_bytes: 43_649_301,
     },
+    ModelSpec {
+        id: "omnilingual-300m-int8",
+        dir_name: "omnilingual-300m-int8",
+        repo: "Edison2ST/sherpa-onnx-omnilingual-asr-1600-languages-ctc-v2",
+        label: "Omnilingual v2 300M INT8",
+        approx_bytes: 247417872,
+    },
 ];
 
 pub fn runtime_model_id(model: &str, runtime: &str) -> String {
     // Already a concrete dir id (native variant or bundled-runtime model):
     // re-mapping would produce a nonexistent "native-native-*" id.
-    if matches!(model, "phonon-2" | "zipformer-20m") || model.starts_with("native-") {
+    if matches!(
+        model,
+        "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8"
+    ) || model.starts_with("native-")
+    {
         return model.to_string();
     }
     if runtime == "native" {
@@ -99,7 +110,7 @@ impl ModelManager {
     /// Weights are considered installed when a real HF model directory is there.
     pub fn is_installed(&self, id: &str) -> bool {
         let dir = self.get_model_dir(id);
-        if matches!(id, "phonon-2" | "zipformer-20m") {
+        if matches!(id, "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8") {
             // Manifest-pinned files only: every listed file must be present.
             // Zipformer ships three ONNX files plus tokens.txt — checking only
             // the encoder would pass on an interrupted multi-file download.

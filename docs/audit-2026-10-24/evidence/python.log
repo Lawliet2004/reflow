@@ -1,0 +1,88 @@
+..EEEEE
+======================================================================
+ERROR: test_network_policy (unittest.loader._FailedTest.test_network_policy)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_network_policy
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/unittest/loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.14/unittest/loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "/home/papan/Desktop/Projects/reflow/model-runtime/test_network_policy.py", line 15, in <module>
+    import httpx
+ModuleNotFoundError: No module named 'httpx'
+
+
+======================================================================
+ERROR: test_omnilingual (unittest.loader._FailedTest.test_omnilingual)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_omnilingual
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/unittest/loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.14/unittest/loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "/home/papan/Desktop/Projects/reflow/model-runtime/test_omnilingual.py", line 13, in <module>
+    import omnilingual_runtime as omni
+  File "/home/papan/Desktop/Projects/reflow/model-runtime/omnilingual_runtime.py", line 11, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
+
+
+======================================================================
+ERROR: test_phonon (unittest.loader._FailedTest.test_phonon)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_phonon
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/unittest/loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.14/unittest/loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "/home/papan/Desktop/Projects/reflow/model-runtime/test_phonon.py", line 13, in <module>
+    spec.loader.exec_module(runtime)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/papan/Desktop/Projects/reflow/model-runtime/qwen3_asr_runtime.py", line 32, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
+
+
+======================================================================
+ERROR: test_runtime (unittest.loader._FailedTest.test_runtime)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_runtime
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/unittest/loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.14/unittest/loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "/home/papan/Desktop/Projects/reflow/model-runtime/test_runtime.py", line 17, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
+
+
+======================================================================
+ERROR: test_zipformer (unittest.loader._FailedTest.test_zipformer)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_zipformer
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/unittest/loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.14/unittest/loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "/home/papan/Desktop/Projects/reflow/model-runtime/test_zipformer.py", line 13, in <module>
+    spec.loader.exec_module(runtime)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/papan/Desktop/Projects/reflow/model-runtime/qwen3_asr_runtime.py", line 32, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
+
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.673s
+
+FAILED (errors=5)

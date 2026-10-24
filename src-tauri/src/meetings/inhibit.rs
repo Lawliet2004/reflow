@@ -7,7 +7,7 @@ impl Inhibitor {
     pub fn acquire() -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         {
-            return tauri::async_runtime::block_on(async {
+            tauri::async_runtime::block_on(async {
                 let conn = zbus::Connection::system()
                     .await
                     .map_err(|e| e.to_string())?;
@@ -27,7 +27,7 @@ impl Inhibitor {
                     .await
                     .map_err(|e| format!("Cannot inhibit idle sleep: {e}"))?;
                 Ok(Self { _fd: fd })
-            });
+            })
         }
         #[cfg(target_os = "windows")]
         unsafe {

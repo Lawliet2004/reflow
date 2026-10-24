@@ -9,6 +9,7 @@ vi.mock("./tauriApi", () => ({
     getPythonSetupProgress: vi.fn(),
     setupPythonRuntime: vi.fn(),
     verifySpeechRuntime: vi.fn(),
+    activateCachedSpeechRuntime: vi.fn().mockResolvedValue(false),
   },
   safeListen: vi.fn(),
 }));
@@ -341,3 +342,11 @@ it.each(["error", "cancelled"] as const)(
     expect(api.setupPythonRuntime).not.toHaveBeenCalled();
   },
 );
+
+it("reuses a verified cached runtime without downloading packages", async () => {
+  runtime();
+  vi.mocked(api.activateCachedSpeechRuntime).mockResolvedValueOnce(true);
+  await prepareSpeechRuntime(new AbortController().signal, vi.fn());
+  expect(api.verifySpeechRuntime).toHaveBeenCalledOnce();
+  expect(api.setupPythonRuntime).not.toHaveBeenCalled();
+});

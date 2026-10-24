@@ -1,0 +1,18 @@
+..........Fetching 1 files:   0%|          | 0/1 [00:00<?, ?it/s]Fetching 1 files: 100%|██████████| 1/1 [00:00<00:00, 279.27it/s]
+..............[15:15:18] [Qwen3-ASR Runtime] Downloading FermionResearch/Phonon-2 weights to /tmp/tmp20p12h3q
+[15:15:18] [Qwen3-ASR Runtime] Model download complete and verified
+...[15:15:18] [Qwen3-ASR Runtime] Budgeting against 0 MB free VRAM (device total 4096 MB)
+[15:15:18] [Qwen3-ASR Runtime] Loading Qwen3-ASR from /tmp/tmp6psk4gkv on cpu (cpu)
+[15:15:18] [Qwen3-ASR Runtime] cpu cpu load failed [unknown]: Speech needs about 9229 MB available RAM including headroom; 256 MB is available. Close applications or select Zipformer 20M.
+[15:15:18] [Qwen3-ASR Runtime] Model load failed [unknown]: Speech needs about 9229 MB available RAM including headroom; 256 MB is available. Close applications or select Zipformer 20M.
+.....[15:15:18] [Qwen3-ASR Runtime] Budgeting against 0 MB free VRAM (device total 4096 MB)
+[15:15:18] [Qwen3-ASR Runtime] Model load failed [unknown]: all load strategies failed
+..................[15:15:18] [Qwen3-ASR Runtime] Zipformer streaming decode failed: decoder failed
+[15:15:18] [Qwen3-ASR Runtime] final transcript (14 chars, lang=en)
+.[15:15:18] [Qwen3-ASR Runtime] Downloading csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17 weights to /tmp/tmp_o8bbrkq
+[15:15:18] [Qwen3-ASR Runtime] Model download complete and verified
+.
+----------------------------------------------------------------------
+Ran 52 tests in 0.666s
+
+OK

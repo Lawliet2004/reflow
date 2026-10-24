@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
 use crate::audio::resampler::AudioResampler;
-use crate::profile::manifest::{ASR_MODELS, PHONON_MODEL, ZIPFORMER_MODEL};
+use crate::profile::manifest::{ASR_MODELS, OMNILINGUAL_MODEL, PHONON_MODEL, ZIPFORMER_MODEL};
 
 const ASR_PUSH_CHUNK_SAMPLES: usize = 16_000;
 const CANCELLED_TRANSPORT: &str = "engine_cancelled: discarded dictation";
@@ -514,7 +514,7 @@ impl Qwen3AsrSidecar {
                 }
                 return modules;
             }
-            "zipformer-20m" => {
+            "zipformer-20m" | "omnilingual-300m-int8" => {
                 modules.push("sherpa_onnx");
                 return modules;
             }
@@ -1326,6 +1326,7 @@ impl ASREngine for Qwen3AsrSidecar {
             .iter()
             .chain(std::iter::once(&PHONON_MODEL))
             .chain(std::iter::once(&ZIPFORMER_MODEL))
+            .chain(std::iter::once(&OMNILINGUAL_MODEL))
             .find(|m| {
                 Path::new(model_dir).file_name().and_then(|n| n.to_str()) == Some(m.dir_name)
             });
@@ -1396,6 +1397,7 @@ impl ASREngine for Qwen3AsrSidecar {
             .iter()
             .chain(std::iter::once(&PHONON_MODEL))
             .chain(std::iter::once(&ZIPFORMER_MODEL))
+            .chain(std::iter::once(&OMNILINGUAL_MODEL))
             .find(|m| m.repo == repo);
         // Every manifest-pinned file is checksum-verified, not just the
         // primary weight — Zipformer needs all three ONNX files plus

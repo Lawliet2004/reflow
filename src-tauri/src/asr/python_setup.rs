@@ -389,7 +389,7 @@ fn promote_generation(app_dir: &Path, id: &str) -> Result<(), String> {
 
 pub(crate) fn dependency_profile(model: &str) -> &'static str {
     match model {
-        "zipformer-20m" => "zipformer",
+        "zipformer-20m" | "omnilingual-300m-int8" => "zipformer",
         "phonon-2" => "phonon",
         _ => "qwen",
     }
@@ -428,7 +428,7 @@ pub(crate) fn variant_for(
     device: &str,
     caps: &crate::capability::Capabilities,
 ) -> TorchVariant {
-    if model == "zipformer-20m" {
+    if matches!(model, "zipformer-20m" | "omnilingual-300m-int8") {
         TorchVariant::None_
     } else if device == "cpu" {
         torch_variant(target_triple(), false)
@@ -492,6 +492,97 @@ fn receipt_matches(receipt: &RuntimeReceipt, profile: &str, variant: TorchVarian
         && receipt.requirements_digest == requirements_digest(profile, variant)
         && receipt.pbs_tag == python_builds().pbs_tag
         && receipt.torch_variant == variant.receipt_name()
+}
+
+/// Reuse a verified environment for the selected profile, including offline.
+/// Selection is explicit; this command never downloads or alters installed weights.
+#[tauri::command]
+pub async fn activate_cached_speech_runtime(ctx: State<'_, AppContext>) -> Result<bool, String> {
+    let ctx = ctx.inner().clone();
+    let operation = speech_setup_admission(&ctx).await?;
+    tokio::task::spawn_blocking(move || {
+        let _session = operation;
+        let _settings = ctx.settings_operation.lock();
+        if SETUP_ACTIVE.load(Ordering::SeqCst) || ctx.meetings.busy() {
+            return Err(
+                "Speech resources are busy. Wait for setup or meeting processing to finish.".into(),
+            );
+        }
+        if runtime_overridden(&ctx) {
+            return Ok(false);
+        }
+        let selection = ctx.settings_store.get().asr;
+        if selection.runtime != "python" {
+            return Ok(false);
+        }
+        let profile = dependency_profile(&selection.model);
+        let variant = variant_for(
+            &selection.model,
+            &selection.device,
+            &crate::capability::capabilities(),
+        );
+        let app_dir = PlatformSys::get_app_dir();
+        let current = managed_runtime_dir(&app_dir);
+        let candidate = find_cached_generation(&app_dir, profile, variant, |runtime| {
+            let python = runtime.join(if cfg!(windows) {
+                "Scripts/python.exe"
+            } else {
+                "bin/python"
+            });
+            if !verify_installed_versions(&python, profile, variant) {
+                return false;
+            }
+            let imports = verification_code(
+                profile,
+                variant,
+                matches!(selection.precision.as_str(), "auto" | "int4" | "int8")
+                    && matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy),
+            );
+            super::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
+                &python.to_string_lossy(),
+                &format!("{imports}; print('ready')"),
+                Duration::from_secs(30),
+            )
+            .is_some()
+        });
+        let Some((id, runtime)) = candidate else {
+            return Ok(false);
+        };
+        if runtime != current {
+            ctx.asr_handle.shutdown_blocking(Duration::from_secs(10))?;
+            promote_generation(&app_dir, &id)?;
+        }
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("Could not prepare the installed speech runtime: {e}"))?
+}
+
+fn find_cached_generation(
+    app_dir: &Path,
+    profile: &str,
+    variant: TorchVariant,
+    mut verify: impl FnMut(&Path) -> bool,
+) -> Option<(String, PathBuf)> {
+    let mut entries = std::fs::read_dir(app_dir.join("python-generations"))
+        .ok()?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if uuid::Uuid::parse_str(&id).is_err() || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            continue;
+        }
+        let runtime = entry.path().join("runtime");
+        if read_receipt(&runtime).is_some_and(|r| receipt_matches(&r, profile, variant))
+            && verify(&runtime)
+        {
+            return Some((id, runtime));
+        }
+    }
+    None
 }
 
 pub fn runtime_status(ctx: &AppContext) -> PythonRuntimeStatus {
@@ -626,14 +717,38 @@ pub(crate) fn verify_speech_runtime_inner(
     Ok(())
 }
 
+async fn speech_setup_admission(
+    ctx: &AppContext,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    if ctx.meetings.busy()
+        || !matches!(
+            *ctx.state_enum.read(),
+            crate::state::AppStateEnum::Ready
+                | crate::state::AppStateEnum::Idle
+                | crate::state::AppStateEnum::Error
+        )
+    {
+        return Err("Finish the active recording before preparing speech dependencies.".into());
+    }
+    // A settings write may already have queued a model reload. Join behind it
+    // instead of making an ordinary model switch fail with a transient busy error.
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        ctx.session_operation.clone().lock_owned(),
+    )
+    .await
+    .map_err(|_| {
+        "Speech resources are still busy. Wait for the model to finish loading and try again."
+            .into()
+    })
+}
+
 #[tauri::command]
 pub async fn verify_speech_runtime(ctx: State<'_, AppContext>) -> Result<(), String> {
     let context = ctx.inner().clone();
+    let operation = speech_setup_admission(&context).await?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _operation = context
-            .session_operation
-            .try_lock()
-            .map_err(|_| "Finish the current operation before checking speech dependencies.")?;
+        let _operation = operation;
         verify_speech_runtime_inner(&context, None)
     })
     .await
@@ -1781,6 +1896,33 @@ mod tests {
         assert_eq!(retained.revision, terminal.revision);
         cancel_python_runtime_setup(Some(committing)).unwrap();
         assert!(!SETUP_CANCEL.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cached_generation_requires_matching_receipt_and_live_verification() {
+        let root = std::env::temp_dir().join(format!("reflow-cached-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let runtime = root.join("python-generations").join(&id).join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let receipt = serde_json::json!({
+            "pbs_tag": python_builds().pbs_tag, "python_version": python_builds().python_version,
+            "torch_variant": "none", "created_at": "fixture", "target": target_triple(),
+            "profile": "zipformer", "requirements_digest": requirements_digest("zipformer", TorchVariant::None_)
+        });
+        std::fs::write(
+            runtime.join(RECEIPT_NAME),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        assert!(find_cached_generation(&root, "qwen", TorchVariant::Cpu, |_| true).is_none());
+        assert!(
+            find_cached_generation(&root, "zipformer", TorchVariant::None_, |_| false).is_none()
+        );
+        assert_eq!(
+            find_cached_generation(&root, "zipformer", TorchVariant::None_, |_| true),
+            Some((id, runtime))
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

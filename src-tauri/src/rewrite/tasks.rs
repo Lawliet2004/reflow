@@ -40,7 +40,12 @@ pub fn complete_task(
 ) -> Result<String, String> {
     let sections = context.inputs(client.context_size);
     let mut inputs = vec![("Text", text)];
-    inputs.extend(sections.iter().map(|(label, text)| (*label, text.as_str())));
+    inputs.extend(
+        sections
+            .iter()
+            .filter(|(_, source)| source.trim() != text.trim())
+            .map(|(label, text)| (*label, text.as_str())),
+    );
     let output = client.complete(build_task_messages(system, instruction, &inputs))?;
     accept_task_output(text, &output)
         .ok_or_else(|| "Local model returned an empty, refused or invalid task result".into())

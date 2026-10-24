@@ -1,0 +1,142 @@
+TAP version 13
+# Subtest: publication requires exact native journeys and intact evidence for every supported profile
+ok 1 - publication requires exact native journeys and intact evidence for every supported profile
+  ---
+  duration_ms: 1063.089199
+  type: 'test'
+  ...
+# Subtest: automatic shutdown never matches unrelated command lines
+ok 2 - automatic shutdown never matches unrelated command lines
+  ---
+  duration_ms: 36.739047
+  type: 'test'
+  ...
+# Subtest: only exact debug/release executable paths from this checkout are selected
+ok 3 - only exact debug/release executable paths from this checkout are selected
+  ---
+  duration_ms: 16.852575
+  type: 'test'
+  ...
+# Subtest: a changed process identity cannot receive a shutdown signal
+ok 4 - a changed process identity cannot receive a shutdown signal
+  ---
+  duration_ms: 16.323836
+  type: 'test'
+  ...
+# Subtest: Linux recognizes a replaced owned binary without matching similarly named files
+ok 5 - Linux recognizes a replaced owned binary without matching similarly named files
+  ---
+  duration_ms: 10.102251
+  type: 'test'
+  ...
+# Subtest: a replaced Linux binary can stop only after its PID still belongs to this checkout
+ok 6 - a replaced Linux binary can stop only after its PID still belongs to this checkout
+  ---
+  duration_ms: 14.779255
+  type: 'test'
+  ...
+# Subtest: shutdown signals only a still-owned PID and tolerates already-exited processes
+ok 7 - shutdown signals only a still-owned PID and tolerates already-exited processes
+  ---
+  duration_ms: 1.226089
+  type: 'test'
+  ...
+# Subtest: AppImage hooks retain explicit backends and let GTK choose the native session
+ok 8 - AppImage hooks retain explicit backends and let GTK choose the native session
+  ---
+  duration_ms: 567.261589
+  type: 'test'
+  ...
+# Subtest: installed speech runtime and language catalogue use the paths the app resolves
+ok 9 - installed speech runtime and language catalogue use the paths the app resolves
+  ---
+  duration_ms: 8.039732
+  type: 'test'
+  ...
+# Subtest: bundle plan invokes Tauri once from the repository root without requiring Python
+ok 10 - bundle plan invokes Tauri once from the repository root without requiring Python
+  ---
+  duration_ms: 8.619468
+  type: 'test'
+  ...
+# Subtest: Windows wrapper preserves caller cwd and delegates the actual installer command
+ok 11 - Windows wrapper preserves caller cwd and delegates the actual installer command # SKIP
+  ---
+  duration_ms: 0.286742
+  type: 'test'
+  ...
+# Subtest: unsupported signing fails before any build or pretend success
+ok 12 - unsupported signing fails before any build or pretend success # SKIP
+  ---
+  duration_ms: 0.265051
+  type: 'test'
+  ...
+# Subtest: macOS distribution is gated until dictation parity is verified
+ok 13 - macOS distribution is gated until dictation parity is verified
+  ---
+  duration_ms: 7.025223
+  type: 'test'
+  ...
+# Subtest: an explicitly requested macOS preview produces a real DMG plan
+ok 14 - an explicitly requested macOS preview produces a real DMG plan
+  ---
+  duration_ms: 6.671385
+  type: 'test'
+  ...
+# Subtest: Linux plans request real deb/AppImage bundles and frontend skip is explicit
+ok 15 - Linux plans request real deb/AppImage bundles and frontend skip is explicit
+  ---
+  duration_ms: 14.056208
+  type: 'test'
+  ...
+# Subtest: AppImage finalization wraps GTK hooks before repacking and preserves explicit input
+ok 16 - AppImage finalization wraps GTK hooks before repacking and preserves explicit input
+  ---
+  duration_ms: 471.751417
+  type: 'test'
+  ...
+# Subtest: checksums cover actual installer bytes and require every requested format
+ok 17 - checksums cover actual installer bytes and require every requested format
+  ---
+  duration_ms: 7.733663
+  type: 'test'
+  ...
+# Subtest: failed or mismatched Tauri command cannot generate checksums or claim success
+ok 18 - failed or mismatched Tauri command cannot generate checksums or claim success
+  ---
+  duration_ms: 5.898703
+  type: 'test'
+  ...
+# Subtest: Linux AppStream metadata references the generated desktop launcher
+ok 19 - Linux AppStream metadata references the generated desktop launcher
+  ---
+  duration_ms: 0.786427
+  type: 'test'
+  ...
+# Subtest: release versions agree across desktop, lockfiles and Android
+ok 20 - release versions agree across desktop, lockfiles and Android
+  ---
+  duration_ms: 30.606672
+  type: 'test'
+  ...
+# Subtest: release creation uses a draft payload with the exact release notes
+ok 21 - release creation uses a draft payload with the exact release notes
+  ---
+  duration_ms: 33.272101
+  type: 'test'
+  ...
+# Subtest: publication requires every platform installer, with correct version and nonempty bytes
+ok 22 - publication requires every platform installer, with correct version and nonempty bytes
+  ---
+  duration_ms: 2547.548251
+  type: 'test'
+  ...
+1..22
+# tests 22
+# suites 0
+# pass 20
+# fail 0
+# cancelled 0
+# skipped 2
+# todo 0
+# duration_ms 6387.569142

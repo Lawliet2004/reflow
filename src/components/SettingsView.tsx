@@ -255,8 +255,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {page === "audio" && (
               <AudioPage settings={settings} onUpdateSettings={onUpdateSettings} />
             )}
-            {page === "model" && (
+            {(page === "model" || page === "performance") && (
               <ModelPage
+                view={page === "performance" ? "performance" : "models"}
                 intelligence={intelligence}
                 settings={settings}
                 onUpdateSettings={onUpdateSettings}
