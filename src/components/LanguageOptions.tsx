@@ -1,10 +1,13 @@
-import { DICTATION_LANGUAGES } from "../languages";
+import { dictationLanguagesForModel } from "../languages";
 
-export function LanguageOptions({ includeAuto = true }: { includeAuto?: boolean } = {}) {
+export function LanguageOptions({
+  includeAuto = true,
+  model,
+}: { includeAuto?: boolean; model?: string } = {}) {
   return (
     <>
       {includeAuto && <option value="auto">Auto-detect</option>}
-      {DICTATION_LANGUAGES.map(({ code, name }) => (
+      {dictationLanguagesForModel(model).map(({ code, name }) => (
         <option key={code} value={code}>
           {name}
         </option>

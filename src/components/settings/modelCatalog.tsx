@@ -87,11 +87,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     task: "speech",
     purpose: "GPU speech recognition for European languages.",
     source: "https://huggingface.co/moondream/parakeet-ultra",
-    size: "0.6B parameters · download size not verified",
+    size: "1.26 GB model download · runtime downloaded separately when needed",
     languages: "25 European languages",
-    runtime: "Photon GPU runtime",
+    runtime: "Transformers Parakeet · CPU FP32 or NVIDIA GPU BF16",
     license: "CC BY 4.0",
-    unavailable: "Requires the Photon GPU runtime, which Reflow does not currently package.",
   },
   {
     id: "indic-transcribe-8bit",
@@ -99,12 +98,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     task: "speech",
     purpose: "An Indic-language speech model with custom inference code.",
     source: "https://huggingface.co/ManiKumarAdapala/indic-transcribe-core-8bit",
-    size: "Publisher reports about 2.5 GB GPU memory",
+    size: "1.57 GB model download · publisher reports about 2.5 GB GPU memory",
     languages: "Indic languages · see source for coverage",
-    runtime: "Transformers custom code + bitsandbytes GPU",
+    runtime: "Pinned Transformers custom code + bitsandbytes · NVIDIA CUDA 13 · Linux/Windows x64",
     license: "See source model card",
-    unavailable:
-      "Requires custom model code and a compatible bitsandbytes GPU runtime. Reflow has not enabled this execution path.",
   },
   {
     id: "omnilingual-300m-int8",

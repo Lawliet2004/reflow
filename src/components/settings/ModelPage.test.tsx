@@ -190,9 +190,30 @@ it("does not reload or download a model after a failed settings save", async () 
   await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
   expect(reload).not.toHaveBeenCalled();
   expect(install).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: /8-bit/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^8-bit/ }));
   await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
   expect(reload).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["Parakeet Ultra 0.6B", "parakeet-ultra"],
+  ["Indic Transcribe Core 8-bit", "indic-transcribe-8bit"],
+])("downloads and selects %s with automatic Python runtime setup", async (title, id) => {
+  const install = vi.spyOn(api, "installModel").mockResolvedValue();
+  vi.spyOn(api, "getModelStatus").mockResolvedValue({
+    ...(await api.getModelStatus()),
+    installed: false,
+  });
+  const { save } = await modelPage(false, undefined, { runtime: "native", precision: "int4" });
+  fireEvent.click(screen.getByRole("button", { name: `Download and use ${title}` }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      preset: "custom",
+      asr: expect.objectContaining({ model: id, runtime: "python", precision: "auto" }),
+    }),
+  );
+  await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(id));
+  expect(screen.queryByText("Runtime unavailable")).not.toBeInTheDocument();
 });
 
 it("uses the persisted CUDA device value", async () => {

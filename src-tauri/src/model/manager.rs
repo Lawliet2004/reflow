@@ -61,6 +61,20 @@ pub const MODELS: &[ModelSpec] = &[
         label: "Omnilingual v2 300M INT8",
         approx_bytes: 247417872,
     },
+    ModelSpec {
+        id: "parakeet-ultra",
+        dir_name: "parakeet-ultra",
+        repo: "moondream/parakeet-ultra",
+        label: "Parakeet Ultra 0.6B",
+        approx_bytes: 1_257_000_000,
+    },
+    ModelSpec {
+        id: "indic-transcribe-8bit",
+        dir_name: "indic-transcribe-8bit",
+        repo: "ManiKumarAdapala/indic-transcribe-core-8bit",
+        label: "Indic Transcribe Core 8-bit",
+        approx_bytes: 1_573_000_000,
+    },
 ];
 
 pub fn runtime_model_id(model: &str, runtime: &str) -> String {
@@ -68,7 +82,11 @@ pub fn runtime_model_id(model: &str, runtime: &str) -> String {
     // re-mapping would produce a nonexistent "native-native-*" id.
     if matches!(
         model,
-        "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8"
+        "phonon-2"
+            | "zipformer-20m"
+            | "omnilingual-300m-int8"
+            | "parakeet-ultra"
+            | "indic-transcribe-8bit"
     ) || model.starts_with("native-")
     {
         return model.to_string();
@@ -110,7 +128,14 @@ impl ModelManager {
     /// Weights are considered installed when a real HF model directory is there.
     pub fn is_installed(&self, id: &str) -> bool {
         let dir = self.get_model_dir(id);
-        if matches!(id, "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8") {
+        if matches!(
+            id,
+            "phonon-2"
+                | "zipformer-20m"
+                | "omnilingual-300m-int8"
+                | "parakeet-ultra"
+                | "indic-transcribe-8bit"
+        ) {
             // Manifest-pinned files only: every listed file must be present.
             // Zipformer ships three ONNX files plus tokens.txt — checking only
             // the encoder would pass on an interrupted multi-file download.

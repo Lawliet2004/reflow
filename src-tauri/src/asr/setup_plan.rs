@@ -163,7 +163,9 @@ pub async fn get_speech_setup_plan(
         let available = disks.iter().filter(|disk| app_dir.starts_with(disk.mount_point()))
             .max_by_key(|disk| disk.mount_point().as_os_str().len()).map(|disk| disk.available_space());
         let required = peak_disk_estimate(variant, &settings.asr.model);
-        let blocker = if pin_for(target).is_none() {
+        let blocker = if settings.asr.model == "indic-transcribe-8bit" && (variant != TorchVariant::Cuda || !matches!(target, "x86_64-unknown-linux-gnu" | "x86_64-pc-windows-msvc")) {
+            Some("Indic Transcribe 8-bit requires NVIDIA CUDA 13 on 64-bit Linux or Windows. Select GPU or Auto; update your graphics driver if needed.".into())
+        } else if pin_for(target).is_none() {
             Some("Automatic speech setup is not available for this operating system and processor yet.".into())
         } else if super::dependency_locks::locked_requirements(target, super::python_setup::dependency_profile(&settings.asr.model), variant.receipt_name()).is_none() {
             Some("No verified package set exists for this platform and device. Select Zipformer 20M or CPU.".into())
@@ -185,7 +187,9 @@ pub async fn get_speech_setup_plan(
             torch_variant: variant.receipt_name().into(), acceleration: acceleration.into(), explanation: explanation.into(),
             required_disk_bytes: required, available_disk_bytes: available,
             supported_models: if target == "x86_64-apple-darwin" { vec!["zipformer-20m".into(), "omnilingual-300m-int8".into()] } else {
-                ["0.6b", "1.7b", "phonon-2", "zipformer-20m", "omnilingual-300m-int8"].map(String::from).to_vec()
+                let mut models = ["0.6b", "1.7b", "phonon-2", "zipformer-20m", "omnilingual-300m-int8", "parakeet-ultra"].map(String::from).to_vec();
+                if variant == TorchVariant::Cuda && matches!(target, "x86_64-unknown-linux-gnu" | "x86_64-pc-windows-msvc") { models.push("indic-transcribe-8bit".into()); }
+                models
             }, blocker,
         }
     }).await.map_err(|error| format!("Could not check this computer: {error}"))

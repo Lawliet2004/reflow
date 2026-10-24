@@ -144,7 +144,7 @@ it("separates model management from hardware tuning and filters the catalog by t
   expect(screen.queryByRole("textbox", { name: "Model import path" })).not.toBeInTheDocument();
 });
 
-it("explains unavailable runtimes and disables all model downloads in airplane mode", async () => {
+it("offers the additional speech models and disables all downloads in airplane mode", async () => {
   const install = vi.spyOn(api, "installModel");
   render(
     <SettingsView
@@ -158,9 +158,8 @@ it("explains unavailable runtimes and disables all model downloads in airplane m
       onRemoveRuntime={vi.fn()}
     />,
   );
-  expect(screen.getByText(/Requires the Photon GPU runtime/)).toBeVisible();
-  expect(screen.queryByRole("button", { name: /Download.*Parakeet/ })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /Download.*Indic/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Download.*Parakeet/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Download.*Indic/ })).toBeDisabled();
   for (const button of screen.getAllByRole("button", { name: /Download/ }))
     expect(button).toBeDisabled();
   expect(install).not.toHaveBeenCalled();

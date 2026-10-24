@@ -1382,7 +1382,7 @@ def load_model_blocking(
     model_id=None,
 ):
     if model_id in ("parakeet-ultra", "indic-transcribe-8bit"):
-        return _record_load_failure(ValueError("This model requires a dedicated runtime that is not bundled with Reflow."))
+        return load_additional_model_blocking(model_dir, requested_device, precision, model_id)
     if model_id == "omnilingual-300m-int8":
         return load_omnilingual_blocking(model_dir, requested_device, precision)
     if model_id == "phonon-2" or os.path.isfile(os.path.join(model_dir, "phonon-2.bps.tar.zst")):
@@ -1559,6 +1559,63 @@ def _record_load_failure(error):
     STATE.backend = "load failed"
     STATE.device = "none"
     return {"status": "error", "error": str(error), "failure_kind": STATE.load_failure_kind}
+
+
+def additional_model_manifest(model_id):
+    from pathlib import Path
+    return json.loads(Path(__file__).with_name("additional-models.json").read_text())[model_id]
+
+
+def language_names_for_model(model_id):
+    if model_id == "indic-transcribe-8bit":
+        return {item["code"]: item["name"] for item in additional_model_manifest(model_id)["languages"]}
+    return LANG_NAMES
+
+
+def load_additional_model_blocking(model_dir, requested_device, precision, model_id):
+    global _MODEL
+    started = time.time()
+    STATE.loaded = False
+    try:
+        manifest = additional_model_manifest(model_id)
+        # Code, tokenizer, configuration and weight hashes are all mandatory.
+        verify_weight_files(model_dir, manifest["files"])
+        device = pick_device(requested_device)
+        wanted = (precision or "auto").strip().lower()
+        if model_id == "indic-transcribe-8bit":
+            from indic_runtime import IndicModel as Model
+            if device != "cuda":
+                raise ValueError("Indic Transcribe 8-bit requires a compatible NVIDIA GPU. Select GPU or Auto.")
+            if wanted not in ("auto", "int8"):
+                raise ValueError("Indic Transcribe uses 8-bit weights. Choose Auto precision.")
+            required_vram = 3000
+        else:
+            from parakeet_runtime import ParakeetModel as Model
+            actual = "bf16" if device == "cuda" else "fp32"
+            if wanted not in ("auto", actual):
+                raise ValueError("Parakeet Ultra uses BF16 on GPU and FP32 on CPU. Choose Auto precision.")
+            required_vram = 2400
+        _unload_model_blocking()
+        if device == "cpu":
+            admit_cpu_load(model_dir, model_id)
+        else:
+            admit_gpu_host_load()
+            free, _ = _torch().cuda.mem_get_info(0)
+            if free / (1024 * 1024) < required_vram:
+                raise RuntimeError(f"This speech model needs about {required_vram} MB free VRAM including headroom. Free GPU memory before loading.")
+        _MODEL = Model(model_dir, device, _CANCEL_EVENT)
+        STATE.device, STATE.precision = device, _MODEL.precision
+        STATE.backend = f"{_model_label(model_dir, model_id)} · {device.upper()} {_MODEL.precision} · {_MODEL.runtime}"
+        STATE.model_dir, STATE.model_id = model_dir, model_id
+        STATE.vram_mb = _torch().cuda.memory_reserved() / (1024 * 1024) if device == "cuda" else 0.0
+        STATE.loaded = True
+        STATE.load_error = STATE.load_failure_kind = None
+        STATE.spill = {"spilled": False, "reasons": [], "checked": False}
+        STATE.warmup_rtf = None
+        STATE.load_seconds = time.time() - started
+        return {"status": "ok", "loaded": True, "device": device, "backend": STATE.backend}
+    except (Exception, SystemExit) as error:
+        return _record_load_failure(error)
 
 
 def load_phonon_blocking(model_dir, requested_device, precision):
@@ -1759,6 +1816,15 @@ def transcribe_blocking(pcm16: bytes, language_name, prompt):
     if getattr(model, "model_id", None) == "omnilingual-300m-int8":
         return model.transcribe(samples), ""
 
+    if getattr(model, "model_id", None) == "parakeet-ultra":
+        return model.transcribe(samples), ""
+
+    if getattr(model, "model_id", None) == "indic-transcribe-8bit":
+        language = next((code for code, name in language_names_for_model(model.model_id).items() if name == language_name), None)
+        if language_name and language is None:
+            raise ValueError(f"Unsupported Indic language: {language_name}")
+        return model.transcribe(samples, language), language or ""
+
     if getattr(model, "model_id", None) == "phonon-2":
         if language_name not in (None, "", "English"):
             raise ValueError("Phonon-2 supports English only. Choose Qwen3-ASR for other languages.")
@@ -1925,6 +1991,10 @@ def _warm_groups(model_id=None, model_dir=None, device=None):
         model_dir and os.path.isfile(os.path.join(model_dir, "tokens.txt"))
     ):
         return {"sherpa"}
+    if model_id == "parakeet-ultra":
+        return {"phonon", "torch", "transformers"}
+    if model_id == "indic-transcribe-8bit":
+        return {"indic", "torch", "transformers"}
     if model_id == "phonon-2" or (
         model_dir
         and os.path.isfile(os.path.join(model_dir, "phonon-2.bps.tar.zst"))
@@ -1968,6 +2038,12 @@ def _warm_imports(model_id=None, model_dir=None, device=None):
             except Exception:
                 pass
         # The optional engine imports native libraries on this same main thread.
+        if "indic" in pending:
+            try:
+                from indic_runtime import require_dependencies
+                require_dependencies()
+            except (ImportError, RuntimeError):
+                pass
         if "phonon" in pending:
             try:
                 from phonon_runtime import require_dependencies
@@ -2103,6 +2179,12 @@ def start_install(model_dir: str, repo: str, model_id=None, expected_bytes=None,
     if any(t.name == "model-installer" and t.is_alive() for t in threading.enumerate()):
         return {"status": "already-downloading"}
     _DOWNLOAD_CANCEL.clear()
+    if model_id in ("parakeet-ultra", "indic-transcribe-8bit"):
+        try:
+            module = __import__("parakeet_runtime" if model_id == "parakeet-ultra" else "indic_runtime")
+            module.require_dependencies()
+        except (ImportError, RuntimeError) as error:
+            return {"status": "error", "error": str(error)}
     if model_id in ("phonon-2", "zipformer-20m", "omnilingual-300m-int8"):
         module = "phonon_runtime" if model_id == "phonon-2" else "zipformer_runtime"
         try:
@@ -2291,7 +2373,8 @@ def handle(msg: dict) -> dict:
         stream_model_id = getattr(_MODEL, "model_id", None)
         if stream_model_id in ("phonon-2", "zipformer-20m") and lang not in ("auto", "en"):
             return {"status": "error", "error": f"{_model_label('', stream_model_id)} supports English only. Choose Qwen3-ASR for other languages."}
-        if lang != "auto" and lang not in LANG_NAMES:
+        language_names = language_names_for_model(stream_model_id)
+        if lang != "auto" and lang not in language_names:
             return {"status": "error", "error": "Unsupported dictation language. Choose a supported language or Auto-detect."}
         _CANCEL_EVENT.clear()
         clear_stream_audio()
@@ -2303,7 +2386,7 @@ def handle(msg: dict) -> dict:
             STATE.vocabulary_prompt = f"Vocabulary: {terms}."
         else:
             STATE.vocabulary_prompt = None
-        STATE.stream_language = LANG_NAMES.get(lang) if lang and lang != "auto" else None
+        STATE.stream_language = language_names.get(lang) if lang and lang != "auto" else None
         if getattr(_MODEL, "model_id", None) == "zipformer-20m":
             try:
                 _MODEL.start_stream()

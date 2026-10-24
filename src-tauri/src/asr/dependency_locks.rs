@@ -5,6 +5,12 @@ pub(crate) fn locked_requirements(
     variant: &str,
 ) -> Option<&'static str> {
     match (target, profile, variant) {
+        ("x86_64-unknown-linux-gnu", "indic", "cu130") => Some(include_str!(
+            "../../../model-runtime/locks/x86_64-unknown-linux-gnu-indic-cu130.txt"
+        )),
+        ("x86_64-pc-windows-msvc", "indic", "cu130") => Some(include_str!(
+            "../../../model-runtime/locks/x86_64-pc-windows-msvc-indic-cu130.txt"
+        )),
         ("aarch64-apple-darwin", "phonon", "default") => Some(include_str!(
             "../../../model-runtime/locks/aarch64-apple-darwin-phonon-default.txt"
         )),

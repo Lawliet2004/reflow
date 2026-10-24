@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use super::engine::{ASREngine, EngineStatus};
 use super::mock::MockASREngine;
 use crate::audio::resampler::AudioResampler;
-use crate::profile::manifest::{ASR_MODELS, OMNILINGUAL_MODEL, PHONON_MODEL, ZIPFORMER_MODEL};
+use crate::profile::manifest::{
+    ASR_MODELS, INDIC_MODEL, OMNILINGUAL_MODEL, PARAKEET_MODEL, PHONON_MODEL, ZIPFORMER_MODEL,
+};
 
 const ASR_PUSH_CHUNK_SAMPLES: usize = 16_000;
 const CANCELLED_TRANSPORT: &str = "engine_cancelled: discarded dictation";
@@ -507,6 +509,27 @@ impl Qwen3AsrSidecar {
         let precision = field("precision");
         let mut modules = vec!["numpy"];
         match model.as_str() {
+            "parakeet-ultra" => {
+                modules.extend([
+                    "torch",
+                    "transformers",
+                    "fermion",
+                    "zstandard",
+                    "tokenizers",
+                ]);
+                return modules;
+            }
+            "indic-transcribe-8bit" => {
+                modules.extend([
+                    "torch",
+                    "transformers",
+                    "bitsandbytes",
+                    "sentencepiece",
+                    "accelerate",
+                    "soundfile",
+                ]);
+                return modules;
+            }
             "phonon-2" => {
                 modules.extend(["fermion", "zstandard"]);
                 if device == "cuda" {
@@ -1327,6 +1350,8 @@ impl ASREngine for Qwen3AsrSidecar {
             .chain(std::iter::once(&PHONON_MODEL))
             .chain(std::iter::once(&ZIPFORMER_MODEL))
             .chain(std::iter::once(&OMNILINGUAL_MODEL))
+            .chain(std::iter::once(&PARAKEET_MODEL))
+            .chain(std::iter::once(&INDIC_MODEL))
             .find(|m| {
                 Path::new(model_dir).file_name().and_then(|n| n.to_str()) == Some(m.dir_name)
             });
@@ -1398,6 +1423,8 @@ impl ASREngine for Qwen3AsrSidecar {
             .chain(std::iter::once(&PHONON_MODEL))
             .chain(std::iter::once(&ZIPFORMER_MODEL))
             .chain(std::iter::once(&OMNILINGUAL_MODEL))
+            .chain(std::iter::once(&PARAKEET_MODEL))
+            .chain(std::iter::once(&INDIC_MODEL))
             .find(|m| m.repo == repo);
         // Every manifest-pinned file is checksum-verified, not just the
         // primary weight — Zipformer needs all three ONNX files plus
@@ -1465,7 +1492,7 @@ impl ASREngine for Qwen3AsrSidecar {
     }
 
     fn start_stream(&mut self, language: &str, vocabulary: &[String]) -> Result<(), String> {
-        super::languages::language_name(language)?;
+        super::languages::language_name_for_model(language, self.status_cache.model_id.as_deref())?;
         self.detected_language = if language == "auto" {
             "en".into()
         } else {

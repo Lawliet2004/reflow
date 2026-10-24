@@ -100,6 +100,16 @@ const MODELS: { id: string; title: string; desc: string }[] = [
     title: "Zipformer 20M INT8",
     desc: "English only · streaming · CPU-optimized",
   },
+  {
+    id: "parakeet-ultra",
+    title: "Parakeet Ultra 0.6B",
+    desc: "25 European languages · CPU or NVIDIA GPU · runtime installs automatically",
+  },
+  {
+    id: "indic-transcribe-8bit",
+    title: "Indic Transcribe Core 8-bit",
+    desc: "Indic languages · NVIDIA GPU required · runtime installs automatically",
+  },
 ];
 
 /** Approximate download sizes per runtime, shown before the files exist. */
@@ -109,6 +119,8 @@ const DOWNLOAD_SIZE: Record<string, { python: string; native: string }> = {
   "phonon-2": { python: "164 MB", native: "164 MB" },
   "omnilingual-300m-int8": { python: "247 MB", native: "247 MB" },
   "zipformer-20m": { python: "44 MB", native: "44 MB" },
+  "parakeet-ultra": { python: "1.26 GB", native: "1.26 GB" },
+  "indic-transcribe-8bit": { python: "1.57 GB", native: "1.57 GB" },
 };
 
 /** Compact display names for "Loading …" status text. */
@@ -117,6 +129,8 @@ const ASR_SHORT_LABEL: Record<string, string> = {
   "1.7b": "1.7B",
   "phonon-2": "Phonon-2",
   "zipformer-20m": "Zipformer 20M",
+  "parakeet-ultra": "Parakeet Ultra",
+  "indic-transcribe-8bit": "Indic Transcribe",
 };
 
 type Precision = "auto" | "int4" | "int8" | "bf16";
@@ -296,7 +310,11 @@ export const ModelPage: React.FC<Props> = ({
   const phononSelected = settings.asr.model === "phonon-2";
   const zipformerSelected = settings.asr.model === "zipformer-20m";
   const omnilingualSelected = settings.asr.model === "omnilingual-300m-int8";
-  const pythonOnlySelected = phononSelected || zipformerSelected || omnilingualSelected;
+  const additionalSelected = ["parakeet-ultra", "indic-transcribe-8bit"].includes(
+    settings.asr.model,
+  );
+  const pythonOnlySelected =
+    phononSelected || zipformerSelected || omnilingualSelected || additionalSelected;
   const handleSelectModel = async (id: string) => {
     if (settings.asr.model === id) {
       await installSelectedModel();
@@ -306,7 +324,13 @@ export const ModelPage: React.FC<Props> = ({
       !(await change("asr", {
         ...settings.asr,
         model: id,
-        ...(id === "phonon-2" || id === "zipformer-20m" || id === "omnilingual-300m-int8"
+        ...([
+          "phonon-2",
+          "zipformer-20m",
+          "omnilingual-300m-int8",
+          "parakeet-ultra",
+          "indic-transcribe-8bit",
+        ].includes(id)
           ? { runtime: "python" as const, precision: "auto" as const }
           : pythonOnlySelected
             ? { precision: "auto" as const }
@@ -407,6 +431,8 @@ export const ModelPage: React.FC<Props> = ({
     id === "phonon-2" ||
     id === "zipformer-20m" ||
     id === "omnilingual-300m-int8" ||
+    id === "parakeet-ultra" ||
+    id === "indic-transcribe-8bit" ||
     settings.asr.runtime !== "native"
       ? id
       : `native-${id}`;
@@ -480,6 +506,8 @@ export const ModelPage: React.FC<Props> = ({
 
   const speechRuntimeHint = (() => {
     if (phononSelected) return "Phonon uses the Fermion Python runtime.";
+    if (additionalSelected)
+      return "The matching speech dependencies are installed automatically before model weights.";
     if (omnilingualSelected)
       return "Omnilingual uses the sherpa-onnx Python runtime on CPU with automatic language recognition.";
     if (zipformerSelected) return "Zipformer uses the sherpa-onnx Python runtime.";
@@ -863,6 +891,13 @@ export const ModelPage: React.FC<Props> = ({
                   Omnilingual detects the language automatically. Forced language selection,
                   recognition hotword hints and streaming partial transcripts are unavailable. Its
                   1,600+ language coverage is reported upstream and has not been tested locally.
+                </p>
+              )}
+              {additionalSelected && (
+                <p className="text-xs text-muted leading-relaxed" role="status">
+                  Experimental integration. Dependencies install before model weights. Local
+                  recognition quality and memory use have not been benchmarked. Recognition hotword
+                  hints and streaming partial transcripts are unavailable.
                 </p>
               )}
               <CatalogUnavailable task="speech" />

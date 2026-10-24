@@ -1193,7 +1193,11 @@ impl AppSettings {
         }
         if matches!(
             self.asr.model.as_str(),
-            "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8"
+            "phonon-2"
+                | "zipformer-20m"
+                | "omnilingual-300m-int8"
+                | "parakeet-ultra"
+                | "indic-transcribe-8bit"
         ) {
             self.asr.runtime = "python".into();
         }

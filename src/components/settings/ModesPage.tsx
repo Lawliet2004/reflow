@@ -336,7 +336,7 @@ export function ModesPage({
                 value={draft.language ?? "auto"}
                 onChange={(e) => update({ language: e.target.value })}
               >
-                <LanguageOptions />
+                <LanguageOptions model={settings.asr.model} />
               </select>
             </Row>
             <Row label="Dictation mode">

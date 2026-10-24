@@ -185,12 +185,12 @@ export const AudioPage: React.FC<Props> = ({ settings, onUpdateSettings }) => {
             })
           }
         >
-          <LanguageOptions />
+          <LanguageOptions model={settings.asr.model} />
         </select>
       </Row>
       <p className="text-sm text-muted">
-        30 languages supported by Qwen3-ASR, with multilingual cleanup by Qwen3.5. Cleanup keeps the
-        original language and script. Accuracy varies by language and model.
+        Language coverage depends on the selected speech model. Cleanup keeps the original language
+        and script. Accuracy varies by language and model.
       </p>
       <RecognitionCheck
         key={`${settings.microphone_device_id}:${settings.input_gain}:${settings.language}:${settings.asr.model}`}

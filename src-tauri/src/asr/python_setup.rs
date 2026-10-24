@@ -391,6 +391,8 @@ pub(crate) fn dependency_profile(model: &str) -> &'static str {
     match model {
         "zipformer-20m" | "omnilingual-300m-int8" => "zipformer",
         "phonon-2" => "phonon",
+        "parakeet-ultra" => "phonon",
+        "indic-transcribe-8bit" => "indic",
         _ => "qwen",
     }
 }
@@ -406,6 +408,11 @@ fn requirements_digest(profile: &str, variant: TorchVariant) -> String {
         "../../../model-runtime/requirements-zipformer.txt"
     ));
     digest.update(include_bytes!("../../../model-runtime/managed_pip.py"));
+    if profile == "indic" {
+        digest.update(include_bytes!(
+            "../../../model-runtime/requirements-indic.txt"
+        ));
+    }
     digest.update(
         super::dependency_locks::locked_requirements(
             target_triple(),
@@ -759,6 +766,7 @@ fn verification_code(profile: &str, variant: TorchVariant, quantized: bool) -> S
     let imports = match profile {
         "zipformer" => "import numpy, sherpa_onnx, httpx, huggingface_hub; assert numpy.ones(1).sum() == 1",
         "phonon" => "import numpy, torch, fermion, scipy, soundfile, safetensors, zstandard, httpx, huggingface_hub; from fermion._speech import engine_phonon2_cpu; from transformers import ParakeetForTDT, ParakeetTDTConfig; assert torch.ones(1).sum().item() == 1",
+        "indic" => "import numpy, torch, bitsandbytes, sentencepiece, soundfile, accelerate, safetensors, httpx, huggingface_hub; from transformers import PreTrainedModel, GenerationMixin; assert torch.ones(1).sum().item() == 1",
         _ => "import numpy, torch, transformers, huggingface_hub, httpx; from transformers import AutoProcessor, AutoModelForMultimodalLM, Qwen3ASRProcessor, Qwen3ASRForConditionalGeneration; assert torch.ones(1).sum().item() == 1",
     };
     let quantization = if profile == "qwen" && quantized {
@@ -771,7 +779,14 @@ fn verification_code(profile: &str, variant: TorchVariant, quantized: bool) -> S
     } else {
         ""
     };
-    format!("{imports}{quantization}{gpu}")
+    let indic_kernel = if profile == "indic"
+        && matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy)
+    {
+        "; layer = bitsandbytes.nn.Linear8bitLt(16, 16, has_fp16_weights=False).to('cuda:0'); assert torch.isfinite(layer(torch.ones(1, 16, device='cuda:0', dtype=torch.float16))).all().item(); torch.cuda.synchronize()"
+    } else {
+        ""
+    };
+    format!("{imports}{quantization}{gpu}{indic_kernel}")
 }
 
 #[tauri::command]

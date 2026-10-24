@@ -774,6 +774,15 @@ fn select_asr_load_for_runtime_unchecked(
     caps: &Capabilities,
     measured: MeasuredLookup<'_>,
 ) -> AsrSelection {
+    if matches!(requested_model, "parakeet-ultra" | "indic-transcribe-8bit") {
+        return select_additional_asr_load(
+            preset,
+            requested_model,
+            requested_device,
+            requested_precision,
+            caps,
+        );
+    }
     if requested_model == "phonon-2" {
         return select_phonon_load(
             preset,
@@ -887,6 +896,15 @@ fn select_asr_load_unchecked(
     caps: &Capabilities,
     measured: MeasuredLookup<'_>,
 ) -> AsrSelection {
+    if matches!(requested_model, "parakeet-ultra" | "indic-transcribe-8bit") {
+        return select_additional_asr_load(
+            preset,
+            requested_model,
+            requested_device,
+            requested_precision,
+            caps,
+        );
+    }
     if requested_model == "phonon-2" {
         return select_phonon_load(
             preset,
@@ -1101,6 +1119,60 @@ fn select_asr_load_unchecked(
         precision: Precision::Fp32,
         downgrade: Some(fallback_note),
         error: None,
+    }
+}
+
+fn select_additional_asr_load(
+    preset: Preset,
+    id: &str,
+    requested_device: &str,
+    requested_precision: &str,
+    caps: &Capabilities,
+) -> AsrSelection {
+    let manifest = asr_manifest(id).expect("additional speech manifest");
+    let device = if requested_device != "cpu" && caps.can_use_cuda() {
+        Device::Cuda
+    } else {
+        Device::Cpu
+    };
+    let supported = manifest.supported_precisions_on(device);
+    let default = if id == "indic-transcribe-8bit" {
+        Precision::Int8
+    } else if device == Device::Cuda {
+        Precision::Bf16
+    } else {
+        Precision::Fp32
+    };
+    let forced = Precision::parse(requested_precision);
+    let mut error = (!manifest.devices.contains(&device)).then(|| ProfileError::new("gpu_required", "Indic Transcribe 8-bit requires a compatible NVIDIA GPU. Select GPU or Auto and install a supported driver.", requested_device, vec!["auto".into(), "cuda".into()]));
+    let mut downgrade = None;
+    let precision = match forced {
+        Some(value) if supported.contains(&value) => value,
+        Some(value) => {
+            if preset == Preset::Custom {
+                error = error.or_else(|| {
+                    Some(unsupported_precision_error(
+                        manifest, device, value, &supported,
+                    ))
+                });
+            } else {
+                downgrade = Some(format!(
+                    "{} uses {} on {}.",
+                    manifest.label,
+                    default.as_str(),
+                    device.as_str()
+                ));
+            }
+            default
+        }
+        None => default,
+    };
+    AsrSelection {
+        model_id: manifest.id,
+        device,
+        precision,
+        downgrade,
+        error,
     }
 }
 
@@ -1511,6 +1583,37 @@ mod omnilingual_selection_tests {
             assert_eq!(selection.device, Device::Cpu);
             assert_eq!(selection.precision, Precision::Int8);
             assert!(selection.error.is_none());
+        }
+    }
+}
+
+#[cfg(test)]
+mod additional_model_selection_tests {
+    use super::*;
+    #[test]
+    fn named_models_keep_their_family_under_native_preferences() {
+        let mut caps = Capabilities::default();
+        caps.ram.available_mb = 16000.0;
+        for runtime in ["python", "native"] {
+            for id in ["parakeet-ultra", "indic-transcribe-8bit"] {
+                let selection = select_asr_load_for_runtime(
+                    runtime,
+                    Preset::Auto,
+                    id,
+                    "cpu",
+                    "auto",
+                    &|_| true,
+                    &caps,
+                    &no_measurements,
+                );
+                assert_eq!(selection.model_id, id);
+                if id == "indic-transcribe-8bit" {
+                    assert_eq!(selection.error.unwrap().code, "gpu_required");
+                } else {
+                    assert_eq!(selection.precision, Precision::Fp32);
+                    assert!(selection.error.is_none());
+                }
+            }
         }
     }
 }

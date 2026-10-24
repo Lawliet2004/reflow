@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCKS = ROOT / "model-runtime" / "locks"
 SHARED = "numpy==2.4.4\nhuggingface_hub==1.11.0\nhttpx==0.28.1\n"
 PROFILES = {
+    "indic": (ROOT / "model-runtime/requirements-indic.txt").read_text(),
     "zipformer": SHARED + (ROOT / "model-runtime/requirements-zipformer.txt").read_text(),
     "phonon": SHARED + (ROOT / "model-runtime/requirements-phonon.txt").read_text()
         + "\ntorch==2.13.0\ntransformers==5.15.1\n",
@@ -50,11 +51,17 @@ def main():
     jobs = []
     for target in TARGETS:
         for profile in PROFILES:
+            if "--indic-only" in sys.argv and profile != "indic":
+                continue
             if "--phonon-only" in sys.argv and profile != "phonon":
                 continue
             if "--qwen-only" in sys.argv and profile != "qwen":
                 continue
             if target == "x86_64-apple-darwin" and profile != "zipformer":
+                continue
+            if profile == "indic":
+                if target in ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"):
+                    jobs.append((target, profile, "cu130"))
                 continue
             variants = (["none"] if profile == "zipformer" else ["default"] if "darwin" in target
                         else ["cpu", "cu130", "cu126"] if target.startswith("x86_64") else ["cpu", "cu130"])

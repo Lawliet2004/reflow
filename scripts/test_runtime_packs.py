@@ -50,7 +50,7 @@ class RuntimePackTests(unittest.TestCase):
         actual = [f"{r['target']}-{r['profile']}-{r['variant']}" for r in rows]
         self.assertEqual(set(actual), expected)
         self.assertEqual(len(actual), len(set(actual)))
-        self.assertEqual(len(rows), 18)
+        self.assertEqual(len(rows), 20)
         self.assertEqual([r["profile"] for r in rows if r["target"] == "x86_64-apple-darwin"], ["zipformer"])
 
     def test_cross_compiling_a_wheelhouse_is_refused_before_any_download(self):

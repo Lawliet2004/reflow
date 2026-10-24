@@ -1,0 +1,224 @@
+{
+  "parakeet-ultra": {
+    "repo": "moondream/parakeet-ultra",
+    "revision": "73175eb7aeb0d82f1e2a6b53b3aabc10a90bcd0b",
+    "files": [
+      {
+        "filename": "model.safetensors",
+        "sha256": "c9608f36d0ab956c14bfcc525479b0746b3b42a56f6949ec85c14eb7466717dc",
+        "bytes": 1255353386
+      },
+      {
+        "filename": "config.json",
+        "sha256": "e747b85e1bdfd300c8b8ac63bac8dd5221f8fe9bc275b48d06c735fcd6971b6e",
+        "bytes": 1153
+      },
+      {
+        "filename": "tokenizer.json",
+        "sha256": "bd321b096832a3f270bd3b2a88823957920f1a5c5ada71114a26ea729d0cbe91",
+        "bytes": 1159960
+      },
+      {
+        "filename": "README.md",
+        "sha256": "d4a8b60c83df734ea0373931ba9548f07bdcbab683d19c7f5777a6a83f0971c8",
+        "bytes": 6433
+      }
+    ]
+  },
+  "indic-transcribe-8bit": {
+    "repo": "ManiKumarAdapala/indic-transcribe-core-8bit",
+    "revision": "2765ed1b553ea331af15cf8fa3fd25eda7b993a6",
+    "files": [
+      {
+        "filename": "model.safetensors",
+        "sha256": "b21e78121a85cadd5f7315713cec736bfe151f952eb6c7b0123d08ac600118f0",
+        "bytes": 1571934008
+      },
+      {
+        "filename": "feature_extractor.safetensors",
+        "sha256": "d937fed7f88a7ae26960be72ba4b79b7018d69e66805ba2a8c39909ba8f11a69",
+        "bytes": 133368
+      },
+      {
+        "filename": "config.json",
+        "sha256": "acb8977c9b72e787952d551f4f279e2f6031dd46f56a734c0878a754ad820664",
+        "bytes": 1492
+      },
+      {
+        "filename": "generation_config.json",
+        "sha256": "f89d573ed0469dd1d78f77de556e954e5eb9cd4d97db4c6db47146e98d6aeff0",
+        "bytes": 212
+      },
+      {
+        "filename": "tokenizer_config.json",
+        "sha256": "171cea93b631eeaaf468911568602ae9c917dc340de375573244e59fb3c79d3a",
+        "bytes": 3446
+      },
+      {
+        "filename": "tokenizer_multilingual.model",
+        "sha256": "caac4b6023fe90422bd2658f89e18b9eda53b78bb54be85a212ebba480dc29bd",
+        "bytes": 342090
+      },
+      {
+        "filename": "tokenizer_spl_tokens.model",
+        "sha256": "9284f78edfa1f1ffa27d392ff83808f201159054866e07ea07584254718445b1",
+        "bytes": 270087
+      },
+      {
+        "filename": "configuration_indic_canary.py",
+        "sha256": "35ad5ee48d57655f19027619fedd0a8a95de4d79893a09b2439fac6fcbfb8e9c",
+        "bytes": 2162
+      },
+      {
+        "filename": "feature_extraction_indic_canary.py",
+        "sha256": "4095b6262d16ace21a64ca39b5b82f23703af57d0e04f6c0b323c538c08df43c",
+        "bytes": 5998
+      },
+      {
+        "filename": "modeling_indic_canary.py",
+        "sha256": "f5f5bd38517939b25d6e7d714c5cfde246dd3de7de7af9de5fb589217014cfa6",
+        "bytes": 25348
+      },
+      {
+        "filename": "tokenization_indic_canary.py",
+        "sha256": "7dd544fb33112d16312be6093c388e4ea44e218bf4c751919b53ca733e92985e",
+        "bytes": 9940
+      },
+      {
+        "filename": "indic_transcribe.py",
+        "sha256": "803e0ec16a1f553be4e9773658c099b7f6af26c6da8ed33fff1c341659d3f204",
+        "bytes": 11523
+      },
+      {
+        "filename": "lid.py",
+        "sha256": "553f9ad5c60966661fcfd6d1acec7c75e6891e0d0710cf940e37634a54b47017",
+        "bytes": 10534
+      },
+      {
+        "filename": "Bodhan_AI_Open_Model_License.md",
+        "sha256": "b39f2a9cb2d5ace3a03f4425cbc6db38ebd9a53ab7a7648d67dc1e0998ad75c2",
+        "bytes": 25546
+      },
+      {
+        "filename": "indic-open-license.md",
+        "sha256": "5dd97d2327cdd4fc87e974528fee8bbe16420c1fed41f33778be58ab809386a0",
+        "bytes": 3565
+      },
+      {
+        "filename": "README.md",
+        "sha256": "e8ec78ccea840c040cf77021375708e33ce4e59b2260c0c6a4bb8656066449b7",
+        "bytes": 2757
+      }
+    ],
+    "languages": [
+      {
+        "code": "as",
+        "name": "Assamese"
+      },
+      {
+        "code": "bgc",
+        "name": "Haryanvi"
+      },
+      {
+        "code": "bhb",
+        "name": "Bhili"
+      },
+      {
+        "code": "bho",
+        "name": "Bhojpuri"
+      },
+      {
+        "code": "bn",
+        "name": "Bengali"
+      },
+      {
+        "code": "brx",
+        "name": "Bodo"
+      },
+      {
+        "code": "doi",
+        "name": "Dogri"
+      },
+      {
+        "code": "en",
+        "name": "English"
+      },
+      {
+        "code": "gu",
+        "name": "Gujarati"
+      },
+      {
+        "code": "hi",
+        "name": "Hindi"
+      },
+      {
+        "code": "hne",
+        "name": "Chhattisgarhi"
+      },
+      {
+        "code": "kn",
+        "name": "Kannada"
+      },
+      {
+        "code": "kok",
+        "name": "Konkani"
+      },
+      {
+        "code": "ks",
+        "name": "Kashmiri"
+      },
+      {
+        "code": "mai",
+        "name": "Maithili"
+      },
+      {
+        "code": "ml",
+        "name": "Malayalam"
+      },
+      {
+        "code": "mni",
+        "name": "Manipuri"
+      },
+      {
+        "code": "mr",
+        "name": "Marathi"
+      },
+      {
+        "code": "ne",
+        "name": "Nepali"
+      },
+      {
+        "code": "or",
+        "name": "Odia"
+      },
+      {
+        "code": "pa",
+        "name": "Punjabi"
+      },
+      {
+        "code": "sa",
+        "name": "Sanskrit"
+      },
+      {
+        "code": "sat",
+        "name": "Santali"
+      },
+      {
+        "code": "sd",
+        "name": "Sindhi"
+      },
+      {
+        "code": "ta",
+        "name": "Tamil"
+      },
+      {
+        "code": "te",
+        "name": "Telugu"
+      },
+      {
+        "code": "ur",
+        "name": "Urdu"
+      }
+    ]
+  }
+}

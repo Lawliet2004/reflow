@@ -25,6 +25,26 @@ pub fn language_name(code: &str) -> Result<Option<&'static str>, String> {
         .ok_or_else(|| format!("Unsupported dictation language '{code}'. Choose a supported language or Auto-detect."))
 }
 
+pub fn language_name_for_model(
+    code: &str,
+    model: Option<&str>,
+) -> Result<Option<&'static str>, String> {
+    if model != Some("indic-transcribe-8bit") || code == "auto" {
+        return language_name(code);
+    }
+    static ADDITIONAL: OnceLock<serde_json::Value> = OnceLock::new();
+    let models = ADDITIONAL.get_or_init(|| {
+        serde_json::from_str(include_str!(
+            "../../../model-runtime/additional-models.json"
+        ))
+        .expect("compiled additional model metadata")
+    });
+    models["indic-transcribe-8bit"]["languages"].as_array().into_iter().flatten()
+        .find(|language| language["code"].as_str() == Some(code))
+        .and_then(|language| language["name"].as_str()).map(Some)
+        .ok_or_else(|| format!("Indic Transcribe does not support language '{code}'. Choose a supported language or Auto-detect."))
+}
+
 pub fn resolve_language_name(input: &str) -> Result<String, String> {
     let input = input.trim();
     languages()
@@ -59,5 +79,15 @@ mod tests {
         assert_eq!(resolve_language_name(" EN ").unwrap(), "English");
         assert_eq!(resolve_language_name("german").unwrap(), "German");
         assert!(resolve_language_name("tlh").is_err());
+    }
+
+    #[test]
+    fn indic_languages_do_not_expand_qwen_prompt_tags() {
+        assert_eq!(
+            language_name_for_model("bn", Some("indic-transcribe-8bit")).unwrap(),
+            Some("Bengali")
+        );
+        assert!(language_name_for_model("bn", Some("0.6b")).is_err());
+        assert!(language_name_for_model("ja", Some("indic-transcribe-8bit")).is_err());
     }
 }

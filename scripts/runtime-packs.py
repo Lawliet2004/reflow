@@ -191,6 +191,8 @@ def check_code(profile):
     shared = "import numpy, huggingface_hub, httpx\n"
     if profile == "zipformer":
         return shared + "import sherpa_onnx\nprint('Offline Zipformer imports passed')\n"
+    if profile == "indic":
+        return shared + "import torch, bitsandbytes, sentencepiece, soundfile, accelerate, safetensors\nfrom transformers import PreTrainedModel, GenerationMixin\nassert torch.ones(1).sum().item() == 1\n"
     engine = ("import fermion, scipy, soundfile, safetensors, zstandard\nfrom fermion._speech import engine_phonon2_cpu\nfrom transformers import ParakeetForTDT, ParakeetTDTConfig\n" if profile == "phonon" else
               "from transformers import AutoProcessor, AutoModelForMultimodalLM, Qwen3ASRProcessor, Qwen3ASRForConditionalGeneration\n")
     return shared + "import torch, transformers\n" + engine + "assert torch.ones(1).add(1).item() == 2\nprint('Offline CPU tensor/import checks passed')\n"
@@ -338,7 +340,7 @@ def main():
     sub.add_parser("matrix")
     build_parser = sub.add_parser("build")
     build_parser.add_argument("target")
-    build_parser.add_argument("profile", choices=["zipformer", "qwen", "phonon"])
+    build_parser.add_argument("profile", choices=["zipformer", "qwen", "phonon", "indic"])
     build_parser.add_argument("variant", choices=["none", "default", "cpu", "cu126", "cu130"])
     build_parser.add_argument("--output", type=Path, required=True)
     build_parser.add_argument("--cache", type=Path, required=True)

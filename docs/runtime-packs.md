@@ -17,7 +17,7 @@ It contains no model weights, user settings, transcripts, populated virtual envi
 
 ## Native build and release order
 
-`scripts/runtime-packs.py matrix` derives the 18 advertised combinations from the locks: Windows x64 (7), Linux x64 (7), Apple Silicon (3), Intel Mac (Zipformer only). Linux ARM64 locks remain available for development but do not expand the advertised support matrix.
+`scripts/runtime-packs.py matrix` derives 20 combinations from the locks: Windows x64 (8), Linux x64 (8), Apple Silicon (3), Intel Mac (Zipformer only). Indic adds a CUDA 13 profile on Linux and Windows x64; Parakeet reuses the Phonon profile. The new Indic packs still need native build and distribution acceptance. Linux ARM64 locks remain available for development but do not expand the advertised support matrix.
 
 On the matching native host, for example:
 
@@ -62,4 +62,4 @@ The [Linux Qwen CPU checkpoint](verification/runtime-pack-qwen-linux-2026-10-23/
 
 The [Linux Phonon CPU checkpoint](verification/runtime-pack-phonon-linux-2026-10-23/README.md) adds concrete engine/Parakeet API verification in the builder, production health check and sidecar initialization. Its 349,482,063-byte pack passes offline installation, damaged-API rejection and repair. Actual sidecar decoding also passes with a fresh dependency environment and locally copied existing weights, in int8 and forced fp32 modes. No weights were downloaded.
 
-`Desktop validation` builds four native preview installers and the 18 advertised dependency combinations in project CI. Its read-only repository permission and artifact uploads do not create a release or a downloadable release catalog. Pack archives stay temporary; metadata and license inventories are retained for review. CUDA import checks on hosted runners do not prove accelerator execution. Physical tests are deferred by the user; build results must be reported separately.
+`Desktop validation` builds four native preview installers and the 20 dependency combinations in project CI. Its read-only repository permission and artifact uploads do not create a release or a downloadable release catalog. Pack archives stay temporary; metadata and license inventories are retained for review. CUDA import checks on hosted runners do not prove accelerator execution. Physical tests are deferred by the user; build results must be reported separately.

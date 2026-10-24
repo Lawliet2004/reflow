@@ -347,7 +347,11 @@ pub fn has_installed_asr(ctx: &crate::context::AppContext, settings: &AppSetting
     if settings.preset == "custom"
         || matches!(
             settings.asr.model.as_str(),
-            "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8"
+            "phonon-2"
+                | "zipformer-20m"
+                | "omnilingual-300m-int8"
+                | "parakeet-ultra"
+                | "indic-transcribe-8bit"
         )
     {
         installed(&settings.asr.model)

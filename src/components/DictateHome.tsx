@@ -382,7 +382,7 @@ export const DictateHome: React.FC<DictateHomeProps> = ({
             })
           }
         >
-          <LanguageOptions />
+          <LanguageOptions model={settings.asr.model} />
         </select>
       </header>
       <section className="manuscript" aria-label="Dictation studio">

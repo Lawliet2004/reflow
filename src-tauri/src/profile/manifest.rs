@@ -217,7 +217,7 @@ impl ModelManifest {
         let weights_mb = (self.params as f32
             * if matches!(
                 self.id,
-                "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8"
+                "phonon-2" | "zipformer-20m" | "omnilingual-300m-int8" | "indic-transcribe-8bit"
             ) {
                 1.1
             } else {
@@ -245,6 +245,13 @@ impl ModelManifest {
         if self.id == "phonon-2" {
             return vec![if device == Device::Cpu {
                 Precision::Int8
+            } else {
+                Precision::Fp32
+            }];
+        }
+        if self.id == "parakeet-ultra" {
+            return vec![if device == Device::Cuda {
+                Precision::Bf16
             } else {
                 Precision::Fp32
             }];
@@ -416,6 +423,118 @@ pub const OMNILINGUAL_MODEL: ModelManifest = ModelManifest {
     overhead_mb: 700.0,
 };
 
+/// Pinned upstream artifacts, including all code executed by the Indic adapter.
+pub const PARAKEET_MODEL: ModelManifest = ModelManifest {
+    id: "parakeet-ultra",
+    label: "Parakeet Ultra 0.6B",
+    runtime: RuntimeKind::PythonAsr,
+    repo: "moondream/parakeet-ultra",
+    revision: "73175eb7aeb0d82f1e2a6b53b3aabc10a90bcd0b",
+    filename: "model.safetensors",
+    dir_name: "parakeet-ultra",
+    sha256: "c9608f36d0ab956c14bfcc525479b0746b3b42a56f6949ec85c14eb7466717dc",
+    auxiliary_files: &[
+        WeightFile {
+            filename: "config.json",
+            sha256: "e747b85e1bdfd300c8b8ac63bac8dd5221f8fe9bc275b48d06c735fcd6971b6e",
+        },
+        WeightFile {
+            filename: "tokenizer.json",
+            sha256: "bd321b096832a3f270bd3b2a88823957920f1a5c5ada71114a26ea729d0cbe91",
+        },
+        WeightFile {
+            filename: "README.md",
+            sha256: "d4a8b60c83df734ea0373931ba9548f07bdcbab683d19c7f5777a6a83f0971c8",
+        },
+    ],
+    download_bytes: 1256520932,
+    params: 630000000,
+    precisions: &[Precision::Bf16, Precision::Fp32],
+    devices: &[Device::Cuda, Device::Cpu],
+    languages: &[],
+    overhead_mb: 900.0,
+};
+
+/// Pinned upstream artifacts, including all code executed by the Indic adapter.
+pub const INDIC_MODEL: ModelManifest = ModelManifest {
+    id: "indic-transcribe-8bit",
+    label: "Indic Transcribe Core 8-bit",
+    runtime: RuntimeKind::PythonAsr,
+    repo: "ManiKumarAdapala/indic-transcribe-core-8bit",
+    revision: "2765ed1b553ea331af15cf8fa3fd25eda7b993a6",
+    filename: "model.safetensors",
+    dir_name: "indic-transcribe-8bit",
+    sha256: "b21e78121a85cadd5f7315713cec736bfe151f952eb6c7b0123d08ac600118f0",
+    auxiliary_files: &[
+        WeightFile {
+            filename: "feature_extractor.safetensors",
+            sha256: "d937fed7f88a7ae26960be72ba4b79b7018d69e66805ba2a8c39909ba8f11a69",
+        },
+        WeightFile {
+            filename: "config.json",
+            sha256: "acb8977c9b72e787952d551f4f279e2f6031dd46f56a734c0878a754ad820664",
+        },
+        WeightFile {
+            filename: "generation_config.json",
+            sha256: "f89d573ed0469dd1d78f77de556e954e5eb9cd4d97db4c6db47146e98d6aeff0",
+        },
+        WeightFile {
+            filename: "tokenizer_config.json",
+            sha256: "171cea93b631eeaaf468911568602ae9c917dc340de375573244e59fb3c79d3a",
+        },
+        WeightFile {
+            filename: "tokenizer_multilingual.model",
+            sha256: "caac4b6023fe90422bd2658f89e18b9eda53b78bb54be85a212ebba480dc29bd",
+        },
+        WeightFile {
+            filename: "tokenizer_spl_tokens.model",
+            sha256: "9284f78edfa1f1ffa27d392ff83808f201159054866e07ea07584254718445b1",
+        },
+        WeightFile {
+            filename: "configuration_indic_canary.py",
+            sha256: "35ad5ee48d57655f19027619fedd0a8a95de4d79893a09b2439fac6fcbfb8e9c",
+        },
+        WeightFile {
+            filename: "feature_extraction_indic_canary.py",
+            sha256: "4095b6262d16ace21a64ca39b5b82f23703af57d0e04f6c0b323c538c08df43c",
+        },
+        WeightFile {
+            filename: "modeling_indic_canary.py",
+            sha256: "f5f5bd38517939b25d6e7d714c5cfde246dd3de7de7af9de5fb589217014cfa6",
+        },
+        WeightFile {
+            filename: "tokenization_indic_canary.py",
+            sha256: "7dd544fb33112d16312be6093c388e4ea44e218bf4c751919b53ca733e92985e",
+        },
+        WeightFile {
+            filename: "indic_transcribe.py",
+            sha256: "803e0ec16a1f553be4e9773658c099b7f6af26c6da8ed33fff1c341659d3f204",
+        },
+        WeightFile {
+            filename: "lid.py",
+            sha256: "553f9ad5c60966661fcfd6d1acec7c75e6891e0d0710cf940e37634a54b47017",
+        },
+        WeightFile {
+            filename: "Bodhan_AI_Open_Model_License.md",
+            sha256: "b39f2a9cb2d5ace3a03f4425cbc6db38ebd9a53ab7a7648d67dc1e0998ad75c2",
+        },
+        WeightFile {
+            filename: "indic-open-license.md",
+            sha256: "5dd97d2327cdd4fc87e974528fee8bbe16420c1fed41f33778be58ab809386a0",
+        },
+        WeightFile {
+            filename: "README.md",
+            sha256: "e8ec78ccea840c040cf77021375708e33ce4e59b2260c0c6a4bb8656066449b7",
+        },
+    ],
+    download_bytes: 1572782076,
+    params: 1000000000,
+    precisions: &[Precision::Int8],
+    devices: &[Device::Cuda],
+    languages: &[],
+    overhead_mb: 900.0,
+};
+
 /// Refinement models served by `llama-server`.
 pub const REFINEMENT_MODELS: &[ModelManifest] = &[
     ModelManifest {
@@ -583,6 +702,12 @@ pub fn recommended_asr_model(available_ram_mb: f32, free_vram_mb: f32) -> &'stat
 }
 
 pub fn asr_manifest(id: &str) -> Option<&'static ModelManifest> {
+    if id == PARAKEET_MODEL.id {
+        return Some(&PARAKEET_MODEL);
+    }
+    if id == INDIC_MODEL.id {
+        return Some(&INDIC_MODEL);
+    }
     if id == OMNILINGUAL_MODEL.id {
         return Some(&OMNILINGUAL_MODEL);
     }
@@ -606,6 +731,8 @@ pub fn all_manifests() -> impl Iterator<Item = &'static ModelManifest> {
         .chain(std::iter::once(&PHONON_MODEL))
         .chain(std::iter::once(&ZIPFORMER_MODEL))
         .chain(std::iter::once(&OMNILINGUAL_MODEL))
+        .chain(std::iter::once(&PARAKEET_MODEL))
+        .chain(std::iter::once(&INDIC_MODEL))
         .chain(REFINEMENT_MODELS.iter())
         .chain(NATIVE_ASR_MODELS.iter())
 }
@@ -613,6 +740,29 @@ pub fn all_manifests() -> impl Iterator<Item = &'static ModelManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn additional_model_code_and_weight_pins_match_the_python_loader() {
+        let metadata: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../model-runtime/additional-models.json"
+        ))
+        .unwrap();
+        for model in [&PARAKEET_MODEL, &INDIC_MODEL] {
+            let data = &metadata[model.id];
+            assert_eq!(data["revision"].as_str(), Some(model.revision));
+            assert_eq!(data["repo"].as_str(), Some(model.repo));
+            let files = data["files"].as_array().unwrap();
+            assert_eq!(files.len(), model.auxiliary_files.len() + 1);
+            for (filename, hash) in std::iter::once((model.filename, model.sha256))
+                .chain(model.auxiliary_files.iter().map(|f| (f.filename, f.sha256)))
+            {
+                assert!(files
+                    .iter()
+                    .any(|f| f["filename"].as_str() == Some(filename)
+                        && f["sha256"].as_str() == Some(hash)));
+            }
+        }
+    }
 
     #[test]
     fn recommendation_prefers_06b_when_17b_does_not_fit() {
@@ -665,7 +815,12 @@ mod tests {
             if manifest.runtime == RuntimeKind::NativeAsr
                 || matches!(
                     manifest.id,
-                    "omnilingual-300m-int8" | "qwen3.5-4b" | "minicpm5-2b" | "gemma4-e4b"
+                    "omnilingual-300m-int8"
+                        | "qwen3.5-4b"
+                        | "minicpm5-2b"
+                        | "gemma4-e4b"
+                        | "parakeet-ultra"
+                        | "indic-transcribe-8bit"
                 )
             {
                 assert!(

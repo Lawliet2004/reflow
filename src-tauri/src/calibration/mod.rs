@@ -434,6 +434,9 @@ pub async fn run(
     Ok(status.clone())
 }
 fn speech_candidates(selected: &str, language: &str) -> Vec<(&'static str, String)> {
+    if matches!(selected, "parakeet-ultra" | "indic-transcribe-8bit") {
+        return vec![("python", selected.to_string())];
+    }
     if matches!(selected, "phonon-2" | "zipformer-20m") {
         return if language == "en" {
             vec![("python", selected.to_string())]
