@@ -84,7 +84,7 @@ class OmnilingualTests(unittest.TestCase):
         with patch.object(omni, 'require_dependencies'), patch.object(omni, 'prepare_archive', return_value=pathlib.Path('/models')), patch.dict(sys.modules, {'sherpa_onnx': fake}):
             cancelled = threading.Event()
             model = omni.OmnilingualModel('/models', 'cpu', cancelled)
-            self.assertEqual(factory.call_args.kwargs['model'], '/models/model.int8.onnx')
+            self.assertEqual(pathlib.Path(factory.call_args.kwargs['model']), pathlib.Path('/models') / 'model.int8.onnx')
             self.assertEqual(factory.call_args.kwargs['provider'], 'cpu')
             self.assertEqual(model.transcribe([0.1]), 'नमस्ते')
             cancelled.set()
