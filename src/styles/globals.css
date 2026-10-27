@@ -664,7 +664,7 @@ body.overlay-window #root {
     position: relative;
     pointer-events: auto;
   }
-  .hud[data-interactive][data-style="waveform"]:not([data-message]) {
+  .hud[data-interactive][data-style="waveform"] {
     width: var(--hud-w);
   }
   .hud[data-interactive][data-phase="listen"] .hud-capsule-row {
@@ -749,6 +749,10 @@ body.overlay-window #root {
   .hud[data-minimal] .hud-row {
     justify-content: center;
   }
+  /* End states are icon-only, so the lone marker stays centered. */
+  .hud[data-quiet] .hud-row {
+    justify-content: center;
+  }
 
   .hud-row {
     display: flex;
@@ -828,9 +832,10 @@ body.overlay-window #root {
     flex: 0 0 auto;
   }
 
-  /* The native window keeps room for recovery text. The small pill aligns to
-     its selected anchor inside that transparent, non-interactive envelope. */
-  .hud[data-style="waveform"]:not([data-message]) {
+  /* The native window keeps room for recovery text that is only announced.
+     The small pill aligns to its selected anchor inside that transparent,
+     non-interactive envelope. */
+  .hud[data-style="waveform"] {
     width: calc(var(--hud-h) * 2);
     padding-inline: 0;
   }
@@ -892,12 +897,17 @@ body.overlay-window #root {
       opacity 180ms ease,
       transform 240ms var(--motion-ease);
   }
-  .hud[data-phase="done"] .capsule-wave {
+  .hud[data-phase="done"] .capsule-wave,
+  .hud[data-phase="error"] .capsule-wave {
     opacity: 0;
   }
-  .hud[data-phase="done"] .capsule-check {
+  .hud[data-phase="done"] .capsule-check,
+  .hud[data-phase="error"] .capsule-check {
     opacity: 1;
     transform: scale(1);
+  }
+  .capsule-alert {
+    color: var(--color-stage-error);
   }
 
   .hud-timing {

@@ -1588,7 +1588,12 @@ def load_additional_model_blocking(model_dir, requested_device, precision, model
                 raise ValueError("Indic Transcribe 8-bit requires a compatible NVIDIA GPU. Select GPU or Auto.")
             if wanted not in ("auto", "int8"):
                 raise ValueError("Indic Transcribe uses 8-bit weights. Choose Auto precision.")
-            required_vram = 3000
+            # RTX 2050 (4 GiB), pinned checkpoint: 1499 MiB allocated at
+            # load, 1864 MiB peak reserved for a 30-second input. Allow CUDA
+            # workspace headroom without rejecting working 4 GiB setups with
+            # a co-resident writing model. This is total free capacity needed,
+            # not an additional allowance on top of the model weights.
+            required_vram = 2304
         else:
             from parakeet_runtime import ParakeetModel as Model
             actual = "bf16" if device == "cuda" else "fp32"
@@ -1601,8 +1606,9 @@ def load_additional_model_blocking(model_dir, requested_device, precision, model
         else:
             admit_gpu_host_load()
             free, _ = _torch().cuda.mem_get_info(0)
-            if free / (1024 * 1024) < required_vram:
-                raise RuntimeError(f"This speech model needs about {required_vram} MB free VRAM including headroom. Free GPU memory before loading.")
+            available_vram = free / (1024 * 1024)
+            if available_vram < required_vram:
+                raise RuntimeError(f"{_model_label(model_dir, model_id)} needs about {required_vram} MiB free GPU memory including model weights and runtime headroom; {available_vram:.0f} MiB is available. Unload the writing model or close GPU applications, then retry.")
         _MODEL = Model(model_dir, device, _CANCEL_EVENT)
         STATE.device, STATE.precision = device, _MODEL.precision
         STATE.backend = f"{_model_label(model_dir, model_id)} · {device.upper()} {_MODEL.precision} · {_MODEL.runtime}"

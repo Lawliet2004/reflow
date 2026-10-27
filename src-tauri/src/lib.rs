@@ -44,6 +44,73 @@ use dory::DoryEvent;
 use history::RetentionCleaner;
 use state::AppStateEnum;
 
+/// Dispatch into the running app so command-line download requests share the
+/// same admission locks, progress events, cancellation and verification as UI.
+fn queue_requested_model_download(app: &tauri::AppHandle, args: &[String]) {
+    if args
+        .iter()
+        .skip(1)
+        .find(|arg| *arg != "--portable")
+        .map(String::as_str)
+        != Some("--download-selected-model")
+    {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = download_selected_model(&app).await {
+            log::error!("Requested speech model download failed: {error}");
+            let _ = app.emit("recording:error", error);
+        }
+    });
+}
+
+async fn download_selected_model(app: &tauri::AppHandle) -> Result<(), String> {
+    use asr::python_setup;
+    let ctx = app.state::<AppContext>();
+    let selected = ctx.settings_store.get().asr;
+    log::info!(
+        "Preparing requested speech model download: {}",
+        selected.model
+    );
+    crate::network_policy::require_online(ctx.settings_store.get().offline_mode)?;
+    if selected.runtime == "python"
+        && python_setup::verify_speech_runtime(app.state())
+            .await
+            .is_err()
+        && !python_setup::activate_cached_speech_runtime(app.state()).await?
+    {
+        python_setup::setup_python_runtime(app.clone(), app.state())?;
+        let attempt = python_setup::get_python_setup_progress()
+            .ok_or("Speech setup did not start")?
+            .attempt_id;
+        loop {
+            let progress = python_setup::get_python_setup_progress()
+                .filter(|progress| progress.attempt_id == attempt)
+                .ok_or("Speech setup was replaced by another attempt")?;
+            match progress.phase.as_str() {
+                "complete" => break,
+                "error" => {
+                    return Err(progress
+                        .error
+                        .unwrap_or_else(|| "Speech setup failed".into()))
+                }
+                "cancelled" => return Err("Speech setup was cancelled".into()),
+                _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            }
+        }
+    }
+    if ctx.settings_store.get().asr != selected {
+        return Err("Speech selection changed during setup; retry the download".into());
+    }
+    commands::install_model(app.clone(), Some(selected.model.clone()), app.state()).await?;
+    log::info!(
+        "Requested speech model download started: {}",
+        selected.model
+    );
+    Ok(())
+}
+
 pub fn run() {
     let context = AppContext::bootstrap();
     let initial_settings = context.settings_store.get();
@@ -60,7 +127,7 @@ pub fn run() {
         }
     }
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A second launch must not steal or block the global hotkey —
             // focus the existing window instead of running twice.
             log::info!("Second launch blocked; focusing the running instance.");
@@ -70,6 +137,7 @@ pub fn run() {
                 let _ = window.emit("window:visibility", true);
                 let _ = window.set_focus();
             }
+            queue_requested_model_download(app, &args);
         }))
         .on_window_event(|window, event| {
             // Closing the main window hides it to the tray so dictation
@@ -577,6 +645,7 @@ pub fn run() {
                 }
             }
 
+            queue_requested_model_download(app.handle(), &std::env::args().collect::<Vec<_>>());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

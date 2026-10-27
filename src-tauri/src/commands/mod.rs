@@ -91,6 +91,7 @@ fn spawn_action(app: AppHandle, action: &str, pressed_at: Instant) {
         )
         .await
         {
+            log::warn!("Could not start dictation: {}", error.message);
             let _ = app.emit("recording:error", error.message);
         }
     });
@@ -256,6 +257,7 @@ fn hotkey_dispatcher(app: AppHandle, action: String, shortcut: String) -> Dispat
                     Err(err) => {
                         owned = None;
                         gesture = Gesture::default();
+                        log::warn!("Could not start dictation from shortcut: {}", err.message);
                         let _ = app.emit("recording:error", err.message);
                     }
                 }
@@ -1722,7 +1724,9 @@ pub(crate) fn reload_model_inner(app: AppHandle, ctx: &AppContext) -> Result<(),
     ) {
         return Err("Wait for the active dictation to finish before reloading models.".into());
     }
+    let _settings = ctx.settings_operation.lock();
     if ctx.settings_store.get().asr.runtime == "python" {
+        crate::asr::python_setup::activate_cached_speech_runtime_inner(ctx)?;
         crate::asr::python_setup::verify_speech_runtime_inner(ctx, None)?;
     }
     ctx.flow_runtime.shutdown();
@@ -1814,9 +1818,13 @@ pub(crate) fn kick_pending_asr_reload(app: &AppHandle, ctx: &AppContext) {
     let app_reload = app.clone();
     let ctx_reload = ctx.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = reload_model_inner(app_reload, &ctx_reload) {
+        if let Err(error) = reload_model_inner(app_reload.clone(), &ctx_reload) {
             log::warn!("Could not switch the speech model: {error}");
+            *ctx_reload.asr_selection_notice.write() = Some(error);
         }
+        // Settings may have queued another selection while this worker held
+        // session admission. Give that latest selection its own reload.
+        kick_pending_asr_reload(&app_reload, &ctx_reload);
     });
 }
 

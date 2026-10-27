@@ -515,54 +515,75 @@ pub async fn activate_cached_speech_runtime(ctx: State<'_, AppContext>) -> Resul
                 "Speech resources are busy. Wait for setup or meeting processing to finish.".into(),
             );
         }
-        if runtime_overridden(&ctx) {
-            return Ok(false);
-        }
-        let selection = ctx.settings_store.get().asr;
-        if selection.runtime != "python" {
-            return Ok(false);
-        }
-        let profile = dependency_profile(&selection.model);
-        let variant = variant_for(
-            &selection.model,
-            &selection.device,
-            &crate::capability::capabilities(),
-        );
-        let app_dir = PlatformSys::get_app_dir();
-        let current = managed_runtime_dir(&app_dir);
-        let candidate = find_cached_generation(&app_dir, profile, variant, |runtime| {
-            let python = runtime.join(if cfg!(windows) {
-                "Scripts/python.exe"
-            } else {
-                "bin/python"
-            });
-            if !verify_installed_versions(&python, profile, variant) {
-                return false;
-            }
-            let imports = verification_code(
-                profile,
-                variant,
-                matches!(selection.precision.as_str(), "auto" | "int4" | "int8")
-                    && matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy),
-            );
-            super::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
-                &python.to_string_lossy(),
-                &format!("{imports}; print('ready')"),
-                Duration::from_secs(30),
-            )
-            .is_some()
-        });
-        let Some((id, runtime)) = candidate else {
-            return Ok(false);
-        };
-        if runtime != current {
-            ctx.asr_handle.shutdown_blocking(Duration::from_secs(10))?;
-            promote_generation(&app_dir, &id)?;
-        }
-        Ok(true)
+        activate_cached_speech_runtime_inner(&ctx)
     })
     .await
     .map_err(|e| format!("Could not prepare the installed speech runtime: {e}"))?
+}
+
+/// Caller owns session admission; a profile switch must activate its interpreter
+/// before checking dependencies or starting a sidecar.
+pub(crate) fn activate_cached_speech_runtime_inner(ctx: &AppContext) -> Result<bool, String> {
+    if SETUP_ACTIVE.load(Ordering::SeqCst) || ctx.meetings.busy() {
+        return Err(
+            "Speech resources are busy. Wait for setup or meeting processing to finish.".into(),
+        );
+    }
+    if runtime_overridden(ctx) {
+        return Ok(false);
+    }
+    let selection = ctx.settings_store.get().asr;
+    if selection.runtime != "python" {
+        return Ok(false);
+    }
+    let profile = dependency_profile(&selection.model);
+    let variant = variant_for(
+        &selection.model,
+        &selection.device,
+        &crate::capability::capabilities(),
+    );
+    let app_dir = PlatformSys::get_app_dir();
+    let current = managed_runtime_dir(&app_dir);
+    if read_receipt(&current).is_some_and(|receipt| receipt_matches(&receipt, profile, variant)) {
+        let python = current.join(if cfg!(windows) {
+            "Scripts/python.exe"
+        } else {
+            "bin/python"
+        });
+        if verify_installed_versions(&python, profile, variant) {
+            return Ok(true);
+        }
+    }
+    let candidate = find_cached_generation(&app_dir, profile, variant, |runtime| {
+        let python = runtime.join(if cfg!(windows) {
+            "Scripts/python.exe"
+        } else {
+            "bin/python"
+        });
+        if !verify_installed_versions(&python, profile, variant) {
+            return false;
+        }
+        let imports = verification_code(
+            profile,
+            variant,
+            matches!(selection.precision.as_str(), "auto" | "int4" | "int8")
+                && matches!(variant, TorchVariant::Cuda | TorchVariant::CudaLegacy),
+        );
+        super::sidecar::Qwen3AsrSidecar::bounded_python_probe_for(
+            &python.to_string_lossy(),
+            &format!("{imports}; print('ready')"),
+            Duration::from_secs(30),
+        )
+        .is_some()
+    });
+    let Some((id, runtime)) = candidate else {
+        return Ok(false);
+    };
+    if runtime != current {
+        ctx.asr_handle.shutdown_blocking(Duration::from_secs(10))?;
+        promote_generation(&app_dir, &id)?;
+    }
+    Ok(true)
 }
 
 fn find_cached_generation(
@@ -844,25 +865,15 @@ pub fn setup_python_runtime(app: AppHandle, ctx: State<'_, AppContext>) -> Resul
         }
         match outcome {
             Ok(()) => {
-                // Restart the sidecar on the new interpreter. A running
-                // dictation blocks the reload — the user can reload from
-                // Model settings in that case.
-                if ctx_clone
-                    .model_manager
-                    .is_installed(&ctx_clone.settings_store.get().asr.model)
-                {
-                    if let Err(error) =
-                        crate::commands::reload_model_inner(app_clone.clone(), &ctx_clone)
-                    {
-                        log::warn!("Runtime installed; speech model reload deferred: {error}");
-                    }
-                }
+                // The setup owner reloads after observing completion and verifying
+                // the runtime. Reloading here rejects our own SETUP_ACTIVE flag.
                 emit_progress(&app_clone, &attempt_id, "complete", Some(100), None, None);
             }
             Err(err) if err == CANCELLED => {
                 emit_progress(&app_clone, &attempt_id, "cancelled", None, None, None);
             }
             Err(err) => {
+                log::error!("Speech runtime setup failed: {err}");
                 emit_progress(&app_clone, &attempt_id, "error", None, None, Some(err));
             }
         }
@@ -1038,6 +1049,9 @@ fn package_progress_detail(line: &str) -> Option<String> {
 
 fn setup_command_error(phase: &str, status: std::process::ExitStatus, detail: &str) -> String {
     log::error!("Speech setup ({phase}) failed with {status}:\n{detail}");
+    if detail.contains("Speech packages are restricted to the approved") {
+        return "A speech package source was blocked by Reflow. Check for a Reflow update, then retry setup. Technical details are in Open logs.".into();
+    }
     if detail.contains("ReadTimeoutError") || detail.contains("Read timed out") {
         return "The speech dependency download timed out. Check your internet connection, VPN, or proxy, then retry setup. Completed downloads are cached for the next attempt.".into();
     }
@@ -1543,14 +1557,13 @@ fn wait_setup_command(
 ) -> Result<(), String> {
     let _child = SetupChild(slot);
     let started = Instant::now();
+    let package_download = matches!(phase, "installing_packages" | "installing_torch");
+    let mut last_activity = started;
     let mut last_emit = Instant::now();
     let mut output_tail = std::collections::VecDeque::new();
     let mut buffer = [0u8; 32768];
     loop {
         interrupt()?;
-        if started.elapsed() >= timeout {
-            return Err("Speech dependency setup timed out. Retry setup; the working runtime has been preserved.".into());
-        }
         let status = slot
             .lock()
             .unwrap()
@@ -1579,6 +1592,9 @@ fn wait_setup_command(
             }
             output_tail.push_back(line.chars().take(4096).collect::<String>());
         }
+        if count > 0 {
+            last_activity = Instant::now();
+        }
         if count > 0 && last_emit.elapsed() >= Duration::from_millis(250) {
             if let Some(line) = output_tail.back() {
                 emit(
@@ -1599,6 +1615,21 @@ fn wait_setup_command(
                 return Err(setup_command_error(phase, status, &detail));
             }
             return Ok(());
+        }
+        // pip's raw progress reports downloaded bytes even on slow links. Give
+        // active CUDA transfers time to finish, while still bounding silent
+        // children and non-download setup steps that may hang.
+        let elapsed = if package_download {
+            last_activity.elapsed()
+        } else {
+            started.elapsed()
+        };
+        if elapsed >= timeout {
+            let detail = output_tail.into_iter().collect::<Vec<_>>().join("\n");
+            log::error!(
+                "Speech setup ({phase}) timed out after {elapsed:?} without progress:\n{detail}"
+            );
+            return Err("Speech dependency setup timed out without progress. Retry setup; completed downloads are cached and the working runtime has been preserved.".into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -1811,6 +1842,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn active_package_download_outlives_the_idle_timeout() {
+        let started = Instant::now();
+        setup_process_fixture(
+            "for i in 1 2 3 4 5 6; do echo 'Progress 1048576 of 2000000000'; sleep 0.15; done",
+            Duration::from_millis(500),
+            None,
+        )
+        .unwrap();
+        assert!(started.elapsed() > Duration::from_millis(500));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stalled_package_download_still_times_out_after_progress() {
+        let error = setup_process_fixture(
+            "echo 'Progress 1048576 of 2000000000'; exec sleep 30",
+            Duration::from_millis(300),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out without progress"));
+        assert!(error.contains("completed downloads are cached"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn inherited_output_does_not_hold_up_a_finished_setup_process() {
         let started = Instant::now();
         setup_process_fixture(
@@ -1941,6 +1998,43 @@ mod tests {
     }
 
     #[test]
+    fn switching_indic_and_phonon_keeps_separate_cached_runtimes() {
+        let root = std::env::temp_dir().join(format!("reflow-switch-{}", uuid::Uuid::new_v4()));
+        let mut generations = Vec::new();
+        for model in ["indic-transcribe-8bit", "phonon-2"] {
+            let profile = dependency_profile(model);
+            let id = uuid::Uuid::new_v4().to_string();
+            let runtime = root.join("python-generations").join(&id).join("runtime");
+            std::fs::create_dir_all(&runtime).unwrap();
+            let receipt = serde_json::json!({
+                "pbs_tag": python_builds().pbs_tag, "python_version": python_builds().python_version,
+                "torch_variant": "cu130", "created_at": "fixture", "target": target_triple(),
+                "profile": profile, "requirements_digest": requirements_digest(profile, TorchVariant::Cuda)
+            });
+            std::fs::write(
+                runtime.join(RECEIPT_NAME),
+                serde_json::to_vec(&receipt).unwrap(),
+            )
+            .unwrap();
+            generations.push((profile, id, runtime));
+        }
+        for index in [0, 1, 0, 1] {
+            let (profile, id, runtime) = &generations[index];
+            assert_eq!(
+                find_cached_generation(&root, profile, TorchVariant::Cuda, |_| true),
+                Some((id.clone(), runtime.clone()))
+            );
+            promote_generation(&root, id).unwrap();
+            assert_eq!(managed_runtime_dir(&root), *runtime);
+            // A matching receipt alone must not activate a broken environment.
+            assert!(
+                find_cached_generation(&root, profile, TorchVariant::Cuda, |_| false).is_none()
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn legacy_and_mismatched_receipts_require_repair() {
         let legacy = serde_json::json!({"pbs_tag": python_builds().pbs_tag, "python_version": python_builds().python_version,
             "torch_variant": "none", "created_at": "fixture"});
@@ -2002,6 +2096,20 @@ mod tests {
             requirements_digest("qwen", TorchVariant::Cpu),
             requirements_digest("zipformer", TorchVariant::None_)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocked_package_source_reports_app_update_instead_of_connection_failure() {
+        use std::os::unix::process::ExitStatusExt;
+        let error = setup_command_error(
+            "installing_packages",
+            std::process::ExitStatus::from_raw(2 << 8),
+            "RuntimeError: Speech packages are restricted to the approved PyPI/PyTorch/NVIDIA HTTPS hosts (rejected host: example.com, scheme: https)",
+        );
+        assert!(error.contains("source was blocked by Reflow"));
+        assert!(error.contains("Reflow update"));
+        assert!(!error.contains("internet connection"));
     }
 
     #[cfg(unix)]

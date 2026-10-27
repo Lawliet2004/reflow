@@ -232,6 +232,9 @@ fn main() {
                 println!("  --latency       Print the measured latency waterfall and p50/p95");
                 println!("  --latency-json  Same numbers as JSON, for scripted comparison");
                 println!("  --api [--bind HOST:PORT]  Headless LAN API for Android");
+                println!(
+                    "  --download-selected-model  Set up and download the selected speech model"
+                );
                 println!("  --pair-reset    Forget all paired Android devices");
                 println!("  --help          Print help information");
                 return;

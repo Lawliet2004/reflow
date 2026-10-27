@@ -151,3 +151,16 @@ export function isNeutralOutcome(label: string): boolean {
     label === "Something went wrong"
   );
 }
+
+/**
+ * `true` when the label reports a failure rather than progress or a delivered
+ * result. The pill renders these as an alert instead of a checkmark.
+ */
+export function isFailedOutcome(label: string): boolean {
+  return (
+    label === "Something went wrong" ||
+    label.startsWith("No mic") ||
+    label.startsWith("Insertion failed") ||
+    label.startsWith("Couldn't finish")
+  );
+}

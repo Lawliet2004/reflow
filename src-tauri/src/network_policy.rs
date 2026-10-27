@@ -133,6 +133,7 @@ pub fn allowed_host(host: &str) -> bool {
             | "files.pythonhosted.org"
             | "download.pytorch.org"
             | "download-r2.pytorch.org"
+            | "pypi.nvidia.com"
     )
 }
 
@@ -293,6 +294,22 @@ pub fn get_network_journal(limit: Option<usize>) -> Result<Vec<NetworkEntry>, St
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+
+    #[test]
+    fn cuda_package_host_requires_exact_https_origin() {
+        assert!(validate_download_url(
+            &reqwest::Url::parse("https://pypi.nvidia.com/nvidia-cublas/package.whl").unwrap()
+        )
+        .is_ok());
+        for url in [
+            "http://pypi.nvidia.com/package.whl",
+            "https://pypi.nvidia.com.evil.example/package.whl",
+            "https://user@pypi.nvidia.com/package.whl",
+            "https://pypi.nvidia.com:444/package.whl",
+        ] {
+            assert!(validate_download_url(&reqwest::Url::parse(url).unwrap()).is_err());
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

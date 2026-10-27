@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { StreamingTranscriptPayload } from "../../types";
-import { derivePhase, isNeutralOutcome, phaseLabel, railStages, stageStatus } from "./stages";
+import { derivePhase, isFailedOutcome, isNeutralOutcome, phaseLabel, railStages, stageStatus } from "./stages";
 
 function payload(over: Partial<StreamingTranscriptPayload> = {}): StreamingTranscriptPayload {
   return {
@@ -113,5 +113,19 @@ describe("isNeutralOutcome", () => {
     expect(isNeutralOutcome("Copied — press Ctrl+V")).toBe(true);
     expect(isNeutralOutcome("No mic input")).toBe(true);
     expect(isNeutralOutcome("Inserted")).toBe(false);
+  });
+});
+
+describe("isFailedOutcome", () => {
+  it("flags the outcomes that failed rather than merely being neutral", () => {
+    expect(isFailedOutcome("No mic signal · USB Microphone")).toBe(true);
+    expect(isFailedOutcome("Insertion failed: timeout. Your transcript is available in Home")).toBe(
+      true,
+    );
+    expect(isFailedOutcome("Couldn't finish · open Reflow")).toBe(true);
+    expect(isFailedOutcome("Something went wrong")).toBe(true);
+    expect(isFailedOutcome("Copied — press Ctrl+V")).toBe(false);
+    expect(isFailedOutcome("Done")).toBe(false);
+    expect(isFailedOutcome("Inserted (LLM error: timeout)")).toBe(false);
   });
 });

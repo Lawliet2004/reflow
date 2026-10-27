@@ -10,7 +10,7 @@ import {
   WaveformStyle,
 } from "../types";
 import { Waveform } from "./Waveform";
-import { derivePhase, phaseLabel, BackendStage } from "./hud/stages";
+import { derivePhase, isFailedOutcome, phaseLabel, BackendStage } from "./hud/stages";
 
 interface OverlayProps {
   appState: AppState;
@@ -109,11 +109,12 @@ export const Overlay: React.FC<OverlayProps> = ({
   // Minimal shows only the dot and level while listening; status words return after.
   const minimal = waveformStyle === "minimal" && phase === "listen";
   const waveformPill = hudStyle === "waveform";
-  // An unpolished insertion is still a completed paste. Keep the waveform's
-  // checkmark and geometry; reserve expansion for messages requiring attention.
-  const compactCompletion = label === "Done" || /^Inserted \(unpolished\)[.!]?$/i.test(label);
-  const showMessage =
-    waveformPill && (phase === "error" || (phase === "done" && !compactCompletion));
+  // The pill never narrates an outcome in words: it is removed shortly after
+  // the session ends either way, so a success ends as a checkmark and a
+  // failure as an alert. The message itself stays reachable through the
+  // sr-only label and the hover tooltip.
+  const failed = phase === "error" || (phase === "done" && isFailedOutcome(label));
+  const quietOutcome = phase === "done" || phase === "error";
   const scaleClass = SCALE_CLASS[hudScale];
 
   return (
@@ -133,7 +134,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       data-exiting={exiting || undefined}
       data-shape={hudShape}
       data-style={hudStyle}
-      data-message={showMessage || undefined}
+      data-quiet={quietOutcome || undefined}
       data-minimal={(!waveformPill && minimal) || undefined}
       style={{ "--hud-alpha": hudOpacity } as React.CSSProperties}
       role="status"
@@ -162,20 +163,28 @@ export const Overlay: React.FC<OverlayProps> = ({
           )}
         </button>
       )}
-      {waveformPill && !showMessage ? (
+      {waveformPill ? (
         <div className="hud-capsule-row">
           {phase === "listen" && paused ? (
             <span className="hud-paused-label">Paused</span>
           ) : (
             <CapsuleWave level={transcript.audio_level} listening={phase === "listen"} />
           )}
-          <Check className="capsule-check" strokeWidth={2.5} aria-hidden="true" />
+          {failed ? (
+            <AlertCircle
+              className="capsule-check capsule-alert"
+              strokeWidth={2.5}
+              aria-hidden="true"
+            />
+          ) : (
+            <Check className="capsule-check" strokeWidth={2.5} aria-hidden="true" />
+          )}
           {!(phase === "listen" && paused) && <span className="sr-only">{label}</span>}
         </div>
       ) : (
         <div className="hud-row">
           <span className="hud-indicator" data-phase={phase} aria-hidden="true">
-            {phase === "error" ? (
+            {failed ? (
               <AlertCircle className="w-4 h-4" />
             ) : phase === "done" ? (
               <Check className="w-3.5 h-3.5 stroke-[3]" />
@@ -190,7 +199,7 @@ export const Overlay: React.FC<OverlayProps> = ({
 
           <span
             key={label}
-            className={minimal && !paused ? "sr-only" : "hud-label"}
+            className={quietOutcome || (minimal && !paused) ? "sr-only" : "hud-label"}
             title={phase === "listen" ? label : message}
           >
             {label}

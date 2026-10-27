@@ -1201,6 +1201,14 @@ impl AppSettings {
         ) {
             self.asr.runtime = "python".into();
         }
+        // A forced language from Indic/Qwen must not leave an English-only
+        // selection unable to start recording after a model switch or restart.
+        if matches!(self.asr.model.as_str(), "phonon-2" | "zipformer-20m")
+            && !self.auto_detect_language
+            && !matches!(self.language.as_str(), "auto" | "en")
+        {
+            self.language = "en".into();
+        }
         let intent = self.resolve_intent();
         self.intelligence_tier = intent.tier;
         self.cleanup_level = intent.cleanup_level;
@@ -1404,7 +1412,14 @@ impl SettingsStore {
             }
         }
 
+        let previous_language = loaded.language.clone();
         let mut normalized = loaded.normalized();
+        let repaired_speech_language = normalized.language != previous_language;
+        if repaired_speech_language {
+            log::warn!(
+                "Changed dictation language to English for the selected English-only speech model"
+            );
+        }
         let repaired_hotkeys = loaded_from_disk
             && repair_platform_hotkeys(&mut normalized)
                 .map(|notice| {
@@ -1428,7 +1443,7 @@ impl SettingsStore {
             recovery_notice: RwLock::new(recovery_notice),
             write_block_reason,
         };
-        if migrating || repaired_hotkeys {
+        if migrating || repaired_hotkeys || repaired_speech_language {
             // Persist the migration so the next launch is a no-op.
             if let Err(err) = store.write_to_disk(&normalized) {
                 log::warn!("Could not persist migrated settings: {err}");
@@ -1614,6 +1629,66 @@ impl SettingsStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn english_only_model_switch_repairs_a_forced_indic_language() {
+        for model in ["phonon-2", "zipformer-20m"] {
+            let mut settings = super::AppSettings::default();
+            settings.language = "hi".into();
+            settings.auto_detect_language = false;
+            settings.asr.model = "indic-transcribe-8bit".into();
+            settings = settings.normalized();
+            assert_eq!(settings.language, "hi");
+            settings.asr.model = model.into();
+            settings = settings.normalized();
+            assert_eq!(settings.language, "en");
+            assert!(!settings.auto_detect_language);
+            assert_eq!(settings.clone().normalized().language, "en");
+        }
+    }
+
+    #[test]
+    fn english_only_language_repair_survives_settings_save_and_restart() {
+        let dir = std::env::temp_dir().join(format!("reflow-language-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let store = super::SettingsStore::new(path.clone());
+        store
+            .merge_update(serde_json::json!({
+                "asr": {"model": "indic-transcribe-8bit"},
+                "language": "hi", "auto_detect_language": false
+            }))
+            .unwrap();
+        let selected = store
+            .merge_update(serde_json::json!({"asr": {"model": "phonon-2"}}))
+            .unwrap();
+        assert_eq!(selected.language, "en");
+        assert_eq!(super::SettingsStore::new(path.clone()).get().language, "en");
+        // Reproduce a saved document from an older app that left Hindi forced.
+        let mut stale = selected;
+        stale.language = "hi".into();
+        std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        let restored = super::SettingsStore::new(path.clone());
+        assert_eq!(restored.get().language, "en");
+        let persisted: super::AppSettings =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.language, "en");
+        assert_eq!(persisted.asr.model, "phonon-2");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn english_only_models_preserve_auto_detection_and_multilingual_preferences() {
+        let mut settings = super::AppSettings::default();
+        settings.language = "hi".into();
+        settings.asr.model = "phonon-2".into();
+        let settings = settings.normalized();
+        assert!(settings.auto_detect_language);
+        assert_eq!(settings.language, "hi");
+        let mut settings = settings;
+        settings.asr.model = "indic-transcribe-8bit".into();
+        settings.auto_detect_language = false;
+        assert_eq!(settings.normalized().language, "hi");
+    }
+
     #[test]
     fn named_models_and_summary_choice_survive_normalization_and_serialization() {
         for model in ["qwen3.5-4b", "minicpm5-2b", "gemma4-e4b"] {

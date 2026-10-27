@@ -29,6 +29,9 @@ pub fn language_name_for_model(
     code: &str,
     model: Option<&str>,
 ) -> Result<Option<&'static str>, String> {
+    if matches!(model, Some("phonon-2" | "zipformer-20m")) && !matches!(code, "auto" | "en") {
+        return Err("This speech model supports English only. Choose English or Auto-detect, or select a multilingual speech model.".into());
+    }
     if model != Some("indic-transcribe-8bit") || code == "auto" {
         return language_name(code);
     }
@@ -79,6 +82,20 @@ mod tests {
         assert_eq!(resolve_language_name(" EN ").unwrap(), "English");
         assert_eq!(resolve_language_name("german").unwrap(), "German");
         assert!(resolve_language_name("tlh").is_err());
+    }
+
+    #[test]
+    fn english_only_models_reject_incompatible_stream_languages() {
+        for model in ["phonon-2", "zipformer-20m"] {
+            assert!(language_name_for_model("hi", Some(model))
+                .unwrap_err()
+                .contains("English only"));
+            assert_eq!(
+                language_name_for_model("en", Some(model)).unwrap(),
+                Some("English")
+            );
+            assert_eq!(language_name_for_model("auto", Some(model)).unwrap(), None);
+        }
     }
 
     #[test]

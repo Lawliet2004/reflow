@@ -43,8 +43,8 @@ describe("Overlay", () => {
     expect(container.querySelector(".hud-rail, .hud-mode, .hud-timing, .hud-text")).toBeNull();
   });
 
-  it("shows a brief completion label instead of repeating the transcript", () => {
-    render(
+  it("reduces the completion to an icon instead of a text label", () => {
+    const { container } = render(
       <Overlay
         appState="READY"
         transcript={payload({ full_text: "Hello." })}
@@ -52,13 +52,16 @@ describe("Overlay", () => {
         extraMessage="Inserted"
       />,
     );
-    expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(screen.getByText("Done")).toHaveClass("sr-only");
+    expect(container.querySelector(".hud-label")).toBeNull();
     expect(screen.queryByText("Hello.")).not.toBeInTheDocument();
   });
 
-  it("gives a concise recovery instruction on failure", () => {
-    render(<Overlay appState="ERROR" transcript={payload()} standalone />);
-    expect(screen.getByText("Couldn't finish · open Reflow")).toBeInTheDocument();
+  it("reduces a failure to an alert icon instead of recovery text", () => {
+    const { container } = render(<Overlay appState="ERROR" transcript={payload()} standalone />);
+    expect(screen.getByText("Couldn't finish · open Reflow")).toHaveClass("sr-only");
+    expect(container.querySelector(".hud-label")).toBeNull();
+    expect(container.querySelector(".hud-indicator")?.getAttribute("data-phase")).toBe("error");
   });
 
   it("does not show an empty capsule in the standalone window", () => {
@@ -66,10 +69,10 @@ describe("Overlay", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  /// The clipboard fallback is the message the user must actually act on, so it
-  /// has to reach the HUD rather than being replaced by a generic "Inserted".
-  it("surfaces the clipboard fallback message", () => {
-    render(
+  /// The clipboard fallback is announced to assistive technology and available
+  /// on hover, but the pill itself stays wordless.
+  it("keeps the clipboard fallback out of the visible pill", () => {
+    const { container } = render(
       <Overlay
         appState="IDLE"
         transcript={payload({ full_text: "Hello." })}
@@ -77,7 +80,8 @@ describe("Overlay", () => {
         extraMessage="Copied — press Ctrl+V"
       />,
     );
-    expect(screen.getByText("Copied — press Ctrl+V")).toBeInTheDocument();
+    expect(screen.getByText("Copied — press Ctrl+V")).toHaveClass("sr-only");
+    expect(container.querySelector(".hud-label")).toBeNull();
   });
 
   it("renders nothing when floating and there is nothing to report", () => {
@@ -174,18 +178,20 @@ describe("Overlay", () => {
   );
 
   it.each([
-    ["IDLE", "Copied — press Ctrl+V", "Copied — press Ctrl+V"],
-    ["ERROR", "Failed", "Couldn't finish · open Reflow"],
-    ["READY", "Inserted (LLM error: timeout)", "Inserted (LLM error: timeout)"],
+    ["IDLE", "Copied — press Ctrl+V", "Copied — press Ctrl+V", false],
+    ["ERROR", "Failed", "Couldn't finish · open Reflow", true],
+    ["READY", "Inserted (LLM error: timeout)", "Inserted (LLM error: timeout)", false],
     [
       "READY",
       "Inserted (unpolished) · Transcript incomplete",
       "Inserted (unpolished) · Transcript incomplete",
+      false,
     ],
+    ["READY", "No mic signal · USB Microphone", "No mic signal · USB Microphone", true],
   ] as const)(
-    "keeps %s recovery messages visible in the waveform style",
-    (appState, extraMessage, label) => {
-      render(
+    "keeps %s %s outcomes wordless in the waveform style",
+    (appState, extraMessage, label, failed) => {
+      const { container } = render(
         <Overlay
           appState={appState}
           transcript={payload()}
@@ -193,8 +199,16 @@ describe("Overlay", () => {
           hudStyle="waveform"
         />,
       );
-      expect(screen.getByText(label)).toHaveClass("hud-label");
-      expect(screen.getByRole("status")).toHaveAttribute("data-message", "true");
+      const hud = screen.getByRole("status");
+      // The capsule never expands into a message: the outcome is announced and
+      // available on hover only.
+      expect(hud).not.toHaveAttribute("data-message");
+      expect(container.querySelector(".hud-label")).toBeNull();
+      expect(screen.getByText(label)).toHaveClass("sr-only");
+      expect(hud.getAttribute("title")).toBe(label);
+      expect(container.querySelector(".capsule-check")).not.toBeNull();
+      expect(Boolean(container.querySelector(".capsule-alert"))).toBe(failed);
+      expect(container.querySelector(".capsule-wave")).not.toBeNull();
     },
   );
 });

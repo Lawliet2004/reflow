@@ -54,3 +54,23 @@ class ManagedPipTests(unittest.TestCase):
             self.assertEqual(json.loads(records[0])["bytes"], 7)
         finally:
             HTTPAdapter.send = original
+
+    def test_cuda_dependency_host_is_allowed_and_journaled(self):
+        body = managed_pip.JournalBody(io.BytesIO(b"wheel"), "https://pypi.nvidia.com/nvidia-cublas/package.whl")
+        self.assertEqual(body.read(), b"wheel")
+        body.close()
+        record = json.loads((self.policy.parent / "network-journal.jsonl").read_text())
+        self.assertEqual(record["host"], "pypi.nvidia.com")
+        self.assertEqual(record["bytes"], 5)
+        for url in ("http://pypi.nvidia.com/", "https://pypi.nvidia.com.evil.example/",
+                    "https://user@pypi.nvidia.com/", "https://pypi.nvidia.com:444/"):
+            with self.assertRaises(RuntimeError):
+                managed_pip.check_url(url)
+
+    def test_rejected_source_diagnostic_omits_credentials_and_path(self):
+        with self.assertRaises(RuntimeError) as caught:
+            managed_pip.check_url("https://user:secret@unapproved.example/private?token=secret")
+        message = str(caught.exception)
+        self.assertIn("unapproved.example", message)
+        for private in ("user", "secret", "private", "token"):
+            self.assertNotIn(private, message)

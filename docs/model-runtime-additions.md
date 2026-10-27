@@ -51,3 +51,19 @@ Speech setup uses the same prerequisite ordering. Python speech setup is coordin
 
 Follow-up validation: Rust library suite 688 passed / 18 ignored; frontend suite 405 passed with one obsolete button-label assertion, corrected and all 29 affected tests then passed; sidebar tests 5 passed after copy refinement. Production build, TypeScript, focused ESLint, Rust formatting and whitespace checks passed. Model-free setup tests verify deduplication, runtime failure blocking and changed-settings admission. No runtime packages or model weights were installed for these checks.
 The final independent review caught an old writing failure masking a live runtime retry in the sidebar. Active retry progress now takes precedence; all six sidebar tests pass, including this regression.
+### Indic GPU memory verification — 26 October 2026
+
+On the local RTX 2050 (4 GiB), the pinned Indic 8-bit checkpoint loaded through
+the full verified runtime path while a llama-server writing model occupied
+approximately 1086 MiB. The adapter allocated 1499 MiB for the loaded model;
+a 30-second low-amplitude noise input with explicit Hindi selection completed
+at 1626 MiB peak allocated / 1864 MiB peak reserved by PyTorch. These are
+memory smoke checks, not recognition-accuracy or worst-case decoder benchmarks.
+The checkpoint's bitsandbytes configuration preserves 8-bit linear weights
+despite the adapter's FP32 dtype for unquantized components.
+
+The former 3000 MiB admission cutoff rejected this working configuration before
+constructing the model. Indic now requires 2304 MiB free after CUDA initialization,
+including weights and runtime headroom. Errors report measured free capacity.
+CUDA context/library allocations also consume VRAM outside PyTorch's counters;
+long or difficult decoding can use more memory than this smoke check.

@@ -15,6 +15,37 @@ import parakeet_runtime
 
 
 class AdditionalAsrTests(unittest.TestCase):
+    def test_indic_loads_with_2600_mib_free_beside_writing_model(self):
+        cuda = Mock()
+        cuda.mem_get_info.return_value = (2600 * 1024**2, 4096 * 1024**2)
+        cuda.memory_reserved.return_value = 1500 * 1024**2
+        with patch.object(runtime, "verify_weight_files"), \
+                patch.object(runtime, "pick_device", return_value="cuda"), \
+                patch.object(runtime, "admit_gpu_host_load"), \
+                patch.object(runtime, "_unload_model_blocking"), \
+                patch.object(runtime, "_torch", return_value=SimpleNamespace(cuda=cuda)), \
+                patch.object(runtime, "STATE", runtime.RuntimeState()), \
+                patch.object(runtime, "_MODEL", None), \
+                patch.object(indic_runtime, "IndicModel") as loader:
+            result = runtime.load_model_blocking("unused", "cuda", "auto", "indic-transcribe-8bit")
+            self.assertEqual(result["status"], "ok", result)
+            loader.assert_called_once()
+
+    def test_indic_low_memory_reports_measured_free_capacity(self):
+        cuda = Mock()
+        cuda.mem_get_info.return_value = (1800 * 1024**2, 4096 * 1024**2)
+        with patch.object(runtime, "verify_weight_files"), \
+                patch.object(runtime, "pick_device", return_value="cuda"), \
+                patch.object(runtime, "admit_gpu_host_load"), \
+                patch.object(runtime, "_unload_model_blocking"), \
+                patch.object(runtime, "_torch", return_value=SimpleNamespace(cuda=cuda)), \
+                patch.object(runtime, "STATE", runtime.RuntimeState()), \
+                patch.object(indic_runtime, "IndicModel") as loader:
+            result = runtime.load_model_blocking("unused", "cuda", "auto", "indic-transcribe-8bit")
+            self.assertEqual(result["status"], "error")
+            self.assertIn("1800 MiB is available", result["error"])
+            loader.assert_not_called()
+
     def test_corrupt_code_is_rejected_before_loading_any_custom_module(self):
         with tempfile.TemporaryDirectory() as folder:
             path = pathlib.Path(folder) / "modeling_indic_canary.py"

@@ -11,8 +11,10 @@ import sys
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
+# PyTorch's CUDA 13 index serves NVIDIA dependency wheels from this separate
+# package host. Keep exact hosts so redirects cannot bypass the boundary.
 HOSTS = frozenset(("pypi.org", "files.pythonhosted.org", "download.pytorch.org",
-                   "download-r2.pytorch.org"))
+                   "download-r2.pytorch.org", "pypi.nvidia.com"))
 
 
 def check_url(url):
@@ -23,7 +25,9 @@ def check_url(url):
     parsed = urlsplit(url)
     if (parsed.scheme != "https" or parsed.hostname not in HOSTS
             or parsed.port not in (None, 443) or parsed.username or parsed.password):
-        raise RuntimeError("Speech packages are restricted to the approved PyPI/PyTorch HTTPS hosts")
+        raise RuntimeError(
+            "Speech packages are restricted to the approved PyPI/PyTorch/NVIDIA HTTPS hosts "
+            f"(rejected host: {parsed.hostname}, scheme: {parsed.scheme})")
     return parsed.hostname
 
 
